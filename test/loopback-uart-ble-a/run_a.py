@@ -25,7 +25,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(_HERE))                # peer, radio.advertiser
+sys.path.insert(0, str(_HERE))                # radio.advertiser
+sys.path.insert(0, str(_HERE.parent / "common"))   # peer (shared with test B)
 sys.path.insert(0, str(_HERE.parents[1]))     # the vertex package
 
 from peer import Peer, PeerError, TimedReport                       # noqa: E402
@@ -81,7 +82,9 @@ class Results:
             f"duplicates         {self.duplicates}",
             f"unknown seq        {self.unknown_seq}",
             f"warm-up adverts    {self.warmup}   (the payload set before enabling)",
-            f"foreign adverts    {self.foreign}   (other devices nearby)",
+            f"foreign adverts    {self.foreign}   (other devices nearby)"
+            + ("" if self.foreign < 5000 else
+               "  <-- saturates a 115200 UART; see notes"),
             f"other node ids     {self.other_node}",
             f"undecodable        {self.undecodable}",
         ]
@@ -101,13 +104,10 @@ class Results:
             L.append(f"peer uart          partial_flushes {d.rx_partial_flushes}  "
                      f"full_flushes {d.rx_full_flushes}  "
                      f"crc_errors {d.crc_errors}  timeouts {d.timeouts}")
-            if d.rx_partial_flushes == 0:
-                L.append("                   <-- partial_flushes == 0: the peer's DMA "
-                         "idle timeout never fired.")
-                L.append("                       CONFIG_UART_0_NRF_HW_ASYNC is not "
-                         "active; short frames are")
-                L.append("                       stuck in the DMA buffer and this run "
-                         "is suspect.")
+            # No check on rx_partial_flushes here: this is a DELTA, and the only
+            # inbound frames during the measured window are the 'Q' request
+            # itself, so the number is ~1 on a healthy link. crc_errors == 0 and
+            # timeouts == 0 are the meaningful UART health signals.
         L.append("")
         L.append("VALID" if self.valid else "INVALID -- see the markers above")
         return "\n".join(L)

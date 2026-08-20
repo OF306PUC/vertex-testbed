@@ -34,6 +34,7 @@ __all__ = [
     "encode_network", "encode_algorithm", "encode_disturbance", "encode_control",
     "encode_adv_tx", "encode_radio", "encode_ping", "encode_stats_req",
     "AdvReport", "PeerStats", "decode_adv_report", "decode_pong",
+    "decode_txat",
     "decode_ack", "decode_stats", "MAX_NEIGHBORS", "MAX_AD_LEN",
 ]
 
@@ -58,6 +59,7 @@ class FrameType(IntEnum):
     PING = 0x50             # 'P'
     STATS_REQ = 0x51        # 'Q'
     # peer -> Pi
+    TXAT = 0x74             # 't' -- payload reached the controller
     ADV_REPORT = 0x72       # 'r'
     STATE = 0x78            # 'x'
     ACK = 0x6B              # 'k'
@@ -328,6 +330,13 @@ def decode_adv_report(payload: bytes) -> AdvReport:
     if len(data) != length:
         raise ProtoError(f"report declares {length} AD bytes, carries {len(data)}")
     return AdvReport(ts, rssi, addr_type, addr, adv_type, data)
+
+
+def decode_txat(payload: bytes) -> tuple[int, int]:
+    """``(seq, uptime_us)`` -- when a commanded payload reached the controller."""
+    if len(payload) != 10:
+        raise ProtoError(f"TXAT payload must be 10 bytes, got {len(payload)}")
+    return struct.unpack("<HQ", payload)
 
 
 def decode_pong(payload: bytes) -> int:

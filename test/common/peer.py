@@ -17,7 +17,7 @@ from typing import Iterator, Protocol
 
 from vertex.serial import (AdvReport, Frame, FrameParser, FrameType, PeerStats,
                            build_frame, decode_ack, decode_adv_report, decode_pong,
-                           decode_stats, encode_radio)
+                           decode_stats, decode_txat, encode_radio)
 
 __all__ = ["Peer", "PeerError", "PeerRejected", "SerialIO", "PeerCounters",
            "TimedReport"]
@@ -68,7 +68,7 @@ class PeerCounters:
 
 #: Frame types that answer a request, as opposed to arriving unprompted.
 _REPLY_TYPES = frozenset({FrameType.ACK, FrameType.ERR, FrameType.PONG,
-                          FrameType.STATS})
+                          FrameType.STATS, FrameType.TXAT})
 
 
 class Peer:
@@ -209,6 +209,12 @@ class Peer:
     def ping(self) -> int:
         """Peer uptime in microseconds. Bounds the clock offset to a UART RTT."""
         return decode_pong(self.request(FrameType.PING).payload)
+
+    def advertise(self, ad: bytes, *, timeout: float = 1.0) -> tuple[int, int]:
+        """Command the peer to advertise `ad` verbatim. Returns (seq, uptime_us)."""
+        from vertex.serial import encode_adv_tx
+        reply = self.request(FrameType.ADV_TX, encode_adv_tx(ad), timeout=timeout)
+        return decode_txat(reply.payload)
 
     def stats(self) -> PeerStats:
         """The peer's own counters. Read before and after a run and subtract."""
