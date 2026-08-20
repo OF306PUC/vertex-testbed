@@ -1,0 +1,18 @@
+[project]
+name = "vertex"
+version = "0.1.0"
+description = "Testbed for distributed and multi-agent control over real heterogeneous radio links"
+requires-python = ">=3.11"
+dependencies = ["numpy>=1.26", "pydantic>=2.7", "networkx>=2.8", "pyyaml>=6.0"]
+
+[project.optional-dependencies]
+# Nothing extra is needed to run an agent, a hub, a simulation, or the tests. The
+# control plane is stdlib asyncio, so ten Raspberry Pis install no web stack.
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "validation"]
+addopts = "-q --strict-markers"
+
+[tool.setuptools.packages.find]
+include = ["vertex*"]

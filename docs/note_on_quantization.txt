@@ -1,0 +1,35 @@
+Agents exchange and log **scaled integers**; controllers integrate in **floats**.
+This module owns that boundary and nothing else, so the convention is stated once
+instead of being re-derived in every module that crosses it.
+
+Why the boundary exists at all
+------------------------------
+The radio payload carries an ``int32`` and the microcontroller works in
+fixed point, so a scale factor is unavoidable at the wire. Keeping it *only* at
+the wire -- floats everywhere inside -- means the control law is written in
+engineering units and the quantization has exactly one place it can go wrong.
+
+The rounding rule
+-----------------
+:func:`round_half_up` rounds ties away from zero toward +infinity. This is a
+*platform decision*, chosen because it is what produced all data collected so far
+and because it is symmetric and easy to state. Two alternatives are deliberately
+rejected:
+
+* Python's built-in ``round`` and ``numpy.round`` use banker's rounding
+  (half-to-even), which disagrees on **half of all ties**.
+* Truncation toward zero -- what a C cast ``(int32_t)(x * scale)`` does -- has a
+  systematic bias toward zero rather than a symmetric one.
+
+That second point is not hypothetical: see ``docs/FIRMWARE_DIVERGENCE.md``. The
+nRF firmware truncates, so agents running on the microcontroller quantize
+differently from agents running here. Until the firmware is aligned, this module
+is the definition and the firmware is the deviation.
+
+Precision note
+--------------
+Values are integrated in ``float`` (double, 53-bit mantissa). At a state of ~25
+with a scale factor of 1e6 the quantum is ~4e-14 of the value, so accumulated
+rounding is negligible over a long run. Single-precision floats would have a
+~2e-6 quantum at that magnitude -- the same order as the scale factor itself --
+which is why the integrator must not be narrowed to ``float32``.
