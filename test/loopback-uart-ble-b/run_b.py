@@ -195,7 +195,7 @@ class _FakeScanSock:
     def __init__(self, peer: "_FakePeerB") -> None:
         self.peer = peer
 
-    def command(self, packet, *, timeout=2.0) -> CommandComplete:
+    def command(self, packet, *, timeout=2.0, tolerate=()) -> CommandComplete:
         return CommandComplete(int.from_bytes(packet[1:3], "little"), 0x00, b"")
 
     @property

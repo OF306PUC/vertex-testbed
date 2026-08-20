@@ -211,7 +211,8 @@ class _FakeSock:
     def __init__(self, peer: "_FakePeer") -> None:
         self.peer = peer
 
-    def command(self, packet: bytes, *, timeout: float = 2.0) -> CommandComplete:
+    def command(self, packet: bytes, *, timeout: float = 2.0,
+                tolerate: tuple[int, ...] = ()) -> CommandComplete:
         op = int.from_bytes(packet[1:3], "little")
         if op == 0x2008:
             length = packet[4]

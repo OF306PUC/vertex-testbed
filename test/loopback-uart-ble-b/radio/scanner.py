@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Iterator, Protocol
 
 from vertex.radio import find_manufacturer
-from vertex.radio.hci import (CommandComplete, HciError, HciSocket,
+from vertex.radio.hci import (CommandComplete, HciError, HciSocket, HciStatus,
                               cmd_le_set_scan_enable, cmd_le_set_scan_parameters,
                               cmd_reset, parse_adv_reports, parse_event)
 
@@ -31,7 +31,8 @@ COMPANY_ID = 0x0059
 class ScanSink(Protocol):
     """The slice of HciSocket this module uses."""
 
-    def command(self, packet: bytes, *, timeout: float = 2.0) -> CommandComplete: ...
+    def command(self, packet: bytes, *, timeout: float = 2.0,
+                tolerate: tuple[int, ...] = ()) -> CommandComplete: ...
     def recv(self, size: int = 1024) -> bytes: ...
     def close(self) -> None: ...
     @property
@@ -104,8 +105,14 @@ class Scanner:
             raise HciError(
                 f"window {self.window_ms} ms exceeds interval {self.interval_ms} ms")
 
-        # Idempotent: harmless when already off, required when not.
-        self.sock.command(cmd_le_set_scan_enable(False))
+        # Establish "scanning is off" so the parameters below are settable.
+        # Tolerate 0x0C: some controllers -- the CYW43455 among them -- reject
+        # disabling something already disabled as an invalid state transition
+        # rather than treating it as a no-op. A refusal here means the state we
+        # wanted already holds. Anything deeper (an extended/legacy command lock,
+        # say) still surfaces on set_scan_parameters below, which is not tolerated.
+        self.sock.command(cmd_le_set_scan_enable(False),
+                          tolerate=(HciStatus.COMMAND_DISALLOWED,))
         self.sock.command(cmd_le_set_scan_parameters(
             interval=interval, window=window,
             scan_type=0x00 if self.passive else 0x01))
@@ -170,7 +177,8 @@ class Scanner:
     def close(self) -> None:
         if self.sock is not None and self._enabled:
             try:
-                self.sock.command(cmd_le_set_scan_enable(False))
+                self.sock.command(cmd_le_set_scan_enable(False),
+                                  tolerate=(HciStatus.COMMAND_DISALLOWED,))
             except Exception:
                 pass
             self._enabled = False

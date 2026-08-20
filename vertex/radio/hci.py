@@ -396,12 +396,20 @@ class HciSocket:
             raise HciError("socket is not open")
         return self._sock.recv(size)
 
-    def command(self, packet: bytes, *, timeout: float = 2.0) -> CommandComplete:
+    def command(self, packet: bytes, *, timeout: float = 2.0,
+                tolerate: tuple[int, ...] = ()) -> CommandComplete:
         """Send a command and wait for its completion, raising on refusal.
 
         Checking every setup command matters: a refused `set scan parameters`
         leaves the previous window in force, and the run then measures a
         configuration nobody chose.
+
+        `tolerate` lists statuses to accept instead of raising. Use it only for
+        commands that *establish* a precondition, where a refusal can mean the
+        precondition already holds -- disabling something already disabled, for
+        instance, which some controllers reject as an invalid state transition
+        rather than treating as a no-op. Never use it to paper over a command
+        whose effect you depend on.
         """
         if self._sock is None:
             raise HciError("socket is not open")
@@ -417,12 +425,12 @@ class HciSocket:
                 cc = parse_command_complete(evt.params)
                 if cc.opcode != want:
                     continue
-                if not cc.ok:
+                if not cc.ok and cc.status not in tolerate:
                     raise HciError(cc.describe())
                 return cc
             if evt.code == EVT_COMMAND_STATUS:
                 cs = parse_command_status(evt.params)
-                if cs.opcode == want and not cs.ok:
+                if cs.opcode == want and not cs.ok and cs.status not in tolerate:
                     raise HciError(
                         f"opcode 0x{want:04X}: "
                         f"{STATUS_NAMES.get(cs.status, f'status 0x{cs.status:02X}')}")

@@ -14,7 +14,7 @@ from typing import Protocol
 from vertex.radio import (AD_MANUFACTURER, AD_NAME_COMPLETE, build_ad, element,
                           manufacturer_value)
 from vertex.radio.hci import (ADV_NONCONN_IND, CHANNELS_ALL, CommandComplete,
-                              HciError, HciSocket, cmd_le_set_adv_data,
+                              HciError, HciSocket, HciStatus, cmd_le_set_adv_data,
                               cmd_le_set_adv_enable, cmd_le_set_adv_parameters,
                               cmd_reset, ms_to_units)
 from vertex.wire import StatePacket
@@ -27,7 +27,8 @@ COMPANY_ID = 0x0059
 class CommandSink(Protocol):
     """The slice of HciSocket this module uses."""
 
-    def command(self, packet: bytes, *, timeout: float = 2.0) -> CommandComplete: ...
+    def command(self, packet: bytes, *, timeout: float = 2.0,
+                tolerate: tuple[int, ...] = ()) -> CommandComplete: ...
     def close(self) -> None: ...
 
 
@@ -59,6 +60,11 @@ class Advertiser:
 
         units = ms_to_units(self.interval_ms)
         self.sock.command(cmd_reset())
+        # A previous run that died without disabling could leave advertising on,
+        # and parameters are only settable while it is off. Tolerate 0x0C for the
+        # same reason as the scanner's pre-disable.
+        self.sock.command(cmd_le_set_adv_enable(False),
+                          tolerate=(HciStatus.COMMAND_DISALLOWED,))
         self.sock.command(cmd_le_set_adv_parameters(
             interval_min=units, interval_max=units,
             adv_type=ADV_NONCONN_IND, channel_map=self.channel_map))
