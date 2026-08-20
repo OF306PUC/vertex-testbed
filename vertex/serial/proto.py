@@ -34,7 +34,8 @@ __all__ = [
     "encode_network", "encode_algorithm", "encode_disturbance", "encode_control",
     "encode_adv_tx", "encode_radio", "encode_ping", "encode_stats_req",
     "AdvReport", "PeerStats", "decode_adv_report", "decode_pong",
-    "decode_txat",
+    "decode_txat", "StateReport", "encode_state", "decode_state",
+    "STATE_FLAG_ENABLED", "STATE_FLAG_FRESH",
     "decode_ack", "decode_stats", "MAX_NEIGHBORS", "MAX_AD_LEN",
 ]
 
@@ -73,7 +74,7 @@ PAYLOAD_LEN: dict[int, int | None] = {
     FrameType.NETWORK: None,        # 2..2+MAX_NEIGHBORS
     FrameType.ALGORITHM: 36,
     FrameType.DISTURBANCE: 29,
-    FrameType.CONTROL: 1,
+    FrameType.CONTROL: 11,
     FrameType.RADIO: 9,
     FrameType.PING: 0,
     FrameType.STATS_REQ: 0,
@@ -119,8 +120,7 @@ def build_frame(frame_type: int, payload: bytes = b"") -> bytes:
     return bytes([SOF]) + head + payload + struct.pack("<H", crc16(head + payload))
 
 
-# ── parser ────────────────────────────────────────────────────────────────────
-
+# parser:
 @dataclass
 class ParserStats:
     frames_ok: int = 0
@@ -233,8 +233,7 @@ class FrameParser:
         return None
 
 
-# ── outbound payloads ─────────────────────────────────────────────────────────
-
+# outbound payloads:
 def encode_network(*, enabled: bool, node_id: int, neighbors: list[int]) -> bytes:
     if not 1 <= node_id <= 255:
         raise ProtoError(f"node_id must be 1..255, got {node_id}")
@@ -263,8 +262,20 @@ def encode_disturbance(*, active: bool, sine_amplitude: int, frequency: int,
         beta, samples)
 
 
-def encode_control(*, trigger: bool) -> bytes:
-    return bytes([1 if trigger else 0])
+def encode_control(*, trigger: bool, seed: int = 0, epoch_us: int = 0) -> bytes:
+    """Start/stop the run, carrying the node's PRNG seed and the clock offset.
+
+    The frame's transit is a systematic bias on every timestamp the node emits
+    afterwards: the stamp is taken here and latched on arrival. Bounded by a PING
+    round trip, ~1.5 ms for this payload at 115200 baud.
+    """
+    if not 0 <= seed <= 0xFFFFFFFF:
+        raise ProtoError(f"seed must fit in uint32, got {seed}")
+    if not 0 <= epoch_us <= (1 << 48) - 1:
+        raise ProtoError(f"epoch_us must fit in uint48, got {epoch_us}")
+    return (bytes([1 if trigger else 0])
+            + struct.pack("<I", seed)
+            + epoch_us.to_bytes(6, "little"))
 
 
 def encode_adv_tx(ad: bytes) -> bytes:
@@ -300,8 +311,7 @@ def encode_stats_req() -> bytes:
     return b""
 
 
-# ── inbound payloads ──────────────────────────────────────────────────────────
-
+# inbound payloads:
 @dataclass(frozen=True, slots=True)
 class AdvReport:
     """One advertising report, exactly as the peer captured it."""
@@ -330,6 +340,75 @@ def decode_adv_report(payload: bytes) -> AdvReport:
     if len(data) != length:
         raise ProtoError(f"report declares {length} AD bytes, carries {len(data)}")
     return AdvReport(ts, rssi, addr_type, addr, adv_type, data)
+
+
+#: STATE payload, little-endian. Every scaled field is int32 in units of 1e-6 --
+#: uniformly, including the disturbance frequency. A struct with some fields
+#: scaled and some not is the class of bug this platform keeps paying for.
+#:
+#:   [t_us:8][state:4][vstate:4][vartheta:4][counter:4][n:1]
+#:   then per neighbour: [vstate:4][flags:1]   flags bit0=enabled bit1=fresh
+STATE_HEADER = struct.Struct("<QiiiiB")
+STATE_NEIGHBOUR = struct.Struct("<iB")
+
+STATE_FLAG_ENABLED = 0x01
+STATE_FLAG_FRESH = 0x02
+
+
+@dataclass(frozen=True, slots=True)
+class StateReport:
+    """One control step, as the microcontroller computed it.
+    """
+
+    t_us: int
+    state: int
+    vstate: int
+    vartheta: int
+    counter: int
+    neighbor_vstates: tuple[int, ...]
+    neighbor_enabled: tuple[bool, ...]
+    neighbor_fresh: tuple[bool, ...]
+
+    @property
+    def t_s(self) -> float:
+        return self.t_us / 1e6
+
+
+def encode_state(r: StateReport) -> bytes:
+    """Build a STATE payload. Mirrors the firmware; used to exercise the decoder."""
+    n = len(r.neighbor_vstates)
+    out = STATE_HEADER.pack(r.t_us, r.state, r.vstate, r.vartheta, r.counter, n)
+    for i in range(n):
+        flags = ((STATE_FLAG_ENABLED if r.neighbor_enabled[i] else 0)
+                 | (STATE_FLAG_FRESH if r.neighbor_fresh[i] else 0))
+        out += STATE_NEIGHBOUR.pack(r.neighbor_vstates[i], flags)
+    return out
+
+
+def decode_state(payload: bytes) -> StateReport:
+    """Parse a STATE payload."""
+    if len(payload) < STATE_HEADER.size:
+        raise ProtoError(f"STATE payload of {len(payload)} bytes is truncated")
+    t_us, state, vstate, vartheta, counter, n = STATE_HEADER.unpack_from(payload, 0)
+
+    want = STATE_HEADER.size + n * STATE_NEIGHBOUR.size
+    if len(payload) != want:
+        raise ProtoError(
+            f"STATE declares {n} neighbour(s) so should be {want} bytes, "
+            f"got {len(payload)}")
+    if n > MAX_NEIGHBORS:
+        raise ProtoError(f"STATE declares {n} neighbours, limit is {MAX_NEIGHBORS}")
+
+    vstates, enabled, fresh = [], [], []
+    for i in range(n):
+        v, flags = STATE_NEIGHBOUR.unpack_from(payload, STATE_HEADER.size
+                                               + i * STATE_NEIGHBOUR.size)
+        vstates.append(v)
+        enabled.append(bool(flags & STATE_FLAG_ENABLED))
+        fresh.append(bool(flags & STATE_FLAG_FRESH))
+
+    return StateReport(t_us, state, vstate, vartheta, counter,
+                       tuple(vstates), tuple(enabled), tuple(fresh))
 
 
 def decode_txat(payload: bytes) -> tuple[int, int]:
@@ -364,16 +443,6 @@ STATS_FIELDS = (
 @dataclass(frozen=True)
 class PeerStats:
     """The peer's counters. Read before and after a run and subtract.
-
-    ``queue_dropped`` and ``tx_dropped`` are the ones that matter: a report the
-    peer dropped internally is indistinguishable, in a delivery ratio, from a
-    packet lost over the air. A nonzero value invalidates that run's loss figure
-    rather than quietly inflating it.
-
-    ``rx_partial_flushes`` is the health check for the peer's UART: it counts
-    idle-timeout flushes, so a zero value after the host has sent frames means
-    nRF hardware byte counting is not active and short commands are stuck in the
-    DMA buffer.
     """
 
     values: dict[str, int] = field(default_factory=dict)

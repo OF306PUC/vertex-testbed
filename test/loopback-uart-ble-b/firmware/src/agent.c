@@ -100,6 +100,11 @@ static int apply_control(struct agent *a, const uint8_t *d, uint16_t len,
     }
 
     if (d[0] == 1u) {
+        a->params.seed                  = proto_ld_u32(&d[1]);
+        a->params.epoch_us = 0u;
+        for (unsigned i = 0; i < 6u; i++) {
+            a->params.epoch_us |= (uint64_t)d[5 + i] << (8u * i);
+        }
         a->params.running               = true;
         a->params.first_time_running    = true;
         a->params.all_neighbors_observed = false;
@@ -119,6 +124,36 @@ static int apply_control(struct agent *a, const uint8_t *d, uint16_t len,
         a->params.running            = false;
         a->params.first_time_running = false;
     }
+    return AGENT_OK;
+}
+
+int agent_parse_radio(const uint8_t *payload, uint16_t len,
+                      struct radio_params *out)
+{
+    if (len != PROTO_RADIO_LEN) {
+        return AGENT_ERR_LEN;
+    }
+    const uint16_t adv_min   = proto_ld_u16(&payload[0]);
+    const uint16_t adv_max   = proto_ld_u16(&payload[2]);
+    const uint16_t scan_int  = proto_ld_u16(&payload[4]);
+    const uint16_t scan_win  = proto_ld_u16(&payload[6]);
+    const uint8_t  flags     = payload[8];
+
+    if (scan_int == 0u || scan_win > scan_int) {
+        return AGENT_ERR_RANGE;
+    }
+    if (adv_min == 0u || adv_min > adv_max) {
+        return AGENT_ERR_RANGE;
+    }
+
+    /* Written only after every check, so a rejected frame leaves the caller's
+     * previous configuration intact rather than half-updated. */
+    out->adv_min       = adv_min;
+    out->adv_max       = adv_max;
+    out->scan_interval = scan_int;
+    out->scan_window   = scan_win;
+    out->active_scan   = (flags & AGENT_RADIO_ACTIVE_SCAN) != 0u;
+    out->advertising   = (flags & AGENT_RADIO_ADVERTISING) != 0u;
     return AGENT_OK;
 }
 

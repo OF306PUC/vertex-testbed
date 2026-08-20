@@ -11,15 +11,22 @@ Layout v1 -- 16 bytes, little-endian throughout::
     6    4     int32   vstate     -- scaled by SCALE_FACTOR
     10   6     uint48  tx_time_us -- microseconds since the experiment epoch
 
-BLE advertising budget -- 31 bytes of AD data total::
+BLE advertising budget -- 31 bytes of AD data total. What the nRF sends::
 
     complete local name "LABCTRL"    1 + 1 + 7            =  9
     manufacturer data (v1 payload)   1 + 1 + 2 + 16       = 20
                                                             --
                                                             29   (2 spare)
 
-``V0_*`` handles the 6-byte format currently on the air. That format is the nRF
-firmware's ``custom_data_type`` struct from ``nordic/src/common.h``::
+The name is **not read by anything** -- every receiver filters on the company id --
+and the Pi's own ``BleTransport`` sends a 3-byte flags element in its place.
+
+``V0_*`` handles the 6-byte format the nRF firmware **used** to transmit, kept for
+decoding: both sides now speak v1 (``firmware/nordic/src/air_wire.h``), and
+``decode_any`` still accepts v0 so a fleet mid-reflash degrades to missing
+timestamps rather than a blackout. That format was the firmware's
+``custom_data_type`` struct, whose compiler-chosen layout *was* the wire format --
+which is what pinned it to v0, since v1's uint48 timestamp has no C type::
 
     uint16 manufacturer;   // stripped by the BLE stack as the company ID
     uint8  netid_enabled;  // 0x7F enabled / 0x70 disabled

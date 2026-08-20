@@ -21,6 +21,7 @@ fail=0
 for c in "$SRC"/*.c; do
     out=$(gcc -fsyntax-only -std=c99 -Wall -Wextra \
               -Wno-unused-parameter -Wno-unused-variable \
+              -include "$STUBS/autoconf_stub.h" \
               -I"$STUBS" -I"$SRC" "$c" 2>&1)
     rc=$?
     errs=$(printf '%s\n' "$out" | grep -c ' error: ' || true)

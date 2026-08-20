@@ -154,6 +154,47 @@ are recorded rather than clamped: a negative minimum is a direct measurement of
 residual clock skew between two nodes, and the cheapest available check that chrony
 is actually working.
 
+### The nRF has no #4, so the epoch is handed to it
+
+A Raspberry Pi reads #4 from a chrony-synchronised wall clock. **An nRF52 has no
+such clock**: it has an uptime counter and nothing to anchor it to. So a `ble`
+agent could not stamp `tx_time_us` on the shared epoch at all — which is why the
+firmware transmitted the v0 payload, with no timestamp field, long after the Pi
+moved to v1.
+
+The fix is a one-way transfer, not a synchronisation: the host reads its own #4 as
+it builds the CONTROL frame and sends the value in `epoch_us`. The nRF latches it
+alongside its own uptime at that instant, and every timestamp afterwards is
+`epoch_us + (uptime_now − uptime_at_trigger)`.
+
+Three consequences worth stating plainly, because this is #4 crossing a boundary
+into a device that does not have one:
+
+* **A one-way transfer inherits the transit as bias, not noise.** The host stamps
+  before the UART; the nRF latches after it. Every timestamp that node emits for
+  the rest of the run is late by that one transit — about 1.5 ms for an 11-byte
+  payload at 115200 baud, plus the host's send scheduling. It does not average
+  out, and it is *not* corrected. A PING round trip bounds it; nothing currently
+  subtracts it.
+* **The nRF's drift is uncorrected for the run's duration.** chrony keeps the Pis
+  aligned continuously; the nRF gets one anchor point and then free-runs on its
+  own crystal. Over a 1600 s run, a ±20 ppm crystal is ±32 ms of accumulated
+  offset — an order of magnitude larger than the transit bias, and larger than the
+  one-way delays being measured. **A `ble` agent's `tx_time_us` is therefore not
+  interchangeable with a `wifi` agent's**, and a delay comparison across that axis
+  is measuring crystal drift as much as radio latency.
+* **Zero means absent.** If no epoch arrives the nRF stamps 0, and `LinkMonitor`
+  skips delay accounting for those packets rather than recording a wrong figure.
+  Silence is the correct output when the anchor is missing.
+
+None of this touches #6. The modelled clock is still `state`/`vstate`/`vartheta`
+and is still not driven by any of these readings — see "Which variant actually
+runs". What the epoch transfer buys is that **#3 now reaches the nRF**, so
+sequence numbers and timestamps exist on the BLE path at all. Whether the residual
+bias and drift are small enough for the delay figures to be *used* across the
+BLE-vs-Wi-Fi axis is an open question, and the answer is probably no without
+periodic re-anchoring.
+
 ---
 
 ## Divergences that specifically affect the clock model

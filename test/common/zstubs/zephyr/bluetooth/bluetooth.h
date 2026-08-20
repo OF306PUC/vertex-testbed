@@ -29,7 +29,7 @@ struct bt_le_adv_param {
     uint8_t id; uint8_t sid; uint8_t secondary_max_skip; uint32_t options;
     uint32_t interval_min; uint32_t interval_max; const bt_addr_le_t *peer;
 };
-extern const struct bt_le_adv_param *BT_LE_ADV_NCONN;
+#define BT_LE_ADV_NCONN ((const struct bt_le_adv_param *)0)
 #define BT_LE_ADV_PARAM(o, imin, imax, p) ((const struct bt_le_adv_param *)0)
 
 typedef void bt_ready_cb_t(int err);

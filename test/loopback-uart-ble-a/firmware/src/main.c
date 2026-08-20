@@ -68,21 +68,15 @@ static void on_frame(uint8_t type, const uint8_t *payload, uint16_t len, void *c
         break;
 
     case PROTO_T_RADIO: {
-        /* [adv_min:2][adv_max:2][scan_int:2][scan_win:2][flags:1]
-         * flags bit0 = active scan, bit1 = advertising enabled */
-        if (len != PROTO_RADIO_LEN) { rc = -EINVAL; break; }
-        uint16_t adv_min  = proto_ld_u16(&payload[0]);
-        uint16_t adv_max  = proto_ld_u16(&payload[2]);
-        uint16_t scan_int = proto_ld_u16(&payload[4]);
-        uint16_t scan_win = proto_ld_u16(&payload[6]);
-        uint8_t  flags    = payload[8];
-
-        if (scan_win > scan_int || scan_int == 0u) { rc = -EINVAL; break; }
-
-        rc = ble_scan_start(scan_int, scan_win, (flags & 0x01u) != 0u);
+        /* Payload format and bounds live in agent.h / agent_parse_radio(); this
+         * board only applies them. Both halves: direction A scans here. */
+        struct radio_params r;
+        rc = agent_parse_radio(payload, len, &r);
+        if (rc != AGENT_OK) { break; }
+        rc = ble_scan_start(r.scan_interval, r.scan_window, r.active_scan);
         if (rc == 0) {
-            rc = (flags & 0x02u) ? ble_adv_start(adv_min, adv_max, 0x07u)
-                                 : ble_adv_stop();
+            rc = r.advertising ? ble_adv_start(r.adv_min, r.adv_max, 0x07u)
+                               : ble_adv_stop();
         }
         break;
     }

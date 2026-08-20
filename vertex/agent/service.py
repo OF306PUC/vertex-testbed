@@ -26,9 +26,12 @@ from ..control.server import ControlServer
 from ..controllers.base import create
 from ..net import CONTROL_PORTS, STATE_PORT, AgentType, broadcast_address
 from ..transports.base import Transport
+from ..transports.ble import BleTransport
+from ..transports.multi import MultiTransport
 from ..transports.udp import UdpTransport
 from .agent import Agent, AgentConfig
 from .assignment import AgentAssignment
+from .relay import BleRelay, radio_frame
 from .runlog import RunLog, RunMeta
 
 __all__ = ["AgentService"]
@@ -53,6 +56,8 @@ class AgentService:
         clock: Clock | None = None,
         transport_factory: Callable[[int, Clock], Transport] | None = None,
         environment: dict[str, Any] | None = None,
+        link: Any = None,
+        radio: dict[str, Any] | None = None,
     ) -> None:
         self.node_type = AgentType(node_type)
         self.data_dir = Path(data_dir)
@@ -62,6 +67,11 @@ class AgentService:
         self.clock = clock or WallClock(time.time())
         self.environment = environment or {}
         self._transport_factory = transport_factory
+        #: Framed serial link to the nRF. Required for `ble`, unused otherwise.
+        self.link = link
+        #: Radio parameters. Loopback B measured a 6x swing in delivery from the
+        #: scan window alone, so these belong with the run, not with the build.
+        self.radio = radio
 
         self.control = ControlServer(
             self._handlers(), host=control_host,
@@ -71,6 +81,7 @@ class AgentService:
 
         self.assignment: AgentAssignment | None = None
         self.agent: Agent | None = None
+        self.relay: BleRelay | None = None
         self.runlog: RunLog | None = None
         self.run_name: str | None = None
         self._tasks: list[asyncio.Task] = []
@@ -91,16 +102,111 @@ class AgentService:
 
     @property
     def running(self) -> bool:
-        return bool(self._tasks)
+        # A relay has no local loops, so task count cannot stand in for it.
+        return bool(self._tasks) or (self.is_relay and self.run_name is not None)
 
     # building the agent:
-    def _make_transport(self, node_id: int) -> Transport:
-        if self._transport_factory is not None:
-            return self._transport_factory(node_id, self.clock)
+    def _ble_transport(self, node_id: int) -> BleTransport:
+        r = self._radio_settings()
+        return BleTransport(
+            node_id, self.clock,
+            adv_interval_ms=float(r.get("adv_interval_ms", 100.0)),
+            scan_interval_ms=float(r.get("scan_interval_ms", 100.0)),
+            scan_window_ms=float(r.get("scan_window_ms", 100.0)),
+            channel_map=int(r.get("channel_map", 0x07)),
+            passive_scan=bool(r.get("passive_scan", True)))
+
+    def _udp_transport(self, node_id: int) -> UdpTransport:
         target = broadcast_address(self.host_ip) if self.host_ip else "255.255.255.255"
         return UdpTransport(node_id, self.clock,
                             send_to=(target, self.state_port),
                             bind_port=self.state_port, broadcast=True)
+
+    def _make_transport(self, node_id: int) -> Transport:
+        """The transport for a locally-computing agent.
+
+        `wifi` gets UDP. `bridge` gets **both** BLE and UDP, which is what makes it
+        a bridge: a `ble` agent has only a radio and a `wifi` agent only a socket,
+        so they share no medium and cannot hear each other at all. The bridge is
+        the only path between the two subnets, and a manifest that gives it
+        neighbours on both -- `n30-clusters` does -- is unrunnable without it.
+
+        The comparison this supports: `bridge` and `wifi` run the *same* controller
+        in the same process, so a difference between them is the medium and not the
+        implementation. A bridge is not airtime-comparable with either, though,
+        because it transmits every packet twice; see transports/multi.py.
+        """
+        if self._transport_factory is not None:
+            return self._transport_factory(node_id, self.clock)
+        if self.node_type is AgentType.BRIDGE:
+            return MultiTransport([self._ble_transport(node_id),
+                                   self._udp_transport(node_id)])
+        return self._udp_transport(node_id)
+
+    @property
+    def is_relay(self) -> bool:
+        """True for `ble`: the control law runs on the nRF, not here.
+
+        The distinction is not cosmetic. A relay has no local controller and no
+        Transport.
+        """
+        return self.node_type is AgentType.BLE
+
+    def _build_relay(self, assignment: AgentAssignment) -> BleRelay:
+        if self.link is None:
+            raise RuntimeError(
+                f"a {self.node_type} agent relays to an nRF and needs a serial "
+                "link; construct AgentService with link=...")
+        relay = BleRelay(self.link, on_report=self._record_report,
+                         clock=self.clock)
+        relay.configure(assignment, radio=self._radio_frame(assignment))
+        return relay
+
+    def _radio_settings(self, assignment: AgentAssignment | None = None) -> dict[str, Any]:
+        """Radio parameters in force: the constructor override, else the manifest.
+        """
+        if self.radio is not None:
+            return dict(self.radio)
+        a = assignment if assignment is not None else self.assignment
+        return dict(a.radio) if a is not None and a.radio else {}
+
+    def _radio_meta(self, assignment: AgentAssignment) -> dict[str, Any]:
+        """The radio block for ``RunMeta.environment``.
+        """
+        r = self._radio_settings(assignment)
+        if not r:
+            return {}
+        base = assignment.radio_environment() if assignment.radio else dict(r)
+        if self.radio is not None:
+            # Overridden at launch, so the manifest's block would misdescribe the
+            # run. Recompute from what is actually in force.
+            from ..radio.hci import ms_to_units
+            base = dict(r)
+            for key in ("adv_interval_ms", "scan_interval_ms", "scan_window_ms"):
+                if key in r:
+                    base[key.replace("_ms", "_units")] = ms_to_units(float(r[key]))
+            if r.get("scan_interval_ms"):
+                base["scan_duty_cycle"] = (float(r["scan_window_ms"])
+                                           / float(r["scan_interval_ms"]))
+            base["radio_source"] = "launch-override"
+        else:
+            base["radio_source"] = "manifest"
+        base["channel_map_applied"] = self.node_type is AgentType.BRIDGE
+        return {"radio": base}
+
+    def _radio_frame(self, assignment: AgentAssignment):
+        r = self._radio_settings(assignment)
+        if not r:
+            return None
+        # channel_map is deliberately not forwarded: the RADIO frame has no field
+        # for it because Zephyr's advertising API does not expose the advertising
+        # channel map. It is applied for `bridge`, which drives HCI directly, and
+        # recorded as unapplied for `ble` -- see radio_environment().
+        return radio_frame(
+            adv_interval_ms=float(r.get("adv_interval_ms", 100.0)),
+            scan_interval_ms=float(r.get("scan_interval_ms", 100.0)),
+            scan_window_ms=float(r.get("scan_window_ms", 100.0)),
+            active_scan=not bool(r.get("passive_scan", True)))
 
     def _build(self, assignment: AgentAssignment) -> Agent:
         controller = create(assignment.controller,
@@ -150,6 +256,11 @@ class AgentService:
             "samples": self.runlog.samples if self.runlog else 0,
             "control_port": self.control_port,
         }
+        if self.is_relay and self.relay is not None:
+            data.update(self.relay.status())
+            data["node_type"] = str(self.node_type)
+            return ok(**data), None
+
         if self.agent is not None:
             data["neighbors_heard"] = list(self.agent.neighbors.heard)
             data["neighbors_missing"] = list(self.agent.neighbors.missing)
@@ -176,6 +287,18 @@ class AgentService:
                 f"serves {self.node_type}; check the manifest's ip/type mapping"
             )
 
+        if self.is_relay:
+            if self.running and self.relay is not None:
+                self.relay.configure(assignment,
+                                     radio=self._radio_frame(assignment))
+                self.assignment = assignment
+                return ok(node_id=assignment.node_id, live_update=True,
+                          mode="relay"), None
+            self.assignment = assignment
+            self.relay = self._build_relay(assignment)
+            return ok(node_id=assignment.node_id, live_update=False,
+                      mode="relay"), None
+
         if self.running and self.agent is not None:
             # Live update: apply to the running controller without touching its
             # integrators, so a scripted perturbation is an event, not a restart.
@@ -196,12 +319,28 @@ class AgentService:
         return ok(node_id=assignment.node_id, live_update=False), None
 
     async def _start(self, args: dict[str, Any]) -> tuple[Response, None]:
-        if self.assignment is None or self.agent is None:
+        if self.assignment is None or (self.agent is None and self.relay is None):
             raise RuntimeError("configure() before start()")
         if self.running:
             raise RuntimeError(f"already running {self.run_name!r}")
 
         run_name = str(args.get("run_name") or "run")
+
+        # The experiment epoch is a PER-RUN quantity and the hub owns it: every
+        # node must be handed the same value or their timestamps share no origin
+        # and one-way delay measures process launch order. It arrives with the
+        # trigger for the same reason the nRF's seed does -- the same
+        # configuration replayed on a new epoch is a new run.
+        #
+        # Applied before the RunLog is built, so `tx_time_us` on the first packet
+        # is already on the run's epoch, and before relay.start(), which reads the
+        # clock to fill the nRF's CONTROL frame.
+        epoch = args.get("epoch_unix_s")
+        if epoch is not None:
+            self.clock = WallClock(float(epoch))
+            if self.relay is not None:
+                self.relay.clock = self.clock
+
         a = self.assignment
         self.runlog = RunLog(
             self.data_dir,
@@ -211,12 +350,26 @@ class AgentService:
                 dt_s=a.dt_s, publish_period_s=a.publish_period_s,
                 neighbors=list(a.neighbors),
                 controller=a.model_dump(),
-                units="engineering",
-                environment=dict(self.environment),
+                # A relay logs what the nRF reported: scaled int32, unconverted.
+                # `vertex.analysis.units` normalises on read.
+                units="scaled_int" if self.is_relay else "engineering",
+                environment={**self.environment, **self._radio_meta(a),
+                             "epoch_unix_s": getattr(self.clock, "epoch_unix_s", None)},
             ),
             fmt=self.log_format,
         ).start(started_at=_utc_now())
 
+        if self.is_relay:
+            # No loops here: the nRF owns the timing and reports at its own
+            # `clock`. This process only writes what arrives.
+            assert self.relay is not None
+            self.relay.start()
+            self.run_name = run_name
+            self._started_at = time.time()
+            self._tasks = []
+            return ok(run_name=run_name, node_id=a.node_id, mode="relay"), None
+
+        assert self.agent is not None
         self.agent.on_sample = self._record
         await self.agent.start()
         self.run_name = run_name
@@ -225,13 +378,36 @@ class AgentService:
             asyncio.create_task(self.agent.run_control_loop()),
             asyncio.create_task(self.agent.run_publish_loop()),
         ]
-        return ok(run_name=run_name, node_id=a.node_id), None
+        return ok(run_name=run_name, node_id=a.node_id, mode="local"), None
 
     def _record(self, t_s: float, out, vstates, fresh) -> None:
         if self.runlog is not None:
             self.runlog.append(t_s, out.state, out.vstate, out.vartheta, vstates, fresh)
 
+    def _record_report(self, report) -> None:
+        """Write one nRF report. Values pass through unscaled."""
+        if self.runlog is not None:
+            self.runlog.append(report.t_us / 1e6, report.state, report.vstate,
+                               report.vartheta, list(report.neighbor_vstates),
+                               list(report.neighbor_fresh))
+
     async def _stop(self, args: dict[str, Any]) -> tuple[Response, None]:
+        if self.is_relay:
+            if self.run_name is None:
+                return ok(run_name=None, samples=0, was_running=False), None
+            try:
+                assert self.relay is not None
+                self.relay.stop()
+            except Exception:
+                pass                    # log the samples regardless
+            samples = 0
+            if self.runlog is not None:
+                self.runlog.finalize(ended_at=_utc_now())
+                samples = self.runlog.samples
+            run_name, self.run_name = self.run_name, None
+            return ok(run_name=run_name, samples=samples, was_running=True,
+                      duration_s=round(time.time() - self._started_at, 3)), None
+
         if not self.running:
             return ok(run_name=self.run_name, samples=
                       self.runlog.samples if self.runlog else 0, was_running=False), None

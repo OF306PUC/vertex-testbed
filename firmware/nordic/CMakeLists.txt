@@ -8,8 +8,14 @@ target_sources(app PRIVATE
   src/main.c
   src/broadcaster.c
   src/observer.c
-  src/serial.c
+  src/agent.c
   src/coordination_task.c
+  src/prng.c
+  src/air_wire.c
+  src/proto.c
+  src/uart_link.c
+  src/control.c
+  src/report.c
 )
 
 # NORDIC SDK APP END

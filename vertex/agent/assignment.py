@@ -51,6 +51,9 @@ class AgentAssignment(BaseModel):
     disturbance: dict[str, Any] = Field(default_factory=dict)
     disturbance_seed: int = 0
 
+    # radio -- milliseconds; the 0.625 ms conversion happens at the transport.
+    radio: dict[str, Any] = Field(default_factory=dict)
+
     # provenance, carried so a log can be interpreted without the manifest
     manifest_name: str = ""
     seed: int = 0
@@ -73,6 +76,28 @@ class AgentAssignment(BaseModel):
                 period_samples=int(d.get("period_samples", 1000)),
             ),
         )
+
+    def radio_environment(self) -> dict[str, Any]:
+        """The radio block as it goes into ``RunMeta.environment``.
+        """
+        from ..radio.hci import ms_to_units
+
+        r = dict(self.radio)
+        if not r:
+            return {}
+        out = dict(r)
+        for key in ("adv_interval_ms", "scan_interval_ms", "scan_window_ms"):
+            if key in r:
+                out[key.replace("_ms", "_units")] = ms_to_units(float(r[key]))
+        si, sw = r.get("scan_interval_ms"), r.get("scan_window_ms")
+        if si:
+            out["scan_duty_cycle"] = float(sw) / float(si)
+        # Where the parameters were actually applied. `wifi` records them without
+        # applying them, and a reader must be able to tell the two apart.
+        out["applied_on"] = {
+            "ble": "nrf52", "bridge": "pi-hci", "wifi": "none",
+        }.get(str(self.node_type), "unknown")
+        return out
 
 
 def assignment_for(
@@ -98,6 +123,7 @@ def assignment_for(
             "sine_phase_s": d.sine_phase_s, "period_samples": d.period_samples,
         },
         disturbance_seed=node_seed(manifest.seed, run_index, node.id, "disturbance"),
+        radio=manifest.radio.model_dump(),
         manifest_name=manifest.name, seed=manifest.seed, run_index=run_index,
     )
 

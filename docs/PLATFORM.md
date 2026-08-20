@@ -553,7 +553,16 @@ parameter and should move into the manifest).
 
 ---
 
-## 7. Known Bugs (found reading the current code — all still open)
+## 7. Known Bugs (found reading the legacy JS)
+
+These are defects in `raspberry/*.js`, kept as a record of what the port has to
+avoid rather than as a task list. 1-3 and 6 are closed by design in `vertex`:
+`Disturbance` refuses to construct without a seed or an injected stream,
+`resolve_local_ip()` names the interface and raises rather than falling back, `decode_manufacturer_data` rejects a
+foreign company id instead of guessing, and `StatePacket` raises on int32
+overflow rather than wrapping. 4 and 5 are open questions for the new design, not
+inherited bugs — the Python agent re-resolves neighbours continuously and copies
+before logging, but neither is measured yet.
 
 1. **Disturbance is not reproducible.** `algo.js` `computeDisturbance()` calls
    `Math.random()` directly, while `net.js` carefully seeds `seedrandom('FTRAC')`
@@ -596,39 +605,469 @@ vertex/
 
 ---
 
+## 8a. Loopback test results (2026-08-20, hardware)
+
+**Direction A — Pi transmit.** 493/500 delivered, **0 byte mismatches**. The Python
+encoder, AD element structure, company id and little-endian field order agree with
+the C capture byte for byte. Measurement voided by UART saturation, not radio loss:
+the peer relayed ~217 reports/s over 115200 (92% of line rate), 96% of them other
+devices' beacons, and dropped 269 of its own. Fixable with a peer-side company-id
+filter; not on the critical path.
+
+**Direction B — Pi receive, scan-window sweep.**
+
+| duty | delivered | ratio | reports | foreign | ours |
+|---|---|---|---|---|---|
+| 100% | 452/500 | 90.4% | 17903 | 17203 | 700 |
+| 50%  | 328/500 | 65.6% | 13175 | 12692 | 483 |
+| 25%  | 182/500 | 36.4% |  6787 |  6521 | 266 |
+| 10%  |  73/500 | 14.6% |  2635 |  2537 |  98 |
+
+**The scan window is under our control** -- 75.8 points of movement, the parameter
+BlueZ's D-Bus API never exposed (§3 A1). Ratio tracks duty between the one- and
+two-chance models, as expected at 100 ms advertising against a 200 ms payload
+period. Foreign reports scale with duty independently, confirming the window gates
+reception rather than something else in the chain. 0 byte mismatches over 1035
+deliveries; 1528 across both directions.
+
+### The consequence for the platform
+
+Delivery varies **6x** with the scan window, and the production firmware hardcodes
+it (`BT_GAP_SCAN_FAST_INTERVAL`/`WINDOW` in `observer.c`, and the `BT_LE_ADV_NCONN`
+defaults in `broadcaster.c`). So every BLE agent's neighbour visibility -- which
+determines whether consensus converges at all -- is set by a Zephyr default nobody
+chose and recorded in no run's metadata.
+
+**Radio parameters are therefore a first-class experimental variable, not a
+deployment detail.** They belong in the manifest and in `RunMeta.environment`.
+
+---
+
 ## 8b. Outstanding for the new design
 
-Written down because it is easy to lose: the loopback test exercises the Pi's
-*transmit* path, and none of the items below are on its critical path.
+Items 1-8 of the previous revision are **done**. What follows records what closed
+and what is still open. Everything claimed here is checked by
+`bash test/check_all.sh`, which runs without hardware.
 
-**1. `ble` agent relay mode in `AgentService`.** It currently builds a local
-controller plus a `Transport` for every agent. Wrong for `ble`: the law runs on the
-nRF, so there is no local controller, and the serial link is a device link to a
-remote compute node rather than a broadcast medium. Needs: relay `configure` down
-the link as `N`/`A`/`D`/`S`, receive state frames back, log with
-`units="scaled_int"`.
+### Closed
 
-**2. A `STATE` frame.** `FrameType.STATE = 0x78` is declared and has no encoder or
-decoder. It is the `d`-line equivalent and the missing half of item 1. Suggested
-payload: `[timestamp_us:8][state:4][vstate:4][vartheta:4][n:1][nb_vstate:4 x n]`,
-little-endian scaled int32.
+**1. `ble` relay mode** — `vertex/agent/relay.py` plus `AgentService.is_relay`. No
+local controller and no Transport for a `ble` agent: the nRF owns the law, the
+radio and the timing. `assignment_to_frames()` is the single place engineering
+units become scaled int32, and reports are logged `units="scaled_int"` rather than
+converted, with `vertex.analysis.units` normalising on read.
 
-**3. Coordination firmware adopts the binary protocol.** Same four frames as the
-ASCII `n`/`a`/`p`/`t`, plus a CRC, no 64-byte split, and no 50 ms inter-command
-gap. Then one serial protocol exists and the test peer is simply a superset. The
-Python side (`vertex/serial/proto.py`) is already cross-verified against the C.
+**2. The STATE frame** — `[t_us:8][state:4][vstate:4][vartheta:4][counter:4][n:1]`
+then per neighbour `[vstate:4][flags:1]`, flags bit0 = enabled, bit1 = fresh.
+Scaled int32 throughout. `fresh` is cleared on every report, so it means "heard
+since the last report" and per-link delivery ratio for a `ble` agent stays
+derivable from its log alone — which matters because the nRF's own advertisements
+are still v0 and carry no sequence number.
 
-**4. The four firmware divergences.** `docs/FIRMWARE_DIVERGENCE.md` stays fully
-live *because* the nRF is a compute node: the C law runs on every `ble` agent, so
-the disturbance time base, fixed-point truncation, missing zero clamp and inverted
-hysteresis band are all real confounds across the BLE-vs-Wi-Fi axis.
+**3. Binary serial protocol in the firmware** — replaces `serial.c`'s ASCII
+`n`/`a`/`p`/`t`: same four jobs, framed with a CRC, no 64-byte split, no 50 ms
+inter-command gap. Split three ways, matching the loopback peers:
 
-**5. Direction B harness.** Peer TX, Pi RX. This is the one that validates the
-scan window -- the parameter BlueZ never exposed. Direction A cannot: its
-`--scan-window` configures the *peer's* scanner, which was never in doubt.
+* `proto.h/.c` — the **envelope** only: SOF, type, length, CRC. Nothing about what
+  a payload means, because the envelope is shared by every message on the link.
+* `agent.h/.c` — the **payload formats** (documented in the header, beside the
+  decoder) and `struct agent`. No Zephyr dependency, so it compiles and runs on
+  the host — which is what lets the cross-check drive the real decoder.
+* `control.c` — the **dispatcher**: pick a handler, turn its result into an ACK or
+  an ERR, answer a PING. The agent arrives through uart_link's `ctx`, so the
+  dispatcher holds no state of its own.
 
-**6. `transports/ble.py`.** The platform integration: wrap `vertex/radio` as a
-`Transport` for the `bridge` agent, which is the agent that does BLE on the Pi.
+RADIO decodes through `agent_parse_radio()` but is applied by whoever owns the
+radio — the observer on the nRF, `ble_scan`/`ble_adv` on the peers. One validator,
+three effects; previously each of the three had its own partial bounds check.
+
+`test/common/check_proto_layout.py` checks that the host encodes what each
+firmware decodes, by length *and* by field offset, across **all three** firmwares.
+Both failure modes are demonstrated by reintroducing them: a one-sided
+`PROTO_CONTROL_LEN` edit, and an offset that drifts while the length still
+matches. Checking only one firmware is how `PROTO_CONTROL_LEN` came to be 5 on
+the host and on the nRF while both peers stayed at 1.
+
+**4. The firmware divergences** — closed and now guarded by
+`test/crossval/compare.py`, which links the real `agent.c` + `coordination_task.c`
++ `prng.c` against the Python controller and reports the residual. Configuration
+enters as encoded frames built by the host's own encoders, so the decoders are on
+the checked path too. Currently max 4.5e-5 over 400 steps,
+which is the float32 floor. See `docs/FIRMWARE_DIVERGENCE.md` for the measured
+size of each old divergence. `rand()` is gone in favour of PCG32, mirrored in
+`vertex/pcg32.py`, seeded per node per run from the CONTROL frame.
+
+**5. Direction B harness** — ran. Delivery moved 90.4% -> 14.6% across the scan
+window, 75.8 points, which is the parameter BlueZ never exposed. See §8a.
+
+**6. `transports/ble.py`** — `BleTransport`, the `bridge` agent's path. One HCI
+user-channel socket carries commands, completions and advertising reports
+together, so the transport installs a single reader (`_pump`) and routes command
+completions to whoever awaits that opcode. `HciSocket.command()` blocks and
+*discards* intervening reports, which is fine during setup and ruinous during a
+run: `publish()` issues a command every control period and each one would eat the
+reports queued behind it, indistinguishably from radio loss.
+`test/transports/check_ble.py` covers AD framing, setup ordering, that pump
+behaviour, self-filtering and v0 acceptance, against a datagram socketpair.
+
+**7. Radio parameters in the manifest** — `RadioSpec` in the manifest, carried on
+`AgentAssignment.radio`, into `RunMeta.environment["radio"]` with the requested
+milliseconds, the programmed 0.625 ms units, the duty cycle, `radio_source`
+(`manifest` or `launch-override`) and `applied_on` (`nrf52` / `pi-hci` / `none`).
+Recorded for `wifi` agents too, so all three types in one experiment carry the
+same environment block.
+
+**8. Firmware, in order** — all five: binary protocol, STATE frame with the
+`fresh` bit, settable scan parameters (`observer_set_scan_params`), the two
+divergences plus a seeded PRNG, and `update_coordination()`/epsilon removed.
+
+**9. The radio and wiring modules follow.** `common.h` / `broadcaster` /
+`observer` / `main` refactored onto `struct agent`, with four defects fixed that
+the restructure exposed rather than introduced:
+
+* **The log snapshot was not a snapshot.** `coordination_params` held its
+  neighbour arrays as **pointers**, so `memcpy(&log_data_copy, &coordination, ...)`
+  copied the pointers: the snapshot aliased live memory and reported vstates could
+  change under `report_state()` mid-frame. `struct agent` holds them inline.
+* **STATE was reported on the wrong condition.** Only when a queue message arrived
+  *and* every neighbour had been heard at least once. So a node with one silent
+  neighbour reported nothing for a whole run, and the surviving timestamps were
+  event-driven rather than periodic — making "nothing arrived" and "nothing was
+  sent" indistinguishable in the very log the delivery ratio comes from. Now every
+  `clock` tick, unconditionally; the `fresh` bits already say which links
+  delivered, but only if the window closes on schedule.
+* **The scan callback wrote the agent with no lock**, from the Bluetooth RX
+  thread, while main's two threads used `coordination_mutex` on the same fields.
+  The observer is now read-only on the agent: availability travels as a cumulative
+  `heard` bitmask in the queue message and `main.c` applies it under the mutex it
+  already holds. `report.c`'s `fresh_mask` is `atomic_t` for the same reason —
+  marked from one thread, read-and-cleared from another.
+* **The advertising interval was unreachable.** `broadcaster.h` defined
+  `MIN_ADV_INTERVAL`/`MAX_ADV_INTERVAL` as 1280 ms; both were unused and the code
+  ran Zephyr's 100–150 ms default. The RADIO frame's `adv_min`/`adv_max` were
+  validated and then dropped on the floor. Now `broadcaster_set_adv_params()`
+  stores them and `broadcaster_init()` applies them, so half of item A closes: the
+  advertising interval reaches the nRF. `channel_map` still does not.
+
+Also: `custom_data_type` is the manufacturer AD element's value, memcpy'd onto the
+air, so its memory layout *is* the wire format — previously unpacked and
+unasserted, working only because the field order happens to need no padding on
+this target. Now packed, with a size assertion whose diagnostic names the problem,
+and `test/crossval/check_v0.py` compiles the real header and hands the real
+struct's bytes to the host's `decode_any()`.
+
+### Open
+
+> Item letters here are local to §8b. Bare `A2`/`A3` elsewhere in this document
+> refer to §3's coexistence analysis; those are written `§3 A2` below.
+
+**A0–A3 are one decision, not four.** Each is a systematic difference between what
+a `ble` agent puts on the air and what a `bridge` agent does, sitting directly
+across the axis §3 A2/A3 compares — the same shape of confound as the firmware
+divergences, in the radio layer instead of the arithmetic. Each is also cheap to
+fix and each invalidates comparison with previously collected runs. So they are
+worth fixing **together**, spending one "runs before this are not comparable"
+boundary rather than four. None has been changed unilaterally for that reason.
+
+**A3. The two paths advertise different AD, so their airtime differs.** The nRF
+sends a name element the Pi does not, and the Pi sends a flags element the nRF does
+not:
+
+```
+nRF (broadcaster.c)                       bridge (transports/ble.py)
+  Complete Local Name   9                   Flags                 3
+  Manufacturer Data    20                   Manufacturer Data    20
+                       --                                        --
+                       29 / 31                                   23 / 31
+```
+
+The manufacturer element is identical — 1 length + 1 type + 2 company id + 16 v1
+payload — so the difference is entirely name-versus-flags. Six bytes of AD is six
+bytes of PDU:
+
+| | AdvData | PDU | per channel | per advertising event (3 ch) |
+|---|---|---|---|---|
+| nRF | 29 B | 45 B | 360 µs | **1080 µs** |
+| bridge | 23 B | 39 B | 312 µs | **936 µs** |
+
+144 µs more TX airtime per event for a `ble` agent, ~0.14 % duty at a 100 ms
+interval. Small in absolute terms, and *not* the thing being compared.
+
+**The name is dead weight.** Nothing reads it. Every receiver filters on the
+company id — `air_wire_decode_any()` in the firmware, `find_manufacturer()` in
+`BleTransport` and in the loopback scanner. Grepping the tree, every occurrence of
+`LABCTRL` / `AD_NAME_COMPLETE` is a writer or a constant definition; there is no
+reader. It is a holdover from `raspberry/ble.js`, which matched on
+`name !== 'LABCTRL'` because BlueZ's D-Bus API surfaced the name conveniently and
+manufacturer data awkwardly — and that code path is gone.
+
+Dropping it takes the nRF to **20 of 31 bytes with 11 spare**, up from 2, and
+leaves the two ADs differing only by the flags element. Dropping that too — Flags
+is optional for non-connectable undirected advertising — makes them 20 and 20,
+byte-for-byte identical in size. One line in `broadcaster.c`'s `build_ad()` plus
+deleting the `DEVICE_NAME` macros.
+
+Worth noting what the 2 spare bytes mean while the name stays: the AD is full. Any
+future element, or a v1.1 payload one byte longer, does not fit.
+
+**A2. No STATS frame from the coordination firmware.** `observer_counters()`
+answers the first question when a delivery ratio comes out at zero — did the
+receiver hear nothing, or hear plenty of somebody else's traffic? Currently only
+logged, once per run, by `observer_stop()`. The frame types exist
+(`PROTO_T_STATS_REQ`/`PROTO_T_STATS`) and both loopback peers implement them, but
+the host's `STATS_FIELDS` is a fixed 12-field peer-specific layout that the
+coordination counters do not map onto. Either widen it per firmware or give the
+coordination board its own payload — a decision, not an omission.
+
+**A1. The nRF advertises ADV_SCAN_IND, not ADV_NONCONN_IND.** `broadcaster_init()`
+passes the same elements as advertising data *and* as scan-response data. Zephyr
+promotes a non-connectable advertiser to `ADV_SCAN_IND` when scan-response data is
+supplied, so the board is **scannable**: an active scanner exchanges
+`SCAN_REQ`/`SCAN_RSP` with it, which is TX airtime on both sides — the exact
+mechanism §3 A2/A3 is about. The scan response also carries nothing the
+advertisement does not. Preserved deliberately: dropping it changes what every
+`ble` agent has ever put on the air, and the Pi-side scanner defaults to *passive*
+so nothing is soliciting those responses today. Worth removing before the next
+collection, together with A0.
+
+**A0. The nRF scans with duplicate filtering ON.** `observer_init()` sets
+`BT_LE_SCAN_OPT_FILTER_DUPLICATE`. The Pi-side scanner deliberately does the
+opposite, because a suppressed duplicate is indistinguishable from a lost packet —
+which is the number being measured. Whatever the controller keys its filter on,
+the two receive paths are then measuring loss under different rules, across
+exactly the BLE-vs-bridge axis the platform compares. Left alone rather than
+changed quietly: flipping it changes what every `ble` agent has ever recorded, and
+the RADIO frame has spare flag bits to make it an experimental parameter instead
+of a constant. Decide before the next data-collecting run.
+
+**A. `channel_map` reaches `bridge` but not `ble`.** The manifest can request an
+advertising channel map; `BleTransport` applies it through HCI, and the RADIO
+frame has no field for it because Zephyr's advertising API does not expose the
+advertising channel map. Recorded honestly as
+`environment.radio.channel_map_applied`, so nobody reads a restricted map into a
+`ble` run that never had one. Closing it means reaching the controller through
+Zephyr's HCI driver directly on the nRF. Worth doing: §3 A3.1 says channel 11 is what
+makes the map matter, and steering the map is the other half of that argument.
+
+**B. ~~The nRF still advertises v0.~~ Closed — both sides speak v1.**
+`firmware/nordic/src/air_wire.h` replaces the memcpy'd `custom_data_type` with a
+field-by-field serialiser, and `test/crossval/check_air_wire.py` links the real
+`air_wire.c` to check that the two encoders are **byte-identical in both directions**,
+that v0 still decodes on receive, and that both sides reject the same six
+malformed inputs.
+
+What pinned it was representation, not effort: the old format *was* a C struct's
+compiler-chosen layout, and v1's `tx_time_us` is a **uint48** — no C type lays that
+out, so no struct could express v1 at all.
+
+Two things follow, and only the first is closed:
+
+* `seq` now exists on the BLE path, so **sequence-based loss is derivable from a
+  `ble` agent's advertisements**. Previously only the STATE frames' `fresh` bits
+  gave per-link delivery, at the reporting period rather than per packet.
+* `tx_time_us` exists but **is not yet trustworthy across the BLE-vs-Wi-Fi axis.**
+  An nRF52 has no synchronised wall clock, so the host now sends its own epoch
+  reading in the CONTROL frame (`[run:1][seed:4][epoch_us:6]`, 11 bytes) and the
+  nRF adds its elapsed uptime. That is a one-way transfer, not a synchronisation:
+  it inherits one UART transit as *bias* (~1.5 ms, uncorrected), and the nRF then
+  free-runs on its own crystal for the rest of the run — ±20 ppm over 1600 s is
+  ±32 ms, larger than the delays being measured. A delay comparison between a
+  `ble` and a `wifi` agent currently measures crystal drift as much as radio
+  latency. Periodic re-anchoring would fix it; written up in
+  `docs/CLOCK_MODEL.md`.
+
+The AD is now 29 of the 31 available bytes (name 9 + manufacturer 20), up from 19.
+Those two spare bytes are the whole remaining margin, so a third element does not
+fit.
+
+**Runs collected before this change are not comparable** with runs after it: the
+on-air format changed and so did the CONTROL frame length. Worth a firmware
+version stamp in `RunMeta` before the next collection.
+
+**C. Which PRNG the host uses.** `Disturbance` defaults to numpy's PCG64;
+`vertex/pcg32.py` mirrors the firmware. A run that needs `ble` and `wifi` agents
+on the *same* noise stream must inject `Pcg32(seed, node).uniform`, and which one
+was used belongs in `RunMeta`. PCG64 is the better generator; PCG32 is the one a
+Cortex-M4 without a 128-bit multiply can reproduce. Not decided.
+
+**D. Direction A's UART saturation.** `tx_dropped=269` voided direction A's
+delivery ratio: the peer relayed all ~21k foreign advertisements over a link that
+could not carry them. A peer-side company-ID filter fixes it. Direction A is not
+on the critical path any more — B measured the parameter that was in doubt — so
+this is only worth doing if direction A is needed again.
+
+**E. `pyproject.toml` `testpaths`** still points at `tests` and `validation`, both
+deliberately removed. `pytest` therefore finds nothing and says so quietly.
+`test/check_all.sh` is the entry point now; the stale setting should either follow
+it or go.
+
+---
+
+## 8c. Road to a first run: 3 Pis, 9 agents
+
+Three Raspberry Pis, each hosting `ble` + `wifi` + `bridge`. The smallest
+configuration that exercises every path the platform compares, and the target that
+orders the remaining work.
+
+Everything in §8a/§8b is about the *node*. This section is about the fact that
+nothing yet **starts** one.
+
+### Status
+
+**Items 1-5 are done.** `bash test/check_all.sh` now ends with a `fleet end to end`
+stage that drives the whole host-side path -- hub, control plane, nine
+`AgentService` instances, controllers and relay, logs, fetch, files on disk -- on
+one machine with faked radios. Nine of nine nodes, 360 samples, one epoch.
+
+What shipped:
+
+| | |
+|---|---|
+| `vertex/agent/__main__.py` | `python3 -m vertex.agent --type {ble,wifi,bridge}` |
+| `vertex/serial/link.py` | `SerialLink`: port, reader thread, request/reply, **STATE path** |
+| `vertex/hub/runner.py` | `ExperimentRunner`: configure, trigger, wait, stop, collect |
+| `vertex/hub/__main__.py` | `python3 -m vertex.hub {status,run} <manifest>` |
+| `vertex/transports/multi.py` | `MultiTransport`: the bridge's two media |
+| `experiments/n9-ring.yaml` | the bring-up manifest |
+| `test/hub/check_fleet.py` | the end-to-end check |
+
+Four defects were found doing it, three of which would have cost a bench session:
+
+**A `bridge` had only one medium.** `Agent` holds one `Transport` and the factory
+gave `bridge` a `BleTransport`, so a `wifi` and a `ble` agent -- which share no
+medium -- had no path between them at all. `make_manifests.py`'s own comment says
+bridges "join the BLE and Wi-Fi subnets" and `n30-clusters` gives node 21 both a
+BLE and a Wi-Fi neighbour, so the intent was always both. Fixed at the Transport
+seam (`MultiTransport`) rather than by teaching `Agent` about lists, so `Agent` is
+unchanged. A bridge now transmits every packet twice, which is intended and is not
+airtime-comparable with a single-medium agent -- that belongs in the analysis.
+
+**Three of the four n30 manifests declared links that cannot carry a packet.** The
+generators walk ids numerically, so `ring`/`line` over 1..30 puts a `ble` agent
+next to a `wifi` agent at the 10/11 boundary. The validator now rejects that
+outright -- it is an error, not a warning, because the run *looks* healthy: both
+agents start, both publish, and the link reports 0% delivery, indistinguishable
+from a radio fault. The fix is `BAND_ORDER`, a relabelling that puts five bridges
+at each boundary; λ₂ is bit-identical before and after (0.0219, 0.2166), because a
+relabelled ring is the same graph. `n30-clusters` was always clean -- its edges
+were hand-declared with bridges at the boundaries.
+
+The validator also now warns on **intra-host links**: a local UDP broadcast is
+delivered by the kernel and never reaches the radio, and two BLE radios centimetres
+apart are not a link under test, so such a link reports ~100% delivery and ~0 delay
+and flatters any average it lands in. `n9-ring`'s ordering avoids them entirely,
+which is why its edges are written out rather than generated.
+
+**`AgentService.shutdown()` hung whenever a hub was connected.** From Python 3.12
+`Server.wait_closed()` waits for every live handler, and the hub holds its
+connections open for the whole experiment. So a SIGTERM to an agent mid-run would
+have needed a SIGKILL behind it. `ControlServer` now tracks its writers and closes
+them, with a bounded drain.
+
+**The epoch had nowhere to come from.** An agent's `WallClock` was fixed at launch,
+so nine agents meant nine origins and a one-way delay measuring process launch
+order. The epoch is per-run and the hub owns it, so it now travels with `start` --
+the same argument as the nRF's seed travelling in CONTROL rather than ALGORITHM --
+and lands in `RunMeta.environment.epoch_unix_s`. The check asserts all nine agree.
+
+### Blocking — nothing runs without these
+
+**1. There is no agent process.** `AgentService` is complete and has no caller: no
+`__main__.py`, no console script, nothing anywhere constructs it. Needs to pick a
+`node_type`, resolve `host_ip` with `resolve_local_ip()`, open the serial port when
+the type is `ble`, and serve until signalled.
+
+**2. There is no production serial link.** `vertex/serial/` is codec only —
+`proto.py` and nothing else. `BleRelay` needs an object with
+`request(type, payload, timeout)`. `test/common/peer.py` has a good one (pyserial,
+reader thread, the `_awaiting` gate that fixed the TXAT race) but it is
+test-harness code, and it has no STATE path.
+
+**3. STATE frames never reach the relay.** `BleRelay.handle_frame` has **no caller
+anywhere**, and `on_state` appears only in the docstring that claims `peer.py`
+satisfies the contract — which it does not: `peer.py` routes ACK/ERR/PONG/STATS/
+TXAT and ADV_REPORT, and STATE is not among them. A `ble` agent would therefore
+configure the nRF, start it, and log **zero samples**.
+
+Worth recording how this survived: the end-to-end check that exercised relay mode
+called `handle_frame` directly. The harness supplied the wiring it was meant to be
+testing, so the gap was invisible from a passing run. Items 2 and 3 are one change,
+because they are one path.
+
+**4. There is no hub.** `ControlClient` is complete and strictly single-node;
+nothing instantiates it. The fan-out is small because the pieces exist:
+`assignments_for(manifest, run_index)` returns exactly the `configure` payload
+keyed by node id, and `CONTROL_PORTS` resolves host and type to a port.
+`HUB_PORT = 3000` is declared and unused.
+
+**5. There is no 9-node manifest.** All four in `experiments/` are 30 nodes over
+ten hardcoded addresses; `tools/make_manifests.py` pins `HOSTS` and the 1/11/21
+band offsets.
+
+### The largest unknown is not on that list
+
+**The coordination firmware has never been through `west build`.**
+`test/check_all.sh` is `gcc -fsyntax-only` against stub headers plus host-linked
+cross-checks. That catches undeclared identifiers, offset drift and codec
+disagreement; it cannot catch a Kconfig conflict, a devicetree problem or a link
+error. Items 1-4 are all host-side, so building and flashing one board is the
+cheapest de-risking available and it parallelises with all of them.
+
+One Kconfig problem has already been found by reading rather than building:
+`firmware/nordic/prj.conf` was missing `CONFIG_UART_0_NRF_HW_ASYNC` and its timer,
+which both loopback peers have carried since direction A. Without hardware byte
+counting the UARTE driver cannot know how many bytes sit in the DMA buffer before
+it fills, so the RX idle timeout never fires and a short frame is never delivered.
+Every configuration frame is short: the board would have accepted nothing and
+looked like a dead cable. The same file also had `CONFIG_LOG=n`, compiling every
+`LOG_INF` in the firmware to nothing, and left `CONFIG_UART_CONSOLE` at its default
+of on — writing console text into the binary stream on uart0.
+
+### Deployment facts to know before trying
+
+* The `bridge` agent binds the **HCI user channel exclusively**. BlueZ must be
+  stopped and the adapter down (`hciconfig hci0 down`), and the process needs
+  `CAP_NET_ADMIN`.
+* On each Pi the `bridge` and `wifi` agents share the CYW43455. That is the
+  coexistence effect being measured (§3 A2/A3), not a misconfiguration.
+* The three agents on a host take distinct control ports (3001/3002/3003) and
+  share `STATE_PORT` via `SO_REUSEPORT`. The manifest validator already refuses two
+  agents of the same type on one address.
+
+### Wanted, not blocking
+
+* `vertex/analysis/` is `units.py` only — no loaders, metrics or multi-node
+  aggregation. The run reader is `runlog.read_run_file`.
+* No systemd units and no provisioning. `scripts/radio_check.sh` is single-node
+  read-only diagnosis.
+* README is two lines and describes no procedure.
+* §8b.E: `pyproject.toml` `testpaths` still names two deleted directories, so
+  `pytest` collects nothing and says so quietly.
+
+### What is left
+
+Nothing host-side blocks a first run. Remaining, in order:
+
+1. **Bring up the flashed board:** `python3 test/nrf/check_board.py --port
+   /dev/ttyACM0`, then again with `--scan`. Deliberately NOT in `check_all.sh`,
+   which is hardware-free. It runs in the order things fail: PING (which is the
+   test for `CONFIG_UART_0_NRF_HW_ASYNC` -- an empty payload makes the smallest
+   frame there is, and without byte counting it never leaves the DMA buffer), then
+   a deliberate rejection, then configure/trigger, then the STATE stream, then
+   `--scan` reads the board's own advertisements back with the *host* codec. That
+   last stage is the only check that puts firmware-encoded v1 on a real radio;
+   `check_air_wire.py` proves the two codecs agree, this proves the radio path
+   does.
+2. **Bring up one Pi**: `python3 -m vertex.agent --type wifi`, then
+   `python3 -m vertex.hub status experiments/n9-ring.yaml --only 11`.
+3. **Provisioning.** Three Pis × three agents launched by hand is nine terminals;
+   templated systemd units (D6) and chrony are what make it repeatable. chrony
+   matters more than convenience: without it the shared epoch is shared in name
+   only.
+4. **Analysis.** `vertex/analysis/` is `units.py`; a collected run currently needs
+   `runlog.read_run_file` by hand. Loaders and per-link metrics next.
+5. **README.** Two lines, no procedure, and the procedure now exists.
+6. §8b.E: `pyproject.toml` `testpaths`.
 
 ---
 
@@ -657,4 +1096,11 @@ Unsorted ideas go here; promote into a workstream once shaped.
 | 2026-08-18 | **Wi-Fi transport → UDP** | TCP retransmission grows TX airtime under loss, which blanks our own BLE RX, which causes more loss (A3). UDP's airtime is flat. Also fixes the C2 pull-vs-broadcast confound. Details + open questions in C2.1 |
 | 2026-08-18 | **Python, for raw HCI User Channel access** | A5. Reaching adv interval / scan window / channel map is the central constraint, and it's stdlib in Python vs. a native binding in Node |
 | — | How to reuse the existing C++ min-BLE stack | **Open — blocked on reading it.** Prefer porting its knowledge to pure Python; sidecar daemon over a unix socket if it's substantial; in-process binding only with a measured reason. See A5.1 |
-| — | UDP: subnet broadcast vs. IP multicast | Open — test both (C2.1). Broadcast avoids IGMP snooping |
+| — | UDP: subnet broadcast vs. IP multicast | Open — test both (C2.1). Broadcast avoids IGMP snooping
+| 2026-08-20 | **Firmware integrates in `float`, publishes rounded int32** | Storing the step result back into `int32_t` re-injected the truncation error every period, so the C and Python laws were different dynamical systems. Accumulators are the truth, the int32 fields a mirror. Residual is now the float32 floor, 4.5e-5 over 400 steps |
+| 2026-08-20 | **PCG32 in the firmware, replacing `rand()`** | `rand()` was unseeded (unreproducible) *and* implementation-defined (picolibc ≠ glibc), so no seeding would have made the C and Python noise comparable. PCG32 is ~10 lines with a fully specified sequence |
+| 2026-08-20 | **The PRNG seed travels in the CONTROL frame** | It is a per-run quantity — the same gains replayed with a new seed is a new run — so it belongs with the trigger, not in ALGORITHM. Node id is the stream selector, so two nodes on one seed still differ |
+| 2026-08-20 | **`BleTransport` owns a single reader; `HciSocket.command()` is setup-only** | One user-channel socket carries commands and advertising reports together, and `command()` discards what it reads while waiting. Called once per control period, it would eat reports indistinguishably from radio loss |
+| 2026-08-20 | **Radio parameters recorded for every agent type, `wifi` included** | Three types appear in one experiment; a missing environment block makes their logs non-comparable. `applied_on` says where they actually took effect |
+| — | Whether the host uses PCG64 or PCG32 by default | **Open.** PCG64 is the better generator; PCG32 is the one the nRF can mirror. Only matters when `ble` and `wifi` agents must share a noise stream. See §8b.C |
+| — | Whether `broadcaster.c` moves to the v1 payload | **Open.** v1 carries `seq` and `tx_time_us`, so one-way delay and sequence-based loss become derivable from `ble` advertisements. Invalidates comparison with every run collected so far. See §8b.B | |

@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 import networkx as nx
 import numpy as np
 
+from ..net import AGENT_MEDIA
 from ..wire.codec import N_MAX_NEIGHBORS_FIRMWARE
 from .models import AgentType, ExperimentManifest
 
@@ -184,6 +185,49 @@ def check(manifest: ExperimentManifest, *, require_strong: bool | None = None) -
             f"eta={manifest.controller.eta} is not much smaller than "
             f"alpha={manifest.controller.alpha}; the discrete form assumes "
             "eta << alpha, since both absorb the step size"
+        )
+
+    # Medium reachability. An agent can only hear a neighbour it shares a medium
+    # with, and the three types do not all overlap:
+    #
+    #     ble     BLE only        (the nRF's radio)
+    #     wifi    UDP only        (a socket)
+    #     bridge  BLE *and* UDP   (transports/multi.py)
+    #
+    # So a ble-wifi edge is a link that can never carry a packet, whatever the
+    # graph says. This is an ERROR rather than a warning because the run would
+    # look healthy: both agents start, both publish, and the link simply reports
+    # 0% delivery -- indistinguishable from a radio problem, and the graph the law
+    # actually runs on is not the one declared.
+    unreachable = []
+    by_id = manifest.by_id
+    for n in manifest.nodes:
+        for j in n.neighbors:
+            other = by_id.get(j)
+            if other is None:
+                continue                # already an error from the manifest validator
+            if not (AGENT_MEDIA[n.type] & AGENT_MEDIA[other.type]):
+                unreachable.append((n.id, j))
+    if unreachable:
+        detail = ", ".join(
+            f"{u}({by_id[u].type})->{v}({by_id[v].type})" for u, v in unreachable)
+        rep.errors.append(
+            f"{len(unreachable)} link(s) join agents with no medium in common: "
+            f"{detail}. A `ble` agent has only its radio and a `wifi` agent only a "
+            f"socket; route between them through a `bridge`, which carries both"
+        )
+
+    # Two agents on one host, linked. Not wrong, but the link does not use the
+    # radio: a local UDP broadcast is delivered by the kernel, and two BLE radios
+    # centimetres apart is not a link under test either. Its delivery ratio will
+    # be ~1.0 and its delay ~0, which flatters any per-link average it lands in.
+    same_host = [(n.id, j) for n in manifest.nodes for j in n.neighbors
+                 if j in by_id and by_id[j].ip == n.ip]
+    if same_host:
+        rep.warnings.append(
+            f"{len(same_host)} link(s) are between agents on the same host "
+            f"{sorted(same_host)}; those do not exercise the radio and their "
+            f"delivery ratio is not comparable with the rest"
         )
 
     over = {n.id: len(n.neighbors) for n in manifest.nodes

@@ -1,25 +1,29 @@
+/**
+ * @file common.h
+ * @brief What the radio and the agent both have to agree on.
+ *
+ * Only the shared vocabulary. The on-air packet format lives in air_wire.h, serial
+ * framing in proto.h, frame payloads in agent.h, and radio parameters with the
+ * modules that own those radios.
+ *
+ * This header used to carry `custom_data_type`, a C struct memcpy'd onto the air.
+ * Its compiler-chosen layout *was* the wire format, which is what pinned the
+ * firmware to the host's v0 payload: there is no C type for the uint48 timestamp
+ * v1 carries, so no struct could express v1 at all. air_wire.h serialises field by
+ * field instead, and the two sides now speak the same version.
+ */
+
 #ifndef COMMON_H_
 #define COMMON_H_
 
-/**
- * BT device name and advertising parameters
- */
-#define DEVICE_NAME         CONFIG_BT_DEVICE_NAME
-#define DEVICE_NAME_LEN     (sizeof(DEVICE_NAME) - 1)
+#include <stdint.h>
+
+/** Nordic Semiconductor's assigned company id. Mirrored as COMPANY_ID in
+ *  `vertex/wire/codec.py` -- the host filters on it before decoding anything. */
 #define MANUFACTURER_ID     0x0059
-#define NETID_ENABLED       0x7F
-#define NETID_DISABLED      0x70
+
+/** Neighbours this board tracks. Bounds the observer's queue, the STATE payload
+ *  and the agent's arrays, so it is the one number that must not drift. */
 #define N_MAX_NEIGHBORS     4
-
-// Custom type to represent a data 
-typedef struct {
-	uint16_t manufacturer;  // Unique universal manufacturer ID
-	uint8_t netid_enabled;  // This is for network filtering and considering the node for udpating in the algorithm
-	uint8_t node;			// The ID of the in the custom network
-
-    int32_t vstate;        // The virtual state of the node: A number (note that int32_t is aligned with uint16_t for "man" and uint16_t for "id")
-} custom_data_type;
-
-#define CUSTOM_DATA_TYPE_SIZE sizeof(custom_data_type)
 
 #endif // COMMON_H_

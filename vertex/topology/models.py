@@ -12,7 +12,7 @@ from pydantic import (BaseModel, ConfigDict, Field, ValidationInfo, field_valida
 from ..net import AgentType
 
 __all__ = ["AgentType", "NodeSpec", "DisturbanceSpec", "ControllerSpec",
-           "StructureSpec", "ExperimentManifest", "MAX_NODE_ID"]
+           "RadioSpec", "StructureSpec", "ExperimentManifest", "MAX_NODE_ID"]
 
 #: Upper bound on a node id: the wire format carries it in a uint8.
 MAX_NODE_ID = 255
@@ -113,6 +113,61 @@ class NodeSpec(BaseModel):
         return v
 
 
+class RadioSpec(BaseModel):
+    """BLE advertising and scanning parameters.
+    
+    Where they go depends on the agent:
+
+    * ``ble``    -- into a RADIO frame, applied on the nRF.
+    * ``bridge`` -- into the Pi's own controller via raw HCI.
+    * ``wifi``   -- nowhere; recorded anyway, so the three agent types in one
+      experiment carry the same environment block and stay comparable.
+
+    Milliseconds here, 0.625 ms units on the wire. The conversion happens once,
+    at the transport, and both the request and the programmed units are recorded.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    adv_interval_ms: float = Field(
+        default=100.0, ge=20.0, le=10240.0,
+        description="Advertising interval. The spec floor for non-connectable "
+                    "undirected advertising is 20 ms.",
+    )
+    scan_interval_ms: float = Field(default=100.0, ge=2.5, le=10240.0)
+    scan_window_ms: float = Field(
+        default=100.0, ge=2.5, le=10240.0,
+        description="Time spent listening within each interval. Equal to the "
+                    "interval means continuous scanning.",
+    )
+    channel_map: int = Field(
+        default=0x07, ge=0x01, le=0x07,
+        description="Bitmask over advertising channels 37/38/39 = 2402/2426/2480 "
+                    "MHz. Restricting it is how a run steers clear of the WLAN "
+                    "channel in use; 0x07 uses all three.",
+    )
+    passive_scan: bool = Field(
+        default=True,
+        description="Passive scanning never transmits a scan request, so it adds "
+                    "no TX airtime -- which is the thing that blanks our own BLE "
+                    "receive window.",
+    )
+
+    @model_validator(mode="after")
+    def _window_fits(self) -> "RadioSpec":
+        if self.scan_window_ms > self.scan_interval_ms:
+            raise ValueError(
+                f"scan_window_ms ({self.scan_window_ms}) exceeds scan_interval_ms "
+                f"({self.scan_interval_ms}); the window is the listening portion "
+                f"of the interval, so it cannot be longer than it"
+            )
+        return self
+
+    @property
+    def scan_duty_cycle(self) -> float:
+        return self.scan_window_ms / self.scan_interval_ms
+
+
 class StructureSpec(BaseModel):
     """Name a generator instead of enumerating edges."""
 
@@ -131,6 +186,7 @@ class ExperimentManifest(BaseModel):
     description: str = ""
     nodes: list[NodeSpec]
     controller: ControllerSpec = ControllerSpec()
+    radio: RadioSpec = RadioSpec()
     structure: StructureSpec | None = None
 
     seed: int = Field(

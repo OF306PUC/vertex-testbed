@@ -4,6 +4,29 @@
  *
  * All scaled quantities are int32 in units of 1e-6, matching the platform's
  * fixed-point convention (`vertex/numeric.py`). Fields arrive little-endian.
+ *
+ * ## Payload formats
+ *
+ * `proto.h` owns the *envelope* -- SOF, type, length, CRC -- which is identical
+ * for every message on the link. What each payload means is this application's
+ * business, so it is documented here, beside the code that decodes it.
+ *
+ * Periods are MILLISECONDS; every other scaled field is int32 in units of 1e-6.
+ *
+ *     NETWORK  'N'  >= 2 bytes   [enabled:1][node_id:1][neighbor_id:1 x n]
+ *     ALGORITHM  'A'  36 bytes   [dt_ms:4][clock_ms:4][state_0:4][vstate_0:4]
+ *                                [vartheta_0:4][counter_0:4][alpha:4][delta:4][eta:4]
+ *     DISTURBANCE  'D'  29 bytes [active:1][sine_amplitude:4][frequency:4][phase:4]
+ *                                [noise_amplitude:4][noise_offset:4][beta:4][samples:4]
+ *     CONTROL  'S'  5 bytes      [run:1][seed:4]
+ *     RADIO  'R'  9 bytes        [adv_min:2][adv_max:2][scan_int:2][scan_win:2][flags:1]
+ *                                0.625 ms units; flags bit0 = active scan,
+ *                                bit1 = advertising enabled. Requires
+ *                                scan_int != 0 and scan_win <= scan_int.
+ *     ADV_TX  'T'  <= 31 bytes   complete AD, advertised verbatim
+ *
+ * RADIO and ADV_TX are applied in main.c, which owns the radio; the four frames
+ * above them decode here.
  */
 
 #ifndef AGENT_H_
@@ -15,6 +38,10 @@
 #include "proto.h"
 
 #define AGENT_MAX_NEIGHBORS     PROTO_MAX_NEIGHBORS
+
+/* RADIO flag bits, as documented above. */
+#define AGENT_RADIO_ACTIVE_SCAN 0x01u
+#define AGENT_RADIO_ADVERTISING 0x02u
 
 /* Errors returned by agent_apply_frame */
 #define AGENT_OK                0
@@ -55,7 +82,13 @@ struct agent_params {
     int32_t alpha;
     int32_t delta;
     int32_t eta;
-
+    uint32_t seed;              /* per-run PRNG seed */
+    uint64_t epoch_us;          /* host's epoch reading at trigger */
+                                /* Both stored, unused here: this peer runs no
+                                 * control law and stamps no packets. Decoded
+                                 * anyway so the frame length agrees with the
+                                 * host's encoder -- a peer expecting a shorter
+                                 * CONTROL rejects it with -EINVAL on the bench. */
     struct disturbance_params disturbance;
 };
 
@@ -86,6 +119,29 @@ void agent_init(struct agent *a);
  */
 int agent_apply_frame(struct agent *a, uint8_t type, const uint8_t *payload,
                       uint16_t len, int64_t now_us);
+
+/** @brief Radio configuration decoded from a RADIO frame, in 0.625 ms units. */
+struct radio_params {
+    uint16_t adv_min;
+    uint16_t adv_max;
+    uint16_t scan_interval;
+    uint16_t scan_window;
+    bool     active_scan;
+    bool     advertising;
+};
+
+/**
+ * @brief Decode and validate a RADIO payload.
+ *
+ * Split from applying it so the bounds checks sit beside the other frame decoders
+ * and stay host-testable, while the effect -- starting the radio -- stays with the
+ * module that owns it.
+ *
+ * @return AGENT_OK, or AGENT_ERR_LEN / AGENT_ERR_RANGE. @p out is untouched on
+ *         failure, so a rejected frame cannot half-apply.
+ */
+int agent_parse_radio(const uint8_t *payload, uint16_t len,
+                      struct radio_params *out);
 
 /** @brief Index of @p node in the neighbour list, or -1. */
 int8_t agent_neighbor_index(const struct agent *a, uint8_t node);

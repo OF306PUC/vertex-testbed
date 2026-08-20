@@ -1,104 +1,182 @@
 #include "broadcaster.h"
+#include "air_wire.h"
 
-// Register the logger for this module
+#include <errno.h>
+
+#include <zephyr/bluetooth/bluetooth.h>
+#include <zephyr/bluetooth/gap.h>
+#include <zephyr/bluetooth/hci.h>
+#include <zephyr/bluetooth/hci_vs.h>
+#include <zephyr/kernel.h>
+#include <zephyr/logging/log.h>
+#include <zephyr/sys/byteorder.h>
+
 LOG_MODULE_REGISTER(Module_Broadcaster, LOG_LEVEL_INF);
 
+/* The advertised name. */
+#define DEVICE_NAME         CONFIG_BT_DEVICE_NAME
+#define DEVICE_NAME_LEN     (sizeof(DEVICE_NAME) - 1)
+
+/* Host-supplied advertising interval, 0.625 ms units. Zero means "not set", in
+ * which case BT_LE_ADV_NCONN's default applies. */
+static uint16_t adv_interval_min;
+static uint16_t adv_interval_max;
+
+static bool advertising;
+
 /**
- * Type variable to control many aspects of the advertising 
- * --> it could replace the default advertising parameters given by BT_LE_ADV_NCONN
+ * Set TX power through the Nordic vendor command.
  */
-
-static const struct bt_le_adv_param *adv_param = BT_LE_ADV_NCONN; 
-// static const struct bt_le_adv_param *adv_param =
-// 	BT_LE_ADV_PARAM(BT_LE_ADV_OPT_NONE, /* No options specified */
-// 	MIN_ADV_INTERVAL, 
-// 	MAX_ADV_INTERVAL,
-// 	NULL /* Set to NULL for undirected advertising */
-// ); /* Set to NULL for undirected advertising */
-            
-
-void set_tx_power(uint8_t handle_type, uint16_t handle, int8_t tx_pwr_lvl)
+static void set_tx_power(uint8_t handle_type, uint16_t handle, int8_t tx_pwr_lvl)
 {
-	struct bt_hci_cp_vs_write_tx_power_level *cp; 
-	struct bt_hci_rp_vs_write_tx_power_level *rp; 
-	struct net_buf *buf, *rsp = NULL; 
-	int err; 
+	struct bt_hci_cp_vs_write_tx_power_level *cp;
+	struct bt_hci_rp_vs_write_tx_power_level *rp;
+	struct net_buf *buf, *rsp = NULL;
 
-	buf = bt_hci_cmd_create(BT_HCI_OP_VS_WRITE_TX_POWER_LEVEL,
-		sizeof(*cp));
+	buf = bt_hci_cmd_create(BT_HCI_OP_VS_WRITE_TX_POWER_LEVEL, sizeof(*cp));
 	if (!buf) {
-		LOG_ERR("Unable to allocate command buffer\n");
+		LOG_ERR("Unable to allocate command buffer");
 		return;
 	}
 
-	cp = net_buf_add(buf, sizeof(*cp)); 
-	cp->handle = sys_cpu_to_le16(handle); 
-	cp->handle_type = handle_type; 
-	cp->tx_power_level = tx_pwr_lvl; 
+	cp = net_buf_add(buf, sizeof(*cp));
+	cp->handle = sys_cpu_to_le16(handle);
+	cp->handle_type = handle_type;
+	cp->tx_power_level = tx_pwr_lvl;
 
-	err = bt_hci_cmd_send_sync(BT_HCI_OP_VS_WRITE_TX_POWER_LEVEL,
-		buf, &rsp);
+	int err = bt_hci_cmd_send_sync(BT_HCI_OP_VS_WRITE_TX_POWER_LEVEL, buf, &rsp);
 	if (err) {
 		uint8_t reason = rsp ?
 			((struct bt_hci_rp_vs_write_tx_power_level *)rsp->data)->status : 0;
-		LOG_ERR("Set Tx power err: %d reason 0x%02X\n", err, reason);
+		LOG_ERR("Set Tx power err: %d reason 0x%02X", err, reason);
+		if (rsp) {
+			net_buf_unref(rsp);
+		}
+		return;
+	}
+	if (!rsp) {
+		LOG_WRN("Set Tx power returned no response");
 		return;
 	}
 
 	rp = (void *)rsp->data;
-	LOG_INF("Actual Tx Power: %d\n", rp->selected_tx_power); 
-	net_buf_unref(rsp); 
+	/* Logged, not stored: the controller need not grant what was asked for -- the
+	 * nRF52832 on the DK caps at +4 dBm -- */
+	if (rp->selected_tx_power != tx_pwr_lvl) {
+		LOG_WRN("Tx power %d dBm requested, %d dBm selected",
+			tx_pwr_lvl, rp->selected_tx_power);
+	} else {
+		LOG_INF("Tx power: %d dBm", rp->selected_tx_power);
+	}
+	net_buf_unref(rsp);
 }
 
-/** 
- * Function that initialize the broadcaster with scan response
- */
-int broadcaster_init(custom_data_type* custom_data)
+int broadcaster_set_adv_params(uint16_t interval_min, uint16_t interval_max)
 {
-	struct bt_data ad[] = {
-		BT_DATA(BT_DATA_NAME_COMPLETE, DEVICE_NAME, DEVICE_NAME_LEN),
-		BT_DATA(BT_DATA_MANUFACTURER_DATA, (unsigned char *)custom_data, sizeof(custom_data_type))
-	};
-
-	// Set 8 dBm Tx power
-	set_tx_power(BT_HCI_VS_LL_HANDLE_TYPE_ADV, 0, TX_POWER_LEVEL_BLE); 
-
-	// Min adv time is 100ms, max is 150ms for BT_LE_ADV_NCONN
-    int err = bt_le_adv_start(adv_param, ad, ARRAY_SIZE(ad), ad, ARRAY_SIZE(ad));
-	if (err) {
-		LOG_ERR("Advertising failed to start (err %d)\n", err);
-		return err;
+	if (interval_min == 0u || interval_min > interval_max) {
+		return -EINVAL;
 	}
-	LOG_INF("Advertising successfully started\n");
+	adv_interval_min = interval_min;
+	adv_interval_max = interval_max;
+	LOG_INF("adv interval: %u..%u units (%u..%u ms)",
+		interval_min, interval_max,
+		(unsigned)(interval_min * 625u / 1000u),
+		(unsigned)(interval_max * 625u / 1000u));
 	return 0;
 }
 
 /**
- * Function that updates the broadcaster with scan response
+ * Serialise @p pkt and fill in the two AD elements.
+ *
+ * A function, not a macro: v1 has to be *encoded* rather than memcpy'd, because
+ * its uint48 timestamp has no C type to lay out.
+ *
+ * Name(2+7) + manufacturer(2+18) = 29 of the 31 available. v0 used 19, so those
+ * two spare bytes are now the entire margin -- no further element fits.
+ *
+ * @p value must outlive the bt_le_adv_* call: BT_DATA stores the pointer, it does
+ * not copy the bytes.
  */
-int broadcaster_update_scan_response_custom_data(custom_data_type* custom_data)
+static int build_ad(const state_packet_type *pkt, uint8_t *value, size_t cap,
+		    struct bt_data *ad)
 {
-	struct bt_data ad[] = {
-		BT_DATA(BT_DATA_NAME_COMPLETE, DEVICE_NAME, DEVICE_NAME_LEN),
-		BT_DATA(BT_DATA_MANUFACTURER_DATA, (unsigned char *)custom_data, sizeof(custom_data_type))
-	};
-	int err = bt_le_adv_update_data(ad, ARRAY_SIZE(ad), ad, ARRAY_SIZE(ad));
-	if (err) {
-		LOG_ERR("Advertising failed to update (err %d)\n", err);
-		return err;
+	const int n = air_wire_encode_v1(pkt, value, cap);
+	if (n < 0) {
+		return -EINVAL;
+	}
+	ad[0] = (struct bt_data)BT_DATA(BT_DATA_NAME_COMPLETE,
+					DEVICE_NAME, DEVICE_NAME_LEN);
+	ad[1] = (struct bt_data)BT_DATA(BT_DATA_MANUFACTURER_DATA, value, (uint8_t)n);
+	return 0;
+}
+
+int broadcaster_init(const state_packet_type *pkt)
+{
+	if (advertising) {
+		return 0;
 	}
 
+	uint8_t value[AIR_WIRE_AD_VALUE_SIZE];
+	struct bt_data ad[2];
+
+	if (build_ad(pkt, value, sizeof(value), ad)) {
+		LOG_ERR("Could not encode the advertising payload");
+		return -EINVAL;
+	}
+
+	set_tx_power(BT_HCI_VS_LL_HANDLE_TYPE_ADV, 0, TX_POWER_LEVEL_BLE);
+
+	/* BT_LE_ADV_NCONN unless the host set an interval, in which case the same
+	 * options with that interval. */
+	struct bt_le_adv_param param = *BT_LE_ADV_NCONN;
+	if (adv_interval_min != 0u) {
+		param.interval_min = adv_interval_min;
+		param.interval_max = adv_interval_max;
+	}
+
+	/* The same elements are passed as scan-response data, which makes Zephyr
+	 * advertise ADV_SCAN_IND rather than ADV_NONCONN_IND -- the board is
+	 * scannable, and an active scanner will exchange SCAN_REQ/SCAN_RSP with it. */
+	int err = bt_le_adv_start(&param, ad, 2, ad, 2);
+	if (err) {
+		LOG_ERR("Advertising failed to start (err %d)", err);
+		return err;
+	}
+	advertising = true;
+	LOG_INF("Advertising started");
 	return 0;
-	
+}
+
+int broadcaster_update(const state_packet_type *pkt)
+{
+	if (!advertising) {
+		return -EAGAIN;
+	}
+	uint8_t value[AIR_WIRE_AD_VALUE_SIZE];
+	struct bt_data ad[2];
+
+	if (build_ad(pkt, value, sizeof(value), ad)) {
+		return -EINVAL;
+	}
+
+	int err = bt_le_adv_update_data(ad, 2, ad, 2);
+	if (err) {
+		LOG_WRN("Advertising failed to update (err %d)", err);
+	}
+	return err;
 }
 
 int broadcaster_stop(void)
 {
-    int err = bt_le_adv_stop();
-    if (err) {
-        LOG_ERR("Advertising failed to stop (err %d)", err);
-        return err;
-    }
-    LOG_INF("Advertising stopped");
-    return 0;
+	if (!advertising) {
+		return 0;
+	}
+	int err = bt_le_adv_stop();
+	if (err) {
+		LOG_ERR("Advertising failed to stop (err %d)", err);
+		return err;
+	}
+	advertising = false;
+	LOG_INF("Advertising stopped");
+	return 0;
 }

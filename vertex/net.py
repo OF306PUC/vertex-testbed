@@ -10,7 +10,7 @@ import struct
 from enum import StrEnum
 
 __all__ = ["AgentType", "HUB_PORT", "STATE_PORT", "CONTROL_PORTS",
-           "DEFAULT_INTERFACE", "InterfaceError", "list_interfaces",
+           "DEFAULT_INTERFACE", "AGENT_MEDIA", "InterfaceError", "list_interfaces",
            "resolve_local_ip", "control_endpoint", "state_endpoint",
            "broadcast_address"]
 
@@ -38,6 +38,13 @@ CONTROL_PORTS: dict[AgentType, int] = {
     AgentType.WIFI: 3002,
     AgentType.BRIDGE: 3003,
 }
+
+#: Which media each agent type can actually transmit and receive on. Two agents
+#: can only exchange state if these intersect -- `ble` and `wifi` do not, which is
+#: what a `bridge` exists to join. Kept beside the types rather than in the
+#: validator so the transport factory and the graph check cannot disagree.
+AGENT_MEDIA: dict["AgentType", frozenset[str]] = {}
+
 
 #: Interface carrying the experiment LAN. The onboard wireless interface on a
 #: Raspberry Pi; overridden per deployment rather than guessed.
@@ -110,3 +117,11 @@ def broadcast_address(ip: str, prefixlen: int = 24) -> str:
     the same one-frame-reaches-all-neighbours airtime property.
     """
     return str(ipaddress.IPv4Network(f"{ip}/{prefixlen}", strict=False).broadcast_address)
+
+
+# Populated after AgentType is defined; see the declaration above.
+AGENT_MEDIA.update({
+    AgentType.BLE: frozenset({"ble"}),
+    AgentType.WIFI: frozenset({"udp"}),
+    AgentType.BRIDGE: frozenset({"ble", "udp"}),
+})

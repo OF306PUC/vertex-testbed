@@ -32,6 +32,11 @@ class ControlServer:
         self.host = host
         self.port = port
         self._server: asyncio.AbstractServer | None = None
+        #: Open client connections. Tracked because `stop()` has to close them:
+        #: from Python 3.12 `Server.wait_closed()` waits for every live handler, so
+        #: a hub that is still connected makes shutdown hang forever -- a SIGTERM
+        #: to an agent mid-experiment would then need a SIGKILL behind it.
+        self._writers: set[asyncio.StreamWriter] = set()
         self.served = 0
         self.errors = 0
 
@@ -48,14 +53,31 @@ class ControlServer:
             )
         return self
 
-    async def stop(self) -> None:
-        if self._server is not None:
-            self._server.close()
-            await self._server.wait_closed()
-            self._server = None
+    async def stop(self, *, drain_timeout: float = 2.0) -> None:
+        """Stop listening and close every open connection.
+        """
+        if self._server is None:
+            return
+        self._server.close()
+
+        for w in list(self._writers):
+            try:
+                w.close()
+            except Exception:
+                pass
+        self._writers.clear()
+
+        try:
+            await asyncio.wait_for(self._server.wait_closed(), drain_timeout)
+        except (asyncio.TimeoutError, Exception):
+            # Listening socket is already closed, so nothing new can arrive; a
+            # straggling handler is not worth blocking the shutdown for.
+            pass
+        self._server = None
 
     async def _serve(self, reader: asyncio.StreamReader,
                      writer: asyncio.StreamWriter) -> None:
+        self._writers.add(writer)
         try:
             while True:
                 try:
@@ -91,6 +113,7 @@ class ControlServer:
         except (ConnectionResetError, BrokenPipeError, asyncio.CancelledError):
             pass
         finally:
+            self._writers.discard(writer)
             try:
                 writer.close()
             except Exception:                                   # pragma: no cover

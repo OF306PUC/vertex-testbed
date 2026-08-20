@@ -1,113 +1,114 @@
 # Firmware / host divergence
 
-**Status:** unverified on hardware. Found by reading `nordic/src/` while porting
-the control law to Python. Both items below are code-reading findings; confirm by
-measurement before acting on them.
+**Status: closed, and now checked.** Both findings below are fixed, and
+`test/crossval/compare.py` runs the real firmware sources against the Python
+controller on every `bash test/check_all.sh`. Reintroducing either finding makes
+that check fail — verified by putting each one back and watching it fail.
 
-## Why this matters more than it looks
+## Why this mattered more than it looked
 
-The coordination law has always existed **twice**:
+The coordination law exists **twice**:
 
 | Agent type | Where the law runs | Implementation |
 |---|---|---|
-| `ble` | nRF52-DK microcontroller | `nordic/src/coordination_task.c` (C, `float`) |
-| `wifi`, `bridge` | Raspberry Pi | previously `raspberry/algo.js` (JS, `double`) |
+| `ble` | nRF52-DK microcontroller | `firmware/nordic/src/coordination_task.c` (C, `float`) |
+| `wifi`, `bridge` | Raspberry Pi | `vertex/controllers/finite_time_adaptive.py` (Python, `double`) |
 
-Those two are **not** equivalent. And the platform's headline comparison is
+Those two were **not** equivalent. And the platform's headline comparison is
 *BLE agents versus Wi-Fi agents versus bridge agents* — so any systematic
-difference between the two implementations is a confound sitting directly across
-the axis being measured. It is not a rounding curiosity; it is an alternative
-explanation for a between-transport difference.
-
-This is a second confound on the same axis as the transport asymmetry (broadcast
-BLE vs. request/response Wi-Fi) already recorded in `PLATFORM.md` C2.
+difference between the two implementations was a confound sitting directly across
+the axis being measured. Not a rounding curiosity; an alternative explanation for
+a between-transport difference.
 
 ---
 
-## 1. The disturbance time base is scaled by 1e-6 instead of 1e-3
+## 1. The disturbance time base was scaled by 1e-6 instead of 1e-3 — FIXED
 
-`coordination_task.c`, in `disturbance()`:
+`cp->dt` is in **milliseconds** and `inv_scale_factor` is **1e-6**, so
+`counter * dt * inv_scale_factor` advanced the sinusoid's time argument 1000x too
+slowly. `ble` agents received an almost-constant offset where `wifi` and `bridge`
+agents received a 2 Hz oscillation.
 
-```c
-float t = (float)cp->disturbance.counter * (float)cp->dt * cp->inv_scale_factor;
-                                        // ^ comment says "dt must be scaled to seconds"
-```
+Now `counter * dt * 1e-3f`, with the unit written in the comment beside it.
 
-`cp->dt` is in **milliseconds** and `inv_scale_factor` is **1e-6**. Converting
-milliseconds to seconds needs `1e-3`. The same function 60 lines below gets it
-right:
+Two related fixes went in at the same time:
 
-```c
-float dt = (float)(cp->dt) * 1e-3f;     // discrete_step(), correct
-```
+* **`frequency` was read unscaled** while the host quantized it like every other
+  field, so a requested 2 Hz arrived as 2 000 000 Hz. Found by the cross-check,
+  not by reading. Every scaled field now goes through `inv_scale_factor` without
+  exception — a struct with some fields scaled and some not is the failure mode
+  this codebase keeps paying for.
+* **`rand()` is gone.** It was unseeded, so the firmware's noise was the one
+  quantity in the experiment that could not be reproduced; and it is
+  implementation-defined, so even seeded it would differ between Zephyr's
+  picolibc and the host's glibc, making an exact comparison impossible by
+  construction. Replaced by PCG32 (`firmware/nordic/src/prng.c`), mirrored
+  exactly in `vertex/pcg32.py`. The seed travels in the CONTROL frame — a per-run
+  quantity, so it belongs with the trigger — with the node id as the stream
+  selector, so two nodes on one seed still draw different streams.
 
-**Effect.** The sinusoidal component's time argument advances 1000x too slowly, so
-its effective frequency is divided by 1000. At `dt = 200 ms`,
-`period_samples = 1000` and `sine_frequency_hz = 2`:
+**Measured effect of the old behaviour:** 18.1 units of state error at step 399,
+against a state of ~23. Qualitatively different, as predicted.
 
-| | time swept over one counter cycle | sine cycles completed |
-|---|---|---|
-| Host implementation | 1000 x 0.2 s = 200 s | ~400 |
-| Firmware | 1000 x 0.0002 s = 0.2 s | ~0.4 |
-
-So `ble` agents receive an almost-constant offset where `wifi` and `bridge` agents
-receive a 2 Hz oscillation. **The disturbance is qualitatively different, not
-slightly different.** The constant (`beta`) and uniform-noise components are
-unaffected; only the sinusoid is.
-
-The uniform component also differs in kind: the firmware draws from `rand()`,
-which is unseeded here, so the firmware's noise is not reproducible at all.
-
-## 2. The firmware truncates where the host rounds, and integrates in fixed point
-
-Two separate issues, in the same lines:
+## 2. The firmware truncated where the host rounds, and integrated in fixed point — FIXED
 
 ```c
-cp->state  = (int32_t)(sanitize_f(x + u + nu) * cp->scale_factor);
-cp->vstate = (int32_t)(sanitize_f(z + gi)     * cp->scale_factor);
+/* was */ cp->state = (int32_t)(sanitize_f(x + u + nu) * cp->scale_factor);
 ```
 
-**(a) Truncation vs. rounding.** A C cast from float to integer truncates toward
-zero. The host implementation rounds half away from zero. Truncation is a *biased*
-quantizer — it always moves a value toward the origin — where rounding is
-symmetric. Up to 1 LSB (1e-6) per step, always in the same direction.
+**(a) Truncation vs. rounding.** A C cast truncates toward zero; the host rounds
+half toward +infinity. Truncation is a *biased* quantizer — it always moves a
+value toward the origin. Now `quantize_f()`, which mirrors
+`vertex/numeric.py::round_half_up` including its comparison on the fractional
+part rather than the tempting `floorf(v + 0.5f)`.
 
-**(b) Fixed-point vs. floating-point integration — the bigger one.** The firmware
-stores each step's result back into `int32_t`, so its integrator carries
-**quantized** state from step to step and re-injects the truncation error on every
-iteration. The host integrator keeps full precision internally and quantizes only
-on output. Over a 1600 s run at `dt = 200 ms` that is 8000 accumulations of a
-one-directional error, so the two are not the same dynamical system.
+**(b) Fixed-point vs. floating-point integration — the bigger one.** Storing each
+step's result back into `int32_t` carried quantized state from step to step and
+re-injected the error every period. `coordination_params` now holds
+`state_f`/`vstate_f`/`vartheta_f` as the integrator and the `int32_t` fields as a
+*published mirror*, derived on each step and never integrated. `v_i()` reads the
+accumulator too — reading the mirror there would have put the quantization error
+straight back into the loop it was removed from.
 
-**(c) Single precision.** The firmware works in `float`. At a state of ~25 the
-float32 quantum is ~2e-6 — the same order as the 1e-6 scale factor itself. The
-representation is therefore at the edge of its resolution for exactly the state
-magnitudes in use. `vartheta` avoids this by accumulating in integers
-(`cp->vartheta += eta_dvtheta`), which is fine; `state` and `vstate` do not.
+**(c) Single precision.** The firmware still works in `float`. At a state of ~25
+the float32 quantum is ~2e-6, the same order as the 1e-6 scale factor, so this is
+a precision floor rather than a bug. It is what the residual in the cross-check
+measures: **max 4.5e-5 over 400 steps**, growing like accumulated rounding.
+
+**Measured effect of the old behaviour:** 2.18e-2 of state error and 118 LSB of
+`vartheta` error at step 399 — the latter being ~59 adaptation increments never
+applied.
+
+## 3. Dead code removed
+
+`update_coordination()`, `g_i()`, `consensual_avg_law`, `epsilonON`/`epsilonOFF`,
+`active` and `max_of_two_non_negative_f()` are gone. The host removed the
+consensus-average law and the epsilon hysteresis band deliberately; leaving the C
+half in place is how the two drifted apart the first time. The inverted
+hysteresis band documented in the previous version of this file lived only in
+`update_coordination()` and went with it.
 
 ---
 
-## Recommended order of work
+## What the cross-check does and does not prove
 
-1. **Measure before fixing.** Run one topology with the disturbance disabled
-   entirely (`enabled: false`). That removes finding 1 and the unseeded `rand()`
-   from the picture, so any remaining BLE-vs-Wi-Fi difference is attributable to
-   finding 2 and to the transports themselves. This is cheap and it is the
-   cleanest available separation of the two confounds.
-2. **Fix finding 1** (`1e-6` -> `1e-3`). One character, but it changes the
-   disturbance every BLE agent has ever experienced, so previously collected runs
-   are not comparable with runs after the fix. Bump the manifest `seed` or record
-   a firmware version alongside the data.
-3. **Decide finding 2 deliberately.** Options, in increasing order of effort:
-   round instead of truncate; keep a separate full-precision accumulator and
-   quantize only for transmission; or move to `int64`/Q-format fixed point
-   throughout. The middle option matches the host implementation most closely and
-   is the smallest change that removes the per-step error re-injection.
-4. **Seed the firmware's `rand()`** per node per run, so its noise is reproducible
-   the way the host's now is.
-5. **Then** treat `vertex` as the specification and cross-validate the firmware
-   against it, rather than treating either previous implementation as ground truth.
+`test/crossval/harness.c` links `coordination_task.c` and `prng.c` **unmodified**
+against the stub Zephyr headers, so the code under test is what gets flashed, not
+a transcription of it. What it establishes:
 
-Until step 5 is done, `validation/` in the Python port proves agreement with the
-*host* implementation only. It says nothing about the BLE path — see that
-directory's README.
+* The two implementations are the same dynamical system to within float32.
+* The disturbance — noise, bias and sinusoid — is identical, from the same PRNG
+  stream.
+
+What it does not establish:
+
+* **Timing.** The host's residual says nothing about whether the nRF's `dt` timer
+  actually fires at 200 ms under BLE load. That is a hardware measurement.
+* **The neighbour path.** The harness feeds fixed neighbour vstates. Whether the
+  observer decodes them correctly, and how many arrive, is what the loopback
+  tests and the `fresh` bit in the STATE frame are for.
+* **That PCG32 is the right generator.** `Disturbance` still defaults to numpy's
+  PCG64 for host agents; PCG32 is what a Cortex-M4 can mirror. Runs that need
+  `ble` and `wifi` agents on the *same* noise stream must pass
+  `uniform=Pcg32(seed, node).uniform`, and which one a run used belongs in
+  `RunMeta`. That choice is open — see PLATFORM.md.

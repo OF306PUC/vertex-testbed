@@ -15,8 +15,8 @@
 typedef struct { int _; } k_timeout_t;
 #define K_NO_WAIT   ((k_timeout_t){0})
 #define K_FOREVER   ((k_timeout_t){0})
-#define K_MSEC(x)   ((k_timeout_t){0})
-#define K_USEC(x)   ((k_timeout_t){0})
+#define K_MSEC(x)   ((k_timeout_t){(int)(x)})
+#define K_USEC(x)   ((k_timeout_t){(int)(x)})
 
 struct k_msgq { int _; };
 #define K_MSGQ_DEFINE(name, sz, cnt, align) struct k_msgq name
@@ -43,10 +43,22 @@ int64_t k_ticks_to_us_floor64(int64_t t);
 int64_t k_ticks_to_us_near64(int64_t t);
 void k_sleep(k_timeout_t t);
 struct k_timer { int _; };
+typedef void (*k_timer_expiry_t)(struct k_timer *t);
+typedef void (*k_timer_stop_t)(struct k_timer *t);
+void k_timer_init(struct k_timer *t, k_timer_expiry_t e, k_timer_stop_t s);
 void k_timer_start(struct k_timer *t, k_timeout_t d, k_timeout_t p);
+void k_timer_stop(struct k_timer *t);
+
+struct k_mutex { int _; };
+int k_mutex_init(struct k_mutex *m);
+int k_mutex_lock(struct k_mutex *m, k_timeout_t t);
+int k_mutex_unlock(struct k_mutex *m);
+#define K_MUTEX_DEFINE(name) struct k_mutex name
 struct k_sem { int _; };
 int k_sem_take(struct k_sem *s, k_timeout_t t);
 void k_sem_give(struct k_sem *s);
+int k_sem_init(struct k_sem *s, unsigned int initial, unsigned int limit);
+#define K_SEM_DEFINE(name, initial, limit) struct k_sem name
 
 struct net_buf_simple { uint8_t *data; uint16_t len; };
 #endif

@@ -53,14 +53,26 @@ CONTROLLER = {
 }
 
 
-def hosts_for(n_per_band: int = 10, publish_period_s: float = 1.0) -> list[dict]:
-    """Declare the agent-to-host binding, without any graph structure."""
+def hosts_for(n_per_band: int = 10, publish_period_s: float = 1.0,
+              hosts: list[str] | None = None) -> list[dict]:
+    """Declare the agent-to-host binding, without any graph structure.
+
+    `hosts` overrides the full lab list, for a manifest that runs on a subset.
+    The band offsets are kept whatever the size, so a node id still says what
+    transport it is: 1.. is BLE, 11.. Wi-Fi, 21.. bridge, in every manifest.
+    """
+    pool = hosts if hosts is not None else HOSTS
+    if n_per_band > len(pool):
+        raise ValueError(
+            f"{n_per_band} agents per band needs {n_per_band} hosts, got {len(pool)}; "
+            f"two agents of the same type on one address collide at bind time"
+        )
     nodes = []
     for kind, base in BANDS:
         for k in range(n_per_band):
             nodes.append({
                 "id": base + k,
-                "ip": HOSTS[k % len(HOSTS)],
+                "ip": pool[k],
                 "type": kind,
                 "enabled": True,
                 "publish_period_s": publish_period_s,
@@ -86,8 +98,69 @@ CLUSTER_EDGES = {
 CLUSTER_DISABLED = {21, 30}
 
 
+#: The first-run subset: three Pis, nine agents. Smallest configuration that
+#: exercises every path the platform compares -- BLE-only, Wi-Fi-only, and the
+#: bridge that carries both -- with each host running all three at once, which is
+#: where the CYW43455 coexistence effect actually appears.
+FIRST_RUN_HOSTS = HOSTS[:3]
+
+#: Traversal order for the generated topologies: the ble block, five bridges, the
+#: wifi block, five bridges. A generator walks its id list in order, so this is
+#: what keeps a bridge at every ble/wifi boundary -- and five of them, so even the
+#: degree-4 ring clears the gap. Consecutive entries are also on different hosts,
+#: so no link is intra-host (a local UDP broadcast never reaches the radio).
+BAND_ORDER = (list(range(1, 11))       # ble     1..10
+              + list(range(21, 26))    # bridge 21..25
+              + list(range(11, 21))    # wifi   11..20
+              + list(range(26, 31)))   # bridge 26..30
+
+
 def manifests() -> dict[str, dict]:
     out: dict[str, dict] = {}
+
+    # ── n9: the bring-up target ──────────────────────────────────────────────
+    # A 9-cycle, but the order is not free. Two constraints bind it, and the
+    # obvious ordering (1,2,3,11,12,13,21,22,23) violates both:
+    #
+    # 1. NO ble-wifi EDGE. A `ble` agent transmits only on its radio and a `wifi`
+    #    agent only on a socket, so such a link cannot carry a packet -- the
+    #    validator now rejects it. The three bridges are the only agents on both
+    #    media, so they must sit at every boundary between the two blocks. That
+    #    forces the shape: bridge, the ble run, bridge, the wifi run, bridge.
+    #
+    # 2. NO INTRA-HOST EDGE. Agents k of each band share host k, and a link
+    #    between two agents on one host does not use the radio at all: a local UDP
+    #    broadcast is delivered by the kernel, and two BLE radios centimetres
+    #    apart are not a link under test. Such a link reports ~100% delivery and
+    #    ~0 delay, flattering any average it lands in.
+    #
+    # The ordering below satisfies both, which is why it is written out rather
+    # than generated. Hosts are h0/h1/h2 for the three Pis:
+    #
+    #   21(h0,bri) 2(h1,ble) 1(h0,ble) 3(h2,ble) 22(h1,bri)
+    #   13(h2,wifi) 11(h0,wifi) 12(h1,wifi) 23(h2,bri)  -> back to 21
+    #
+    # Degree 2 everywhere, well inside the firmware's 4-neighbour limit.
+    N9_ORDER = [21, 2, 1, 3, 22, 13, 11, 12, 23]
+    n9 = hosts_for(3, hosts=FIRST_RUN_HOSTS)
+    n9_edges = ring(ids=N9_ORDER)
+    for node in n9:
+        node["neighbors"] = n9_edges[node["id"]]
+    out["n9-ring"] = {
+        "name": "n9-ring",
+        "description": (
+            "9 agents on 3 hosts: the bring-up target. Every host runs ble + wifi "
+            "+ bridge, so all three paths are exercised and the two radios on each "
+            "Pi contend as they will in a full run. Undirected 9-cycle, degree 2 "
+            "everywhere. The ordering is constrained, not arbitrary: bridges sit "
+            "at each ble/wifi boundary because those two share no medium, and no "
+            "link is intra-host because such a link never reaches the radio. "
+            "Edges are declared for exactly that reason."
+        ),
+        "seed": 20260818,
+        "controller": CONTROLLER,
+        "nodes": n9,
+    }
 
     clustered = hosts_for()
     for n in clustered:
@@ -107,18 +180,32 @@ def manifests() -> dict[str, dict]:
         "nodes": clustered,
     }
 
-    # Regular topologies: structure generated, binding declared.
+    # Regular topologies over BAND_ORDER rather than 1..30.
+    #
+    # The generators walk their id list in order, so the *order* decides who
+    # neighbours whom. Walking 1..30 numerically puts a `ble` agent next to a
+    # `wifi` agent at the 10/11 boundary, and those two share no medium -- the
+    # link cannot carry a packet, so the graph the law runs on is not the one
+    # declared. That was true of all three of these manifests.
+    #
+    # BAND_ORDER is a relabelling, not a redesign: for a ring it produces the same
+    # cycle graph, so lambda_2, degree and every other graph property are
+    # unchanged. What changes is which transport sits at which position, which is
+    # the experimental variable and now realisable.
     for name, gen, params, desc in [
-        ("n30-ring-directed", "ring", {"n": 30, "directed": True},
+        ("n30-ring-directed", "ring", {"directed": True, "ids": BAND_ORDER},
          "30-agent directed cycle: each agent reads only its predecessor. The "
-         "sparsest strongly connected graph, so the slowest convergence."),
-        ("n30-ring4", "ring", {"n": 30, "k": 2},
+         "sparsest strongly connected graph, so the slowest convergence. Ordered "
+         "so bridges sit at each ble/wifi boundary -- those two share no medium."),
+        ("n30-ring4", "ring", {"k": 2, "ids": BAND_ORDER},
          "30-agent undirected ring, degree 4. Each BLE agent sits exactly at the "
          "firmware's neighbour limit, so this is the densest ring the "
-         "microcontroller can serve."),
-        ("n30-line-directed", "line", {"n": 30, "directed": True},
+         "microcontroller can serve. Five bridges per boundary, so degree 4 still "
+         "clears the ble/wifi gap."),
+        ("n30-line-directed", "line", {"directed": True, "ids": BAND_ORDER},
          "30-agent open directed chain. Deliberately NOT strongly connected -- "
-         "agent 1 has no inputs -- as a control case for the connectivity check."),
+         "the first agent has no inputs -- as a control case for the connectivity "
+         "check."),
     ]:
         out[name] = {
             "name": name, "description": desc, "seed": 20260818,
