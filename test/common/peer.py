@@ -85,6 +85,11 @@ class Peer:
         self._reports: queue.Queue[TimedReport] = queue.Queue()
         self._reply: Frame | None = None
         self._reply_ready = threading.Event()
+        # Only accept a reply while a request is actually outstanding. Without
+        # this a late or unsolicited reply sits in the slot and satisfies the
+        # NEXT request with the PREVIOUS answer -- which surfaces as decoding one
+        # frame type's payload as another's.
+        self._awaiting = False
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -160,8 +165,9 @@ class Peer:
             return
 
         if frame.type in _REPLY_TYPES:
-            if self._reply_ready.is_set():
+            if not self._awaiting or self._reply_ready.is_set():
                 self.counters.unsolicited += 1
+                return
             self._reply = frame
             self._reply_ready.set()
             return
@@ -180,11 +186,15 @@ class Peer:
         with self._lock:
             self._reply = None
             self._reply_ready.clear()
-            self.send(frame_type, payload)
-            if not self._reply_ready.wait(timeout):
-                raise PeerError(
-                    f"no reply to frame 0x{frame_type:02X} within {timeout}s")
-            reply = self._reply
+            self._awaiting = True
+            try:
+                self.send(frame_type, payload)
+                if not self._reply_ready.wait(timeout):
+                    raise PeerError(
+                        f"no reply to frame 0x{frame_type:02X} within {timeout}s")
+                reply = self._reply
+            finally:
+                self._awaiting = False
             assert reply is not None
 
         if reply.type == FrameType.ERR:
@@ -211,10 +221,24 @@ class Peer:
         return decode_pong(self.request(FrameType.PING).payload)
 
     def advertise(self, ad: bytes, *, timeout: float = 1.0) -> tuple[int, int]:
-        """Command the peer to advertise `ad` verbatim. Returns (seq, uptime_us)."""
+        """Command the peer to advertise `ad` verbatim.
+
+        Returns ``(seq, peer_uptime_us)`` from a TXAT, or ``(0, 0)`` when the peer
+        answers with a plain ACK -- older firmware acknowledges without a
+        timestamp, and losing the timestamp is not worth failing the run over.
+
+        Anything else names the frame it got. Decoding blind is how a stray ACK
+        became "TXAT payload must be 10 bytes, got 2" three layers down.
+        """
         from vertex.serial import encode_adv_tx
         reply = self.request(FrameType.ADV_TX, encode_adv_tx(ad), timeout=timeout)
-        return decode_txat(reply.payload)
+        if reply.type == FrameType.TXAT:
+            return decode_txat(reply.payload)
+        if reply.type == FrameType.ACK:
+            return (0, 0)
+        raise PeerError(
+            f"advertise: expected TXAT or ACK, got {reply.name} "
+            f"with {len(reply.payload)} byte(s): {reply.payload.hex()}")
 
     def stats(self) -> PeerStats:
         """The peer's own counters. Read before and after a run and subtract."""
