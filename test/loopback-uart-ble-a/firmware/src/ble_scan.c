@@ -32,6 +32,16 @@ static uint8_t adv_payload_len;
 static struct bt_data adv_ad[ADV_MAX_ELEMENTS];
 static uint8_t adv_ad_count;
 
+/* Requested advertising parameters, remembered so RADIO and ADV_TX may arrive in
+ * either order. Advertising cannot start without a payload, and the payload
+ * cannot be chosen before the host sends one -- so a parameter request that
+ * arrives first is deferred and applied when the payload turns up. Requiring a
+ * fixed order instead just moves the failure into the host. */
+static uint16_t adv_req_min = 0x00A0u;      /* 100 ms in 0.625 ms units */
+static uint16_t adv_req_max = 0x00A0u;
+static uint8_t  adv_req_chan_map = 0x07u;
+static bool     adv_requested;
+
 /* Split adv_payload's first @len bytes into bt_data elements.
  * Element layout is len(1) | type(1) | value(len-1); the length byte counts
  * type + value, not the element's total size. bt_data.data points into
@@ -145,6 +155,10 @@ int ble_adv_set(const uint8_t *data, uint8_t len)
         return err;
     }
     if (!adv_running) {
+        /* Honour a parameter request that arrived before any payload. */
+        if (adv_requested) {
+            return ble_adv_start(adv_req_min, adv_req_max, adv_req_chan_map);
+        }
         return 0;                           /* takes effect on the next start */
     }
     /* Update without stopping: a stop/start would reset the advertising cadence
@@ -160,9 +174,16 @@ int ble_adv_start(uint16_t interval_min, uint16_t interval_max, uint8_t chan_map
     ARG_UNUSED(chan_map);   /* Zephyr exposes the channel map only via HCI or
                              * CONFIG_BT_CTLR_ADV_EXT; see the note in README. */
 
+    /* Remember the request even if it cannot be honoured yet. */
+    adv_req_min = interval_min;
+    adv_req_max = interval_max;
+    adv_req_chan_map = chan_map;
+    adv_requested = true;
+
     if (adv_ad_count == 0u) {
-        LOG_ERR("no advertising payload set; send a T frame first");
-        return -EINVAL;
+        /* No payload yet. Not an error: ble_adv_set() will start us. */
+        LOG_INF("advertising deferred until a payload arrives");
+        return 0;
     }
 
     if (adv_running) {
@@ -181,6 +202,7 @@ int ble_adv_start(uint16_t interval_min, uint16_t interval_max, uint8_t chan_map
 
 int ble_adv_stop(void)
 {
+    adv_requested = false;      /* else the next payload would restart us */
     if (!adv_running) {
         return 0;
     }

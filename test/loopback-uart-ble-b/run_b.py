@@ -293,9 +293,21 @@ def main() -> int:
                 from vertex.radio.hci import HciSocket, cmd_reset
                 sock = HciSocket(args.device).open()
                 sock.command(cmd_reset())
-            for w in windows:
-                out.append(measure(args, w, peer, sock))
-                print(out[-1].line())
+            try:
+                for w in windows:
+                    out.append(measure(args, w, peer, sock))
+                    print(out[-1].line())
+            finally:
+                # Leave the peer quiet. Otherwise it keeps advertising after the
+                # run and pollutes the next one -- and the air generally.
+                try:
+                    peer.set_radio(adv_min=ms_to_units(args.adv_interval),
+                                   adv_max=ms_to_units(args.adv_interval),
+                                   scan_interval=ms_to_units(args.scan_interval),
+                                   scan_window=ms_to_units(args.scan_interval),
+                                   advertising=False)
+                except Exception:
+                    pass
     except PeerError as exc:
         print(f"\npeer: {exc}", file=sys.stderr)
         return 2
