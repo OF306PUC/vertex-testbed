@@ -81,12 +81,13 @@ class Results:
         return self.byte_mismatches == 0 and internal == 0
 
     def line(self) -> str:
-        return (f"  window {self.window_ms:6.1f} ms / interval {self.interval_ms:6.1f} ms"
-                f"  ({self.duty * 100:5.1f}% duty)"
+        return (f"  window {self.window_ms:6.1f} ms ({self.duty * 100:5.1f}% duty)"
                 f"   delivered {self.delivered:4d}/{self.commanded:<4d}"
                 f" = {self.delivery_ratio * 100:5.1f}%"
-                f"   mismatches {self.byte_mismatches}"
-                + ("" if self.valid else "   INVALID"))
+                f"   scanner: {self.scan_reports:6d} reports, "
+                f"{self.scan_foreign:6d} foreign, {self.scan_reports - self.scan_foreign:5d} ours"
+                f"   mism {self.byte_mismatches}"
+                + ("" if self.valid else "  INVALID"))
 
     def detail(self) -> str:
         L = [
@@ -314,14 +315,36 @@ def main() -> int:
         ratios = [r.delivery_ratio for r in out]
         widest, narrowest = ratios[0], ratios[-1]
         moved = widest - narrowest
+        ours = sum(r.scan_reports - r.scan_foreign for r in out)
+        reports = sum(r.scan_reports for r in out)
+
         print(f"delivery ratio {widest * 100:.1f}% at {out[0].duty * 100:.0f}% duty "
               f"-> {narrowest * 100:.1f}% at {out[-1].duty * 100:.0f}% duty  "
               f"(moved {moved * 100:.1f} points)")
-        if moved < 0.10:
+
+        # A flat curve at zero says nothing about the scan window: the pipeline
+        # broke upstream of it. Diagnose in order along the chain.
+        if all(r.delivered == 0 for r in out):
+            print("  ^^ NOTHING was received. This is not a scan-window result --")
+            print("     the window cannot be measured until something arrives.")
+            if reports == 0:
+                print("     scanner saw 0 reports of any kind: the Pi is not scanning.")
+                print("       - check every Command Complete status in Scanner.open()")
+                print("       - `hciconfig hci0` should show the adapter DOWN "
+                      "(user channel)")
+            elif ours == 0:
+                print(f"     scanner saw {reports} reports but 0 with our company id.")
+                print("       - the peer is transmitting something, but not what we sent")
+                print("       - most likely the peer re-frames the AdvData instead of")
+                print("         advertising it verbatim; capture one and compare bytes")
+            else:
+                print(f"     scanner matched {ours} of ours, yet none were counted as")
+                print("     delivered: check unknown-seq and other-node in --sweep '' mode")
+        elif moved < 0.10:
             print("  ^^ the scan window is NOT taking effect. Delivery should fall")
-            print("     roughly with duty cycle; a flat curve means the parameter")
-            print("     never reached the controller, and the HCI path has bought")
-            print("     nothing over BlueZ. Check every Command Complete status.")
+            print("     roughly with duty cycle; a flat curve at a NON-zero ratio means")
+            print("     the parameter never reached the controller, and the HCI path has")
+            print("     bought nothing over BlueZ. Check every Command Complete status.")
         else:
             print("  ^^ the scan window is taking effect -- the parameter BlueZ")
             print("     never exposed is now measurably under our control.")
