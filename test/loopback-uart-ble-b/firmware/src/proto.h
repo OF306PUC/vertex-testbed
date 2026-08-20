@@ -52,6 +52,7 @@
 /* board -> Pi */
 #define PROTO_T_ADV_REPORT      0x72u   /* 'r' -- one advertising report */
 #define PROTO_T_STATE           0x78u   /* 'x' -- one control step */
+#define PROTO_T_TXAT            0x74u   /* 't' -- payload reached the controller */
 #define PROTO_T_ACK             0x6Bu   /* 'k' */
 #define PROTO_T_ERR             0x65u   /* 'e' */
 #define PROTO_T_PONG            0x70u   /* 'p' */

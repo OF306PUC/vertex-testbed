@@ -76,20 +76,27 @@ class Scanner:
     _enabled: bool = field(default=False, init=False)
 
     def open(self) -> "Scanner":
-        """Reset, set parameters, enable.
+        """Disable, set parameters, enable.
 
-        Scan parameters are only settable while scanning is disabled, or the
-        controller answers 0x0C command disallowed. Every step goes through
-        `command()`, which raises on a non-zero status -- a refused `set scan
-        parameters` would leave the previous window in force and the sweep would
-        measure a configuration nobody chose. That is the one failure this whole
-        test exists to rule out.
+        Scan parameters are only settable while scanning is DISABLED, or the
+        controller answers 0x0C command disallowed. So this always disables first
+        -- which is what lets one socket be reused across a parameter sweep
+        instead of rebinding the user channel per point. Rebinding races the
+        kernel's teardown of the previous socket and fails with EBUSY.
+
+        Every step goes through `command()`, which raises on a non-zero status. A
+        refused `set scan parameters` would leave the previous window in force and
+        the sweep would measure a configuration nobody chose -- the one failure
+        this whole test exists to rule out.
         """
         from vertex.radio.hci import ms_to_units
 
         if self.sock is None:
             self.sock = HciSocket(self.device).open()
             self._owns_sock = True
+            # Only on a socket we just created: an injected one may already be
+            # mid-sweep, and a reset would discard its state.
+            self.sock.command(cmd_reset())
 
         interval = ms_to_units(self.interval_ms)
         window = ms_to_units(self.window_ms)
@@ -97,7 +104,8 @@ class Scanner:
             raise HciError(
                 f"window {self.window_ms} ms exceeds interval {self.interval_ms} ms")
 
-        self.sock.command(cmd_reset())
+        # Idempotent: harmless when already off, required when not.
+        self.sock.command(cmd_le_set_scan_enable(False))
         self.sock.command(cmd_le_set_scan_parameters(
             interval=interval, window=window,
             scan_type=0x00 if self.passive else 0x01))

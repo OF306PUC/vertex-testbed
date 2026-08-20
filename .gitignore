@@ -6,7 +6,7 @@
 # source. The Python suite (pyproject: testpaths) and the host C tests for the
 # Zephyr-free units both live in directories named `tests`.
 # ─────────────────────────────────────────────────────────────────────────────
-tests/
+
 
 # ── Zephyr / CMake / west ────────────────────────────────────────────────────
 # `build/` under firmware/nordic and each test/*/firmware. 25 MB per board of

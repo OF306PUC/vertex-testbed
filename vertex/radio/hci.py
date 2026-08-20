@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.util
+import errno
 import os
 import socket
 import struct
@@ -318,6 +319,34 @@ def _bind_user_channel(fd: int, device: int) -> None:
         err = ctypes.get_errno()
         raise OSError(err, os.strerror(err))
 
+def _bind_hint(device: int, exc: OSError) -> str:
+    """Turn a bind errno into the specific thing to do about it.
+
+    EBUSY and EPERM need opposite fixes, and the generic message sent people to
+    `hciconfig down` when the real cause was a socket the previous sweep point had
+    not finished releasing.
+    """
+    base = f"cannot take hci{device} on the user channel ({exc})"
+    if exc.errno == errno.EBUSY:
+        return (f"{base}.\n"
+                f"  The adapter is up, or another socket still holds it.\n"
+                f"    sudo hciconfig hci{device} down\n"
+                f"  If this happened partway through a parameter sweep, the cause is\n"
+                f"  rebinding per measurement: the kernel does not release the device\n"
+                f"  instantly. Bind once and change parameters instead -- scan and\n"
+                f"  advertising parameters are settable after disabling the function,\n"
+                f"  with no need to reopen the socket.")
+    if exc.errno in (errno.EPERM, errno.EACCES):
+        return (f"{base}.\n"
+                f"  The user channel needs CAP_NET_ADMIN. Either run as root, or:\n"
+                f"    sudo setcap cap_net_admin,cap_net_raw+eip $(readlink -f $(which python3))")
+    if exc.errno == errno.ENODEV:
+        return f"{base}.\n  No such adapter. Check `hciconfig -a`."
+    return (f"{base}.\n"
+            f"  Expected: adapter down, and CAP_NET_ADMIN.\n"
+            f"    sudo hciconfig hci{device} down")
+
+
 class HciSocket:
     """Exclusive HCI access to one adapter.
 
@@ -336,11 +365,7 @@ class HciSocket:
             _bind_user_channel(s.fileno(), self.device)
         except OSError as exc:
             s.close()
-            raise HciError(
-                f"cannot take hci{self.device} on the user channel ({exc}). "
-                "The adapter must be down first and the process needs "
-                f"CAP_NET_ADMIN: sudo hciconfig hci{self.device} down"
-            ) from None
+            raise HciError(_bind_hint(self.device, exc)) from None
         self._sock = s
         return self
 

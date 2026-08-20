@@ -146,7 +146,7 @@ def consume(seen: Seen, sent: dict[int, tuple[bytes, float]], done: set[int],
 
 # ── one measurement ──────────────────────────────────────────────────────────
 
-def measure(args, window_ms: float, peer, scanner_sock=None) -> Results:
+def measure(args, window_ms: float, peer, scanner_sock) -> Results:
     res = Results(window_ms=window_ms, interval_ms=args.scan_interval)
     sent: dict[int, tuple[bytes, float]] = {}
     done: set[int] = set()
@@ -280,11 +280,20 @@ def main() -> int:
 
     peer = _FakePeerB() if args.self_test else Peer(args.port, args.baud)
     out: list[Results] = []
+    sock = None
     try:
         with peer:
+            # Bind the user channel ONCE for the whole sweep. Rebinding per point
+            # races the kernel's teardown of the previous socket: the second bind
+            # returns EBUSY because the adapter is not released instantly.
+            if args.self_test:
+                sock = _FakeScanSock(peer)
+            else:
+                from vertex.radio.hci import HciSocket, cmd_reset
+                sock = HciSocket(args.device).open()
+                sock.command(cmd_reset())
             for w in windows:
-                sock = _FakeScanSock(peer) if args.self_test else None
-                out.append(measure(args, w, peer, scanner_sock=sock))
+                out.append(measure(args, w, peer, sock))
                 print(out[-1].line())
     except PeerError as exc:
         print(f"\npeer: {exc}", file=sys.stderr)
@@ -292,6 +301,9 @@ def main() -> int:
     except KeyboardInterrupt:
         print("\ninterrupted", file=sys.stderr)
         return 130
+    finally:
+        if sock is not None and not args.self_test:
+            sock.close()
 
     if len(out) == 1:
         print()
