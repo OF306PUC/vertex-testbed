@@ -52,6 +52,10 @@ static void on_frame(uint8_t type, const uint8_t *payload, uint16_t len, void *c
     ARG_UNUSED(ctx);
     int rc = 0;
 
+    /* Logged before dispatch: if the board hangs or faults inside a handler, this
+     * is the last line and it names the culprit. */
+    LOG_INF("frame 0x%02X, %u byte(s)", type, len);
+
     switch (type) {
 
     case PROTO_T_ADV_TX:

@@ -243,6 +243,71 @@ class _FakePeerB:
         return self._pending.pop(0) if self._pending else b""
 
 
+def probe(args) -> int:
+    """Walk the chain one step at a time, reporting each step's outcome.
+
+    A 500-sample sweep tells you something failed; this tells you which link.
+    Every step is printed before it is attempted, so a hang names itself.
+    """
+    from vertex.radio.hci import HciSocket, cmd_reset
+
+    print("\n1. open serial")
+    peer = Peer(args.port, args.baud)
+    peer.open()
+    print("   ok")
+
+    try:
+        print("2. PING")
+        print(f"   peer uptime {peer.ping()} us")
+
+        print("3. STATS")
+        st = peer.stats()
+        print(f"   frames_ok={st.frames_ok} crc_errors={st.crc_errors} "
+              f"tx_dropped={st.tx_dropped} partial_flushes={st.rx_partial_flushes}")
+
+        print("4. RADIO (advertising on)")
+        peer.set_radio(adv_min=ms_to_units(args.adv_interval),
+                       adv_max=ms_to_units(args.adv_interval),
+                       scan_interval=ms_to_units(args.scan_interval),
+                       scan_window=ms_to_units(args.scan_window),
+                       advertising=True)
+        print("   ok")
+
+        ad = build_advdata(args.node, 1)
+        print(f"5. ADV_TX  {len(ad)} bytes: {ad.hex()}")
+        seq, uptime = peer.advertise(ad, timeout=3.0)
+        print(f"   ok -- txat seq={seq} peer_uptime={uptime} us")
+
+        print("6. open the Pi scanner")
+        sock = HciSocket(args.device).open()
+        sock.command(cmd_reset())
+        scanner = Scanner(device=args.device, interval_ms=args.scan_interval,
+                          window_ms=args.scan_window, sock=sock).open()
+        print("   ok")
+
+        print("7. drain 3 s")
+        seen = list(scanner.drain(timeout=3.0))
+        c = scanner.counters
+        print(f"   events={c.events} reports={c.reports} ours={c.ours} "
+              f"foreign={c.foreign} malformed={c.malformed}")
+        for s_ in seen[:3]:
+            match = "MATCHES" if s_.ad == ad else "DIFFERS"
+            print(f"   {match}  rssi={s_.rssi:4d}  {s_.ad.hex()}")
+        if not seen:
+            print("   nothing of ours arrived")
+
+        scanner.close(); sock.close()
+
+        print("8. STATS again")
+        after = peer.stats().delta(st)
+        print(f"   delta: frames_ok={after.frames_ok} tx_dropped={after.tx_dropped} "
+              f"crc_errors={after.crc_errors}")
+        print(f"   driver: {peer.counters.summary()}")
+        return 0
+    finally:
+        peer.close()
+
+
 # ── entry ────────────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -264,6 +329,9 @@ def main() -> int:
                     help="transmit scan requests (costs airtime)")
     ap.add_argument("--node", type=int, default=201)
     ap.add_argument("--self-test", action="store_true")
+    ap.add_argument("--probe", action="store_true",
+                    help="one radio command, one advertise, one scan drain -- "
+                         "isolates a hang without a 500-sample run")
     args = ap.parse_args()
 
     if args.count >= MAX_SEQ:
@@ -278,6 +346,9 @@ def main() -> int:
     print(f"direction B  node={args.node}  peer adv={args.adv_interval:g} ms  "
           f"Pi scan interval={args.scan_interval:g} ms"
           + ("  [SELF-TEST]" if args.self_test else ""))
+
+    if args.probe:
+        return probe(args)
 
     peer = _FakePeerB() if args.self_test else Peer(args.port, args.baud)
     out: list[Results] = []

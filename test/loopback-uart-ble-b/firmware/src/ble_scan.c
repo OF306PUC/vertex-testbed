@@ -190,11 +190,18 @@ int ble_adv_start(uint16_t interval_min, uint16_t interval_max, uint8_t chan_map
         (void)bt_le_adv_stop();
         adv_running = false;
     }
+    LOG_INF("bt_le_adv_start: %u element(s), interval %u..%u", adv_ad_count,
+            interval_min, interval_max);
+    for (uint8_t k = 0; k < adv_ad_count; k++) {
+        LOG_INF("  ad[%u] type 0x%02X len %u", k, adv_ad[k].type,
+                adv_ad[k].data_len);
+    }
     int err = bt_le_adv_start(&p, adv_ad, adv_ad_count, NULL, 0);
     if (err) {
-        LOG_ERR("bt_le_adv_start: %d", err);
+        LOG_ERR("bt_le_adv_start FAILED: %d", err);
         return err;
     }
+    LOG_INF("bt_le_adv_start ok");
     adv_running = true;
     LOG_INF("advertising: interval %u..%u", interval_min, interval_max);
     return 0;

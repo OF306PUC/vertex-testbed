@@ -57,13 +57,22 @@ static void send_txat(uint16_t seq)
     uint8_t p[10];
     proto_st_u16(&p[0], seq);
     proto_st_u64(&p[2], (uint64_t)k_ticks_to_us_floor64(k_uptime_ticks()));
-    (void)uart_link_send(PROTO_T_TXAT, p, sizeof(p));
+    int err = uart_link_send(PROTO_T_TXAT, p, sizeof(p));
+    if (err) {
+        /* From the host this is indistinguishable from a hang: it waits for a
+         * reply that was built and then dropped. */
+        LOG_ERR("TXAT seq %u dropped: %d", seq, err);
+    }
 }
 
 static void on_frame(uint8_t type, const uint8_t *payload, uint16_t len, void *ctx)
 {
     ARG_UNUSED(ctx);
     int rc = 0;
+
+    /* Logged before dispatch: if the board hangs or faults inside a handler, this
+     * is the last line and it names the culprit. */
+    LOG_INF("frame 0x%02X, %u byte(s)", type, len);
 
     switch (type) {
 
