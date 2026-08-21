@@ -28,7 +28,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from vertex.net import STATE_PORT, broadcast_address, resolve_local_ip
+from vertex.net import (STATE_PORT, InterfaceError, broadcast_address,
+                        interface_broadcast, interface_prefixlen,
+                        resolve_local_ip)
 
 
 def main() -> int:
@@ -41,10 +43,19 @@ def main() -> int:
     args = ap.parse_args()
 
     me = resolve_local_ip(args.interface)
-    bcast = broadcast_address(me, args.prefixlen)
-    print(f"  local {me}  ->  broadcast {bcast}:{args.port}")
-    print(f"  kernel's own idea: "
-          f"{_kernel_broadcast(args.interface) or 'unknown'}")
+    guessed = broadcast_address(me, args.prefixlen)
+    try:
+        bcast, source = interface_broadcast(args.interface), "kernel"
+    except InterfaceError:
+        bcast, source = guessed, f"assumed /{args.prefixlen}"
+
+    plen = interface_prefixlen(args.interface)
+    print(f"  local {me}/{plen}  ->  broadcast {bcast}:{args.port}  ({source})")
+    if bcast != guessed:
+        print(f"  NOTE a /{args.prefixlen} assumption would use {guessed}, which on "
+              f"a /{plen} network is an")
+        print(f"       ordinary host address -- every datagram goes nowhere, "
+              f"silently. That was the bug.")
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

@@ -102,6 +102,7 @@ async def run(args: argparse.Namespace) -> int:
         node_type,
         data_dir=args.data_dir,
         host_ip=host_ip,
+        interface=args.interface,
         control_port=args.control_port,
         log_format=args.log_format,
         clock=WallClock(args.epoch if args.epoch is not None else time.time()),

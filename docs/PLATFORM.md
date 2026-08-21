@@ -1255,6 +1255,63 @@ matches them.
 
 ---
 
+### Second two-host run: timestamps fixed, UDP still dead -- and the log said why
+
+Re-run of `n6-ring`, 30 s, trigger spread 19 ms.
+
+**The timestamp origin is fixed.** All six nodes now start at ~0.2 s:
+
+```
+node  1 ble    timestamp   0.227.. 30.227   device   0.002.. 30.002
+node 11 wifi   timestamp   0.201.. 30.001   device   0.201.. 30.001
+```
+
+**UDP still delivered nothing**, and the recorded environment identified the cause
+without any guessing:
+
+```
+udp_broadcast          10.6.5.255
+udp_broadcast_source   assumed /24        <- the kernel was never asked
+prefixlen              (key absent)
+```
+
+`prefixlen` is written only when an interface is known, so its absence proved
+`AgentService` had received `interface=None` -- the /24 fallback was taken before
+the ioctl was ever tried. `vertex/agent/__main__.py` was still not passing
+`interface=args.interface`: that edit had been in a batch that aborted on an
+earlier anchor miss, so it never applied while the rest of the batch did.
+
+Two changes, one for the bug and one for the class of bug:
+
+* `__main__.py` passes the interface.
+* **It no longer has to.** `interface_for_ip()` derives the interface from
+  `host_ip`, so `_broadcast_target()` reaches the kernel even when the caller
+  omits it. A required argument that can be forgotten will be, and the penalty
+  here is an entire run: the fallback works, nothing complains, and every datagram
+  goes to an address nobody holds.
+
+```
+with interface given : ('10.6.3.255', 'kernel/enp2s0')
+with only host_ip    : ('10.6.3.255', 'kernel/enp2s0')
+with neither         : ('255.255.255.255', 'limited broadcast')
+```
+
+`interface_used` is now recorded alongside `prefixlen`, so "which interface did
+this actually use" is answerable from the data.
+
+**The recorded environment paid for itself immediately.** Two runs earlier there
+was no `udp_broadcast_source` field and the same failure would have needed another
+round of hardware bisection. Recording *how* a value was determined, not just the
+value, is what made a silent fallback visible.
+
+**On the process failure.** This is the third silent `str.replace` miss in this
+work, and the second to reach hardware. Batched edits now apply per file and report
+`applied/total` per file, so one miss cannot mask the rest -- and the verification
+asserts *behaviour* (`_broadcast_target()` returns the kernel's address) rather than
+that the text changed.
+
+---
+
 ### Restarting agents, and stale pidfiles
 
 `scripts/agents.sh start` is idempotent -- it skips what is already alive, so after

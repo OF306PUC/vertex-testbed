@@ -11,7 +11,8 @@ from enum import StrEnum
 
 __all__ = ["AgentType", "HUB_PORT", "STATE_PORT", "CONTROL_PORTS",
            "DEFAULT_INTERFACE", "AGENT_MEDIA", "InterfaceError", "list_interfaces",
-           "interface_broadcast", "interface_prefixlen", "SIOCGIFBRDADDR",
+           "interface_broadcast", "interface_prefixlen", "interface_for_ip",
+           "SIOCGIFBRDADDR",
            "resolve_local_ip", "control_endpoint", "state_endpoint",
            "broadcast_address"]
 
@@ -144,6 +145,20 @@ def interface_broadcast(interface: str = DEFAULT_INTERFACE) -> str:
         ) from None
     finally:
         s.close()
+
+
+def interface_for_ip(ip: str) -> str | None:
+    """Which interface holds ``ip``, or None.
+
+    So the broadcast address can be found from the address alone. Requiring the
+    caller to pass an interface name meant it could be forgotten -- and it was:
+    `AgentService` was constructed without one, silently fell back to the assumed
+    /24, and every UDP link in a run delivered nothing.
+    """
+    for name, addr in list_interfaces().items():
+        if addr == ip:
+            return name
+    return None
 
 
 def interface_prefixlen(interface: str = DEFAULT_INTERFACE) -> int | None:

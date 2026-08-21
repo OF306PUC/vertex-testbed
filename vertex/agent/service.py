@@ -25,7 +25,8 @@ from ..control.protocol import Response, ok
 from ..control.server import ControlServer
 from ..controllers.base import create
 from ..net import (CONTROL_PORTS, STATE_PORT, AgentType, InterfaceError,
-                   broadcast_address, interface_broadcast, interface_prefixlen)
+                   broadcast_address, interface_broadcast, interface_for_ip,
+                   interface_prefixlen)
 from ..transports.base import Transport
 from ..transports.ble import BleTransport
 from ..transports.multi import MultiTransport
@@ -125,10 +126,18 @@ class AgentService:
             passive_scan=bool(r.get("passive_scan", True)))
 
     def _broadcast_target(self) -> tuple[str, str]:
-        """(address, how it was determined). Never guesses silently."""
-        if self.interface:
+        """(address, how it was determined). Never guesses silently.
+
+        Derives the interface from `host_ip` when it was not supplied, rather than
+        dropping to the /24 assumption. The caller-must-pass version was forgotten
+        once and cost a whole run: the fallback works, so nothing complains, and
+        every datagram goes to an address nobody holds.
+        """
+        iface = self.interface or (interface_for_ip(self.host_ip)
+                                   if self.host_ip else None)
+        if iface:
             try:
-                return interface_broadcast(self.interface), f"kernel/{self.interface}"
+                return interface_broadcast(iface), f"kernel/{iface}"
             except InterfaceError:
                 pass
         if self.host_ip:
@@ -142,9 +151,11 @@ class AgentService:
         target, how = self._broadcast_target()
         self.environment.setdefault("udp_broadcast", target)
         self.environment.setdefault("udp_broadcast_source", how)
-        if self.interface:
-            self.environment.setdefault("prefixlen",
-                                        interface_prefixlen(self.interface))
+        iface = self.interface or (interface_for_ip(self.host_ip)
+                                   if self.host_ip else None)
+        if iface:
+            self.environment.setdefault("interface_used", iface)
+            self.environment.setdefault("prefixlen", interface_prefixlen(iface))
         return UdpTransport(node_id, self.clock,
                             send_to=(target, self.state_port),
                             bind_port=self.state_port, broadcast=True)
