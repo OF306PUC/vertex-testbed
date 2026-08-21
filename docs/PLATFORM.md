@@ -1292,6 +1292,56 @@ BLE nRF-to-nRF, BLE nRF-to-Pi in both directions, and UDP between hosts; the epo
 transfer; the STATE relay path; v1 on the air; and the hub configuring, triggering,
 stopping and collecting six agents across two machines.
 
+### 8a-decies. A1/A3 closed; the new baseline, and a 172 ms UDP delay
+
+Both ADs now carry the manufacturer element and nothing else -- 20 bytes,
+`ADV_NONCONN_IND`, 864 us per advertising event on both sides. The nRF's name
+element (9 bytes, read by nothing) and its scan-response data (which promoted the
+PDU to `ADV_SCAN_IND`) are gone, and the Pi's flags element went with them so the
+two arms emit byte-identical PDUs. 11 spare AD bytes, up from 2.
+
+```
+    link  med  recv  exp  lost  dup   ratio   delay ms
+  12->11  UDP   594  600     6    0  0.9900     171.96
+  11->12  UDP   588  600    12    0  0.9800     172.59
+   2->21  BLE   528  600    72  289  0.8800     109.19
+   1->22  BLE   539  600    61  294  0.8983     108.47
+```
+
+**A1/A3 did not materially change delivery**, which was the expectation and is a
+useful result: BLE 88.0-89.8% against 87.3% before, UDP 98.0-99.0% against
+96.8-98.0% -- both inside run-to-run variation. So the ~11% BLE loss is *not*
+explained by AD size or scannability, and the candidate list narrows to the
+duplicate-per-value effect, the scan window, and genuine coexistence. Duplicates
+held at 289-294, as predicted: the 100 ms advertising interval against a 200 ms
+publish period is untouched.
+
+**The delays are real now** -- the clock rebinding worked, and no figure is in
+seconds. BLE at 108-109 ms is *correct and expected*: a published value waits for
+the next advertising event, and the advertising interval is 100 ms. That is the
+floor, measured properly for the first time.
+
+**UDP at ~172 ms is not.** A LAN one-way delay should be about 1 ms. Two things
+rule out the previous class of bug:
+
+* all six UDP links agree to within 2.9 ms, and
+* both directions are **positive and equal** (12->11 +172.0, 11->12 +172.6).
+  Clock skew is antisymmetric -- it reads +x one way and -x the other, as the
+  -10462/+10814 pair did. This is a real, symmetric latency.
+
+Prime suspect is **WLAN power save**: a sleeping station's traffic is buffered
+until the next beacon, which produces exactly this scale. `scripts/host_report.sh`
+already prints `wlan_powersave`; `iw dev wlan0 set power_save off` on both hosts is
+the test. Note the run's own `radio` block records the BLE parameters but nothing
+about the WLAN side -- worth adding, since a 172 ms transport delay is a first-order
+property of the experiment.
+
+I should also have been recording **`min_delay_us`**, not only the median. The
+minimum is the propagation floor -- immune to queueing, so it separates "this link
+is slow" from "this link queues" -- and a *negative* minimum is a direct measurement
+of residual clock skew, the cheapest available check that chrony is working. Now
+recorded, along with the sample count.
+
 ### 8a-nonies. The first real per-link measurement (2026-08-21)
 
 `n6-fast`, 120 s, schema v5, with `link_stats` recorded. Delivery from

@@ -26,7 +26,7 @@ from ..control.server import ControlServer
 from ..controllers.base import create
 from ..net import (CONTROL_PORTS, STATE_PORT, AgentType, InterfaceError,
                    broadcast_address, interface_broadcast, interface_for_ip,
-                   interface_prefixlen)
+                   interface_prefixlen, wlan_state)
 from ..transports.base import Transport
 from ..transports.ble import BleTransport
 from ..transports.multi import MultiTransport
@@ -156,6 +156,10 @@ class AgentService:
         if iface:
             self.environment.setdefault("interface_used", iface)
             self.environment.setdefault("prefixlen", interface_prefixlen(iface))
+            # power_save especially: it turns a ~1 ms link into a ~170 ms one, and
+            # nothing else in the log would show it.
+            for k, v in wlan_state(iface).items():
+                self.environment.setdefault(k, v)
         return UdpTransport(node_id, self.clock,
                             send_to=(target, self.state_port),
                             bind_port=self.state_port, broadcast=True)
@@ -514,7 +518,14 @@ class AgentService:
         out["links"] = {
             str(nid): {k: v for k, v in asdict(st).items() if k != "delays_us"}
             | {"delivery_ratio": round(st.delivery_ratio, 4),
-               "median_delay_us": st.median_delay_us}
+               "median_delay_us": st.median_delay_us,
+               # min as well as median. The minimum is the propagation floor --
+               # immune to queueing, so it separates "the link is slow" from "the
+               # link queues". And a NEGATIVE minimum is a direct measurement of
+               # residual clock skew between the two nodes, which is the cheapest
+               # check that chrony is actually working (CLOCK_MODEL.md).
+               "min_delay_us": st.min_delay_us,
+               "samples": len(st.delays_us)}
             for nid, st in self.agent.neighbors.link_stats().items()
         }
         st = getattr(t, "stats", None)

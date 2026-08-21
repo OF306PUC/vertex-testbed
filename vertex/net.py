@@ -12,6 +12,7 @@ from enum import StrEnum
 __all__ = ["AgentType", "HUB_PORT", "STATE_PORT", "CONTROL_PORTS",
            "DEFAULT_INTERFACE", "AGENT_MEDIA", "InterfaceError", "list_interfaces",
            "interface_broadcast", "interface_prefixlen", "interface_for_ip",
+           "wlan_state",
            "SIOCGIFBRDADDR",
            "resolve_local_ip", "control_endpoint", "state_endpoint",
            "broadcast_address"]
@@ -176,6 +177,50 @@ def interface_prefixlen(interface: str = DEFAULT_INTERFACE) -> int | None:
         return None
     finally:
         s.close()
+
+
+def wlan_state(interface: str = DEFAULT_INTERFACE) -> dict[str, Any]:
+    """Wireless state that changes what a run measures: power save, channel, power.
+
+    Best effort and never raising -- a missing `iw` or a wired interface yields an
+    empty dict rather than failing a run.
+
+    Recorded because it is first-order and not reconstructable. A UDP one-way delay
+    of 172 ms was measured on a link that should be ~1 ms, and buffered traffic on a
+    power-saving station is exactly that magnitude: a sleeping station's packets
+    wait for the next beacon. `power_save` therefore belongs with the data, not in
+    someone's memory of how the bench was set up. The channel matters for the same
+    reason on the other side -- WLAN 1/6/11 sit under the BLE advertising channels
+    (see PLATFORM.md 3 A3.1).
+    """
+    import re
+    import subprocess
+
+    out: dict[str, Any] = {}
+    def _run(args: list[str]) -> str:
+        try:
+            return subprocess.run(args, capture_output=True, text=True,
+                                  timeout=5).stdout
+        except Exception:
+            return ""
+
+    ps = _run(["iw", "dev", interface, "get", "power_save"])
+    m = re.search(r"Power save:\s*(\w+)", ps)
+    if m:
+        out["power_save"] = m.group(1).lower()
+
+    info = _run(["iw", "dev", interface, "info"])
+    m = re.search(r"channel\s+(\d+)\s+\((\d+)\s*MHz\)", info)
+    if m:
+        out["wlan_channel"] = int(m.group(1))
+        out["wlan_freq_mhz"] = int(m.group(2))
+    m = re.search(r"txpower\s+([-\d.]+)\s*dBm", info)
+    if m:
+        out["wlan_txpower_dbm"] = float(m.group(1))
+    m = re.search(r"type\s+(\w+)", info)
+    if m:
+        out["wlan_type"] = m.group(1)
+    return out
 
 
 def broadcast_address(ip: str, prefixlen: int = 24) -> str:
