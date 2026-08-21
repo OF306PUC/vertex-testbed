@@ -394,8 +394,7 @@ class AgentService:
         epoch = args.get("epoch_unix_s")
         if epoch is not None:
             self.clock = WallClock(float(epoch))
-            if self.relay is not None:
-                self.relay.clock = self.clock
+            self._rebind_clock()
 
         a = self.assignment
         self.runlog = RunLog(
@@ -465,6 +464,32 @@ class AgentService:
                            list(report.neighbor_vstates),
                            list(report.neighbor_fresh),
                            device_t_s=device_t_s)
+
+    def _rebind_clock(self) -> None:
+        """Push the run's clock into everything that cached a reference.
+
+        Objects are built at `configure` and the epoch arrives at `start`, so every
+        holder of a clock is holding the launch-time one until this runs. Doing it
+        for some and not others is worse than not doing it at all: the relay's link
+        was fixed in isolation and the local agents were not, so `tx_time_us` and
+        `rx_time_us` ended up on two different origins and the one-way delays came
+        out at -10.5 s, +10.8 s and +20.9 s -- each one the difference between two
+        agents' start times, wearing the units of a delay.
+
+        Enumerated rather than patched case by case, so a new clock holder is one
+        line here instead of another wrong delay figure.
+        """
+        holders: list[Any] = [self.relay, self.link, self.agent]
+        if self.agent is not None:
+            t = self.agent.transport
+            holders.append(t)
+            holders.extend(getattr(t, "members", []) or [])
+        for h in holders:
+            if h is not None and hasattr(h, "clock"):
+                try:
+                    h.clock = self.clock
+                except Exception:                               # pragma: no cover
+                    pass
 
     def _transport_meta(self) -> dict[str, Any]:
         """Transport counters, for the run's metadata at stop.

@@ -205,6 +205,10 @@ async def main(manifest_path: str) -> int:
     await asyncio.sleep(1.5)
 
     epoch = time.time()
+    # The bus stamps rx_time_us and holds its own clock, made before the epoch
+    # existed. Rebind it, exactly as AgentService._rebind_clock does for the real
+    # transports -- otherwise the harness manufactures the very offset it checks for.
+    bus.clock = WallClock(epoch)
     report = await runner.run("fleet-0", DURATION, epoch_unix_s=epoch)
     print(report.summary())
 
@@ -335,6 +339,24 @@ async def main(manifest_path: str) -> int:
     if ble_deltas:
         print(f"  relay device-vs-host offset: {min(ble_deltas):+.4f} .. "
               f"{max(ble_deltas):+.4f} s over {len(ble_deltas)} rows")
+
+    # 6. one-way delays must be small. A stale clock somewhere produces a delay
+    #    that is really the difference between two agents' start times -- a number
+    #    in the right units and wildly wrong. Measured at -10.5 s, +10.8 s and
+    #    +20.9 s on hardware before the clock rebinding covered every holder.
+    for nid in report.nodes:
+        meta_path = report.out_dir / f"{nid}.meta.json"
+        if not meta_path.exists():
+            continue
+        link_stats = (json.loads(meta_path.read_text()).get("environment")
+                      or {}).get("links")
+        for src, st in (link_stats or {}).items():
+            d = st.get("median_delay_us")
+            if d is None:
+                continue
+            if abs(d) > 1_000_000:      # 1 s: orders of magnitude above any real link
+                fails.append(f"node {nid} link {src}: median delay {d/1e6:+.3f}s -- "
+                             f"that is a clock offset, not a delay")
 
     counts = {str(t): 0 for t in AgentType}
     for nid, node in manifest.by_id.items():

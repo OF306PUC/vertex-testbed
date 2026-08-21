@@ -1292,6 +1292,49 @@ BLE nRF-to-nRF, BLE nRF-to-Pi in both directions, and UDP between hosts; the epo
 transfer; the STATE relay path; v1 on the air; and the hub configuring, triggering,
 stopping and collecting six agents across two machines.
 
+### 8a-nonies. The first real per-link measurement (2026-08-21)
+
+`n6-fast`, 120 s, schema v5, with `link_stats` recorded. Delivery from
+**sequence-number gaps**, so it counts published values rather than transmissions:
+
+```
+    link  medium   recv    exp  lost    dup   ratio
+  12->11  UDP       587    599    12      0  0.9800
+  22->11  UDP       583    599    16      0  0.9733
+  11->12  UDP       580    599    19      0  0.9683
+  21->12  UDP       584    599    15      0  0.9750
+   2->21  BLE       524    600    76    273  0.8733
+   1->22  BLE       524    600    76    266  0.8733
+```
+
+**BLE 87.3%, UDP 96.8-98.0%** -- a 10-point gap, and the first number the platform
+has produced that answers the question it was built for. The duplicate counts
+confirm the earlier inference from the freshness gaps: 524 + 273 = 797 packets for
+600 published values, so each value reaches the receiver about 1.33 times. That is
+the advertising interval being shorter than the publish period, counted correctly as
+duplicates rather than as deliveries.
+
+**The delays were nonsense**, and it was the same bug as the relay's link clock --
+fixed in one place and not as a class:
+
+```
+  12->11  -10462 ms      11->12  +10814 ms      1->22  +20863 ms
+```
+
+Objects are built at `configure` and the epoch arrives at `start`, so every holder
+of a clock reference keeps the launch-time one. `BleRelay.link` had been fixed;
+`Agent`, `UdpTransport`, `BleTransport` and `MultiTransport`'s members had not. So
+`tx_time_us` and `rx_time_us` sat on two different origins and each "delay" was
+really the gap between two agents' start times -- in the right units, off by four
+orders of magnitude.
+
+`AgentService._rebind_clock()` now enumerates every holder in one place, so a new
+one is a line there rather than another wrong delay figure. And `check_fleet.py`
+fails any median delay above 1 s, which caught a **third** instance immediately: the
+harness's own `LoopbackBus` stamps `rx_time_us` and held a clock made before the
+epoch existed, manufacturing the exact offset the check looks for. Delays now read
++0.121 to +0.158 ms on loopback.
+
 ### 8a-octies. Freshness is a proxy; the real per-link figure was never recorded
 
 Same manifest, host-side `arrivals()` fix in place, so both agent types now log the

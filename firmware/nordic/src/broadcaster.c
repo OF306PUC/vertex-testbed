@@ -104,9 +104,12 @@ static int build_ad(const state_packet_type *pkt, uint8_t *value, size_t cap,
 	if (n < 0) {
 		return -EINVAL;
 	}
-	ad[0] = (struct bt_data)BT_DATA(BT_DATA_NAME_COMPLETE,
-					DEVICE_NAME, DEVICE_NAME_LEN);
-	ad[1] = (struct bt_data)BT_DATA(BT_DATA_MANUFACTURER_DATA, value, (uint8_t)n);
+	/* Manufacturer element only. The Complete Local Name used to sit in front of
+	 * it and nothing read it -- every receiver filters on the company id
+	 * (air_wire_decode_any here, find_manufacturer on the Pi). It cost 9 of 31 AD
+	 * bytes and 144 us of TX airtime per advertising event relative to a `bridge`
+	 * agent, which sends no name. See PLATFORM.md 8b.A3. */
+	ad[0] = (struct bt_data)BT_DATA(BT_DATA_MANUFACTURER_DATA, value, (uint8_t)n);
 	return 0;
 }
 
@@ -117,7 +120,7 @@ int broadcaster_init(const state_packet_type *pkt)
 	}
 
 	uint8_t value[AIR_WIRE_AD_VALUE_SIZE];
-	struct bt_data ad[2];
+	struct bt_data ad[1];
 
 	if (build_ad(pkt, value, sizeof(value), ad)) {
 		LOG_ERR("Could not encode the advertising payload");
@@ -134,10 +137,12 @@ int broadcaster_init(const state_packet_type *pkt)
 		param.interval_max = adv_interval_max;
 	}
 
-	/* The same elements are passed as scan-response data, which makes Zephyr
-	 * advertise ADV_SCAN_IND rather than ADV_NONCONN_IND -- the board is
-	 * scannable, and an active scanner will exchange SCAN_REQ/SCAN_RSP with it. */
-	int err = bt_le_adv_start(&param, ad, 2, ad, 2);
+	/* NULL scan-response data. Passing it made Zephyr advertise ADV_SCAN_IND
+	 * instead of ADV_NONCONN_IND, so the board was scannable and an active
+	 * scanner would exchange SCAN_REQ/SCAN_RSP with it -- TX airtime on both
+	 * sides, and the exact mechanism this platform measures. It also carried
+	 * nothing the advertisement did not. See PLATFORM.md 8b.A1. */
+	int err = bt_le_adv_start(&param, ad, 1, NULL, 0);
 	if (err) {
 		LOG_ERR("Advertising failed to start (err %d)", err);
 		return err;
@@ -153,13 +158,13 @@ int broadcaster_update(const state_packet_type *pkt)
 		return -EAGAIN;
 	}
 	uint8_t value[AIR_WIRE_AD_VALUE_SIZE];
-	struct bt_data ad[2];
+	struct bt_data ad[1];
 
 	if (build_ad(pkt, value, sizeof(value), ad)) {
 		return -EINVAL;
 	}
 
-	int err = bt_le_adv_update_data(ad, 2, ad, 2);
+	int err = bt_le_adv_update_data(ad, 1, NULL, 0);
 	if (err) {
 		LOG_WRN("Advertising failed to update (err %d)", err);
 	}

@@ -148,10 +148,12 @@ async def main() -> int:
     elems = list(parse_ad(ad, strict=True))
     types = [e.type for e in elems]
     print(f"  AD {len(ad)} B, elements {[hex(x) for x in types]}")
-    if types != [0x01, 0xFF]:
-        fails.append(f"AD elements are {types}, expected [flags, manufacturer]")
+    # Manufacturer element only. The flags element was dropped so this AD matches
+    # the nRF's byte for byte -- PLATFORM.md 8b.A3.
+    if types != [0xFF]:
+        fails.append(f"AD elements are {types}, expected [manufacturer] only")
     else:
-        mfg = elems[1].value
+        mfg = elems[0].value
         if int.from_bytes(mfg[:2], "little") != COMPANY_ID:
             fails.append("company id is not first in the manufacturer element")
         elif mfg[2:] != pkt.encode():
@@ -184,8 +186,7 @@ async def main() -> int:
 
     # 5. a v0 advertisement from an nRF
     before = len(received)
-    v0 = build_ad(element(0x01, bytes([0x04])),
-                  element(0xFF, COMPANY_ID.to_bytes(2, "little")
+    v0 = build_ad(element(0xFF, COMPANY_ID.to_bytes(2, "little")
                           + encode_v0(node_id=5, vstate=19_500_000, enabled=True)))
     sock.push(adv_report(v0))
     for _ in range(20):

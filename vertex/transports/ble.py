@@ -242,8 +242,13 @@ class BleTransport(Transport):
     def _ad(self, packet: StatePacket) -> bytes:
         """Complete AdvData for one packet.
         """
+        # Manufacturer element ONLY -- no flags. Flags is optional for
+        # non-connectable undirected advertising, and dropping it makes this AD
+        # byte-for-byte the same size and composition as the nRF's, which now sends
+        # no name either. Before: nRF 29 bytes, this 23; the 6-byte difference was
+        # 144 us of TX airtime per advertising event separating the two arms of the
+        # comparison. See PLATFORM.md 8b.A3.
         return build_ad(
-            element(AD_FLAGS, FLAGS_LE_ONLY),
             element(AD_MANUFACTURER,
                     self.company_id.to_bytes(2, "little") + packet.encode()),
             limit=MAX_AD_LEN,
