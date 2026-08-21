@@ -118,6 +118,40 @@ BAND_ORDER = (list(range(1, 11))       # ble     1..10
 def manifests() -> dict[str, dict]:
     out: dict[str, dict] = {}
 
+    # ── n6: two hosts, six agents. The step before n9. ──────────────────────
+    # At this size the topology is FORCED, not chosen. Every edge must cross hosts
+    # (an intra-host link never reaches the radio) and must not join `ble` to
+    # `wifi` (no shared medium), which leaves seven legal edges among the six
+    # agents -- and exactly ONE Hamiltonian cycle through them:
+    #
+    #   1(ble,h0) - 2(ble,h1) - 21(bri,h0) - 12(wifi,h1) - 11(wifi,h0) - 22(bri,h1)
+    #
+    # Every path the platform compares appears once: nRF-to-nRF (1-2), Pi-to-Pi
+    # over BLE (via the bridges), UDP (11-12), and both mixed hops where an nRF
+    # advertises and a Pi's HCI scanner receives it (2-21, 22-1) -- the direction
+    # loopback test B validated. Degree 2, lambda_2 = 1.0.
+    #
+    # The seventh legal edge, 21-22, is the only densification available; adding it
+    # takes the bridges to degree 3.
+    N6_ORDER = [1, 2, 21, 12, 11, 22]
+    n6 = hosts_for(2, hosts=HOSTS[:2])
+    n6_edges = ring(ids=N6_ORDER)
+    for node in n6:
+        node["neighbors"] = n6_edges[node["id"]]
+    out["n6-ring"] = {
+        "name": "n6-ring",
+        "description": (
+            "6 agents on 2 hosts: the two-host bring-up. Each host runs ble + wifi "
+            "+ bridge. The only 6-cycle that both crosses hosts on every edge and "
+            "never joins ble to wifi, so the ordering is forced rather than "
+            "chosen. Covers nRF-to-nRF, bridge-to-bridge over BLE, UDP, and both "
+            "nRF-advertises/Pi-scans hops."
+        ),
+        "seed": 20260818,
+        "controller": CONTROLLER,
+        "nodes": n6,
+    }
+
     # ── n9: the bring-up target ──────────────────────────────────────────────
     # A 9-cycle, but the order is not free. Two constraints bind it, and the
     # obvious ordering (1,2,3,11,12,13,21,22,23) violates both:

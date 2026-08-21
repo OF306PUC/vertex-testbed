@@ -173,7 +173,10 @@ def main() -> int:
             return 1
 
         # ── 4. STATE reports ─────────────────────────────────────────────────
-        reports.clear()
+        # NOT cleared here. The trigger hook makes the board report within
+        # milliseconds, so clearing after the trigger discards exactly the sample
+        # that shows the hook working -- which is what made the run before this
+        # look as though the first report still arrived at ~500 ms.
         print(f"  ..   collecting STATE for {args.seconds:g}s "
               f"(clock={CLOCK_MS} ms -> expect ~{args.seconds*1000/CLOCK_MS:.0f})")
         time.sleep(args.seconds)
@@ -232,10 +235,20 @@ def main() -> int:
             if offs:
                 print(f"       device - host  {min(offs):+.1f} .. {max(offs):+.1f} ms "
                       f"(first {offs[0]:+.1f}, last {offs[-1]:+.1f})")
+            # Two independent readings of trigger-to-first-step latency. `counter`
+            # is the stronger one: it counts steps actually taken, so it cannot be
+            # confused by when the reporting timer happened to fire.
             first_rx = decoded[0][0]
             if first_rx is not None:
                 print(f"       first report   {first_rx/1000:.0f} ms after the "
-                      f"trigger (was 442/555 ms before the trigger hook)")
+                      f"trigger, on the host clock")
+            step_ms = first.t_us / 1000.0 - first.counter * DT_MS
+            print(f"       first step     ~{step_ms:+.0f} ms after the trigger "
+                  f"(t_us {first.t_us/1000:.0f} ms - counter {first.counter} x "
+                  f"{DT_MS} ms). Was ~+442 ms before the trigger hook.")
+            if step_ms > 100:
+                fails.append(f"the control law began ~{step_ms:.0f} ms after the "
+                             f"trigger; the CONTROL wake-up hook is not working")
             if len(last.neighbor_vstates) != len(NEIGHBOURS):
                 fails.append(f"reported {len(last.neighbor_vstates)} neighbours, "
                              f"declared {len(NEIGHBOURS)}")

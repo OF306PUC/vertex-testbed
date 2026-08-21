@@ -29,6 +29,7 @@ writer. Without that the log has two writers and no lock.
 
 from __future__ import annotations
 
+import select
 import threading
 import time
 from dataclasses import dataclass
@@ -38,6 +39,11 @@ from .proto import (Frame, FrameParser, FrameType, ProtoError, build_frame,
                     decode_ack)
 
 __all__ = ["LinkError", "LinkRejected", "LinkCounters", "TimedFrame", "SerialLink"]
+
+#: How long the reader blocks in `select` with nothing to read. Only bounds how
+#: quickly a stop request and the idle parser timeout are noticed -- it does NOT
+#: quantise arrival times, which is the whole reason for using select at all.
+_POLL_S = 0.05
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,7 +161,12 @@ class SerialLink:
         if self._io is None:
             import serial                    # imported here so tests need no port
             try:
-                self._io = serial.Serial(self.port, self.baud, timeout=0.01)
+                # timeout=0: the reader blocks in `select`, not in `read`. A read
+                # timeout would round every arrival up to its granularity, and that
+                # rounding lands straight in `rx_time_us` -- 8 ms of spread was
+                # measured on hardware with the 10 ms timeout this used to use, on
+                # a 3.1 ms frame.
+                self._io = serial.Serial(self.port, self.baud, timeout=0)
             except Exception as exc:
                 raise LinkError(
                     f"cannot open {self.port} at {self.baud}: {exc}. "
@@ -191,9 +202,30 @@ class SerialLink:
 
     # ── read loop ────────────────────────────────────────────────────────────
     def _run(self) -> None:
+        """Wake on data, not on a poll interval.
+
+        The arrival stamp is only as good as how promptly this loop notices bytes,
+        and `rx_time_us` is the timeline the run log plots against. A read timeout
+        rounds every arrival up to its own granularity: with the 10 ms timeout this
+        used to use, a 3.1 ms STATE frame showed 8 ms of spread in
+        `device_timestamp - timestamp` on hardware, none of it real.
+
+        Falls back to a plain blocking read for an injected object with no file
+        descriptor -- the test fakes.
+        """
+        fd = None
+        try:
+            fd = self._io.fileno() if self._io is not None else None
+        except Exception:
+            fd = None
+
         while not self._stop.is_set():
             try:
-                data = self._io.read(4096) if self._io is not None else b""
+                if fd is not None:
+                    ready, _, _ = select.select([fd], [], [], _POLL_S)
+                    data = self._io.read(4096) if ready else b""
+                else:
+                    data = self._io.read(4096) if self._io is not None else b""
             except Exception:
                 self.counters.read_errors += 1
                 time.sleep(0.05)

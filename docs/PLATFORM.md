@@ -1131,6 +1131,134 @@ reuses the board's clock for both fails rather than looking plausible.
 
 ---
 
+### 8a-quater. Trigger hook confirmed, and the stamp sharpened (2026-08-21)
+
+The hook works. The evidence is `counter`, not the wall clock:
+
+| | first report `t_us` | `counter` there | first step at |
+|---|---|---|---|
+| before the hook | 441 986 µs | 0 | ~+442 ms |
+| after | 502 319 µs | 3 | **~0 ms** |
+
+`counter` is the number of steps actually taken, so it cannot be confused by when
+the *reporting* timer happened to fire. Three steps already done by the first
+report means the dynamics timer started at the trigger; zero steps by 442 ms means
+it had not started at all. Report cadence measured 500.000 ms exactly over 11
+intervals.
+
+Two of my own bugs surfaced doing this, both in the measuring apparatus rather than
+the thing measured -- worth recording because both made a working system look
+broken:
+
+* **`check_board.py` cleared its report buffer *after* the trigger**, discarding
+  the very sample that shows the hook working. It reported "first report 516 ms"
+  while the board had in fact already reported within milliseconds. The script now
+  keeps that sample and derives trigger-to-first-*step* from `counter`, which is
+  the honest reading, and fails if it exceeds 100 ms.
+* **`on_state` began delivering a `TimedFrame` and `check_board.py` still expected
+  a bare frame**, so every STATE decode raised `'TimedFrame' object has no
+  attribute 'payload'` and the run reported "nothing received" -- while the link
+  counters said `states=21`. The counters were right. `BleRelay` had been updated;
+  the script had not.
+
+**The arrival stamp was being quantised by pyserial.** `device_timestamp -
+timestamp` measured -14.9 .. -6.6 ms, and that decomposes cleanly:
+
+    STATE frame 36 B at 115200 8N1  = 3.1 ms transit
+    read timeout 10 ms              = 0..10 ms of rounding
+                                      -------------------
+    predicted 3.1 .. 13.1 ms; observed 6.6 .. 14.9 ms, spread 8.3 ms
+
+The spread *is* the poll granularity, and none of it is real. `SerialLink`'s reader
+now blocks in `select` on the port's descriptor with `timeout=0` on the Serial
+itself, so it wakes when bytes arrive rather than when a timer expires. What should
+remain is the transit plus the board's assembly delay, and a spread far below one
+control period. Anything left after that is the board's crystal against the Pi's
+clock, which is the quantity `CLOCK_MODEL.md` predicts will dominate a long run.
+
+Raising the UART baud would cut the transit proportionally (3.1 ms at 115200,
+0.4 ms at 921600). Not done: it needs a devicetree change on the board, and the
+transit is a near-constant offset rather than jitter.
+
+---
+
+### 8d. Runbook: two hosts, six agents
+
+`experiments/n6-ring.yaml`. The step between one board and the full nine.
+
+**The topology is forced, not chosen.** Every edge must cross hosts (an intra-host
+link never reaches the radio) and must not join `ble` to `wifi` (no shared medium).
+That leaves seven legal edges among six agents and **exactly one** Hamiltonian
+cycle through them:
+
+```
+1(ble,h0) - 2(ble,h1) - 21(bri,h0) - 12(wifi,h1) - 11(wifi,h0) - 22(bri,h1) - back to 1
+```
+
+lambda_2 = 1.0, degree 2 everywhere. Every path the platform compares appears once:
+
+| edge | path exercised |
+|---|---|
+| 1-2 | nRF to nRF over BLE |
+| 2-21, 22-1 | nRF advertises, a Pi's HCI scanner receives -- the direction loopback B validated |
+| 11-12 | UDP broadcast between hosts |
+| 21-22 *(unused)* | the seventh legal edge; the only densification available |
+
+Note 21-22 is *not* in the cycle, so bridge-to-bridge over BLE is the one path this
+manifest does not cover. Add that edge to get it, at the cost of degree 3 on the
+bridges.
+
+### Sequence
+
+**On each Pi**, once:
+
+```
+bash scripts/agents.sh preflight     # do not skip this
+sudo hciconfig hci0 down             # the bridge needs the HCI user channel, exclusively
+bash scripts/agents.sh start
+bash scripts/agents.sh status
+```
+
+`preflight` checks the four things that actually stop a run: the interface has an
+address, **chrony is tracking** (the shared epoch is only shared if the clocks
+are), the nRF's serial port exists and is writable, and `hci0` is DOWN with
+CAP_NET_ADMIN available. It is a checklist rather than a stack trace on purpose.
+
+`scripts/agents.sh` does **not** pass `--epoch`. The epoch is per-run and the hub
+sends it with the trigger; one fixed at launch would give each agent its own origin.
+
+**On the hub:**
+
+```
+python3 -m vertex.hub status experiments/n6-ring.yaml
+python3 -m vertex.hub run    experiments/n6-ring.yaml --duration 120
+```
+
+`status` first, always. Finding a Pi that did not come up costs seconds there and a
+whole run otherwise.
+
+### What to look for in the result
+
+* **`enabled=[True]` on some neighbour.** The first thing two boards buy that one
+  cannot. With one board every `enabled` was False, so the coupling term was
+  identically zero and `vstate` could not move. If it is still all False here, the
+  agents are running but nothing is being heard.
+* **`vstate` actually moving.** Same reason. `state` moved on one board because the
+  disturbance integrates alone; `vstate` moves only under coupling.
+* **`fresh` bits varying.** All-True means every link delivered in every window,
+  which at this range is plausible and means loss is not yet measurable. All-False
+  with `enabled=True` means stale values are being reused -- worth chasing.
+* **`trigger spread`** from the hub, and **`device_timestamp - timestamp`** per
+  `ble` node. Together they bound how much of any early transient is real.
+* **The `bridge` agents will hear their own host's nRF** -- inches away, and not a
+  declared neighbour of theirs in this manifest. Those land in the observer's
+  `unknown_node` counter, which is the filtering working, not a fault.
+
+Host-side rehearsed with `python3 test/hub/check_fleet.py experiments/n6-ring.yaml`:
+6/6 nodes, 240 samples, one epoch.
+
+---
+
 ### What is left
 
 Nothing host-side blocks a first run. Remaining, in order:
