@@ -1208,6 +1208,239 @@ Note 21-22 is *not* in the cycle, so bridge-to-bridge over BLE is the one path t
 manifest does not cover. Add that edge to get it, at the cost of degree 3 on the
 bridges.
 
+### The chrony trap, found on the first two-host preflight
+
+pi2 reported:
+
+```
+chrony offset          0.000000005 seconds fast of NTP time (ref 00000000 ())
+```
+
+Five nanoseconds. It looks like the best-synchronised machine in the building. It
+is synchronised to **nothing**: `Reference ID 00000000` means chrony has no source,
+so the offset it reports is against its own local clock and is necessarily ~0.
+pi1, on the same LAN, was 1.157 ms off a real source (`ref 2DAA6404`).
+
+So the two hosts were not aligned with each other, the shared epoch would have been
+shared in name only, and every cross-node delay would have been measuring their
+clock offset. **The original preflight passed this**, because it only checked that
+`chronyc tracking` produced output. It now fails on `ref 00000000` explicitly, with
+the reason, because a number that reads perfect for the wrong reason is worse than
+no number.
+
+Worth stating the general shape: an unsynchronised chrony does not report an error,
+it reports agreement with itself. Anything that checks "is the offset small" will
+pass it.
+
+Fix on the affected host, then re-run preflight:
+
+```
+chronyc sources -v          # is there a reachable source at all?
+sudo chronyc makestep       # step now rather than slewing over minutes
+```
+
+If the Pis are on an isolated LAN with no route to an NTP server, one of them has
+to serve time to the other (`local stratum 10` plus an `allow` line in
+`chrony.conf`) -- and then the *served* host is the reference, so its own accuracy
+is what bounds every delay measurement in the experiment.
+
+### Virtual environments: three separate traps
+
+Hit in that order on the first venv launch.
+
+**1. The deps were simply not installed.** All three agents died with
+`ModuleNotFoundError: No module named 'numpy'`. `numpy` is a declared dependency,
+reached through `vertex.controllers.disturbance`, and a fresh venv has none of the
+four. `pip install -e .` fixes it.
+
+Why `test/nrf/check_board.py` had worked in the *same* venv: it imports only
+`vertex.serial`, `vertex.numeric`, `vertex.clock`, `vertex.radio` and `vertex.wire`,
+none of which touch numpy. So the board test is not evidence the environment can
+run an agent.
+
+Preflight checked the Python *version* but not that the imports resolve. It now
+runs `import vertex.agent.__main__`, which is what `start` will do, and prints the
+interpreter path plus a warning when `$VIRTUAL_ENV` is set but the interpreter is
+outside it.
+
+**2. `sudo -E` does not preserve the PATH lookup.** Debian's sudoers sets
+`secure_path`, which overrides PATH when resolving the command -- so a bare
+`python3` under sudo finds `/usr/bin/python3` while the two unprivileged agents
+find the venv's. The bridge would have run a *different interpreter with different
+packages* from its siblings, silently. `scripts/agents.sh` now resolves the
+interpreter to an absolute path once, up front.
+
+**3. A systemd unit inherits no shell, so a venv is invisible to it** -- and
+neither obvious workaround works:
+
+* `ExecStart=${VERTEX_PYTHON} ...` fails to start. systemd expands `${VAR}` in
+  ExecStart's *arguments* but not in the executable position:
+  `Command ${VERTEX_PYTHON} is not executable`.
+* A stable symlink to the venv's interpreter **loses the venv**. Invoking
+  `/usr/local/bin/vertex-python -> .venv/bin/python3` reports `sys.prefix=/usr` and
+  imports a different numpy entirely. Measured:
+
+```
+direct : /tmp/vtest        <- venv detected
+symlink: /usr              <- venv lost
+```
+
+  Venv detection reads `pyvenv.cfg` relative to the interpreter's own location, and
+  the symlink is not in the venv.
+
+So `install.sh` generates the whole `ExecStart` into the host drop-in from
+`VERTEX_PYTHON`, alongside the other three directives that cannot reference
+variables. The template deliberately has no `ExecStart` -- one definition, one
+place -- which makes it a fragment, so verify it through `install.sh` rather than
+alone. `install.sh` also refuses to install if the chosen interpreter cannot
+`import vertex.agent`, rather than leaving a unit that fails at start with a
+traceback in the journal.
+
+All three of these were caught by tooling rather than on the bench:
+`systemd-analyze verify` for the first ExecStart mistake, and an actual venv for the
+symlink claim I was about to ship.
+
+### Three layers, and only one of them is per-run
+
+Easy to collapse these into one checklist and then repeat setup steps that did not
+need repeating -- or worse, skip a per-boot step because it looks like setup.
+
+**Layer 1 -- once per Pi, survives reboots.** Image setup.
+
+```
+# Bookworm or newer: vertex needs python >= 3.11 (enum.StrEnum). Bullseye has 3.9.
+sudo apt install chrony
+#   ... point /etc/chrony/chrony.conf at a REACHABLE source, then verify the
+#   reference id is not 00000000 -- see "The chrony trap" above.
+sudo usermod -aG dialout $USER        # the ble agent's serial port; needs a re-login
+sudo systemctl disable --now bluetooth  # else bluetoothd re-claims hci0 every boot
+
+# ONE of these, or neither if you let the script sudo the bridge:
+sudo setcap cap_net_admin,cap_net_raw+eip $(readlink -f $(command -v python3))
+sudo bash deploy/install.sh            # the scaling answer; see below
+```
+
+Disabling `bluetooth.service` is the one people miss. `hciconfig hci0 down` is
+undone by the next reboot, so without it the bridge fails on every cold start with
+an EBUSY that reads as a missing adapter.
+
+**Layer 2 -- once per boot, on each Pi.** Start the agents; they are long-lived.
+
+```
+bash scripts/agents.sh preflight       # a check; it starts nothing
+bash scripts/agents.sh start
+```
+
+**Layer 3 -- per run, on the hub only.** Nothing touches the Pis.
+
+```
+python3 -m vertex.hub status experiments/n6-ring.yaml
+python3 -m vertex.hub run    experiments/n6-ring.yaml --duration 120 --run-index 0
+```
+
+The agents survive consecutive runs: the hub re-configures, triggers, stops and
+collects each time, and each run gets its own epoch. Verified for three runs back
+to back against one set of agents, 6/6 nodes each time. If an agent had to be
+restarted between runs, "per run" would mean six process launches across two hosts;
+it does not.
+
+**`--run-index` is the knob that makes a run different**, not `--run-name`:
+
+| | |
+|---|---|
+| same `--run-index` | identical initial conditions -- a *repeat* of the same run |
+| new `--run-index` | a new draw from the manifest seed -- another *sample* |
+| `--run-name` | the label and output directory, nothing more |
+
+So `--run-index 0..9` is ten samples of one experiment, each exactly reproducible.
+Re-running index 0 after a firmware change is the comparison to make.
+
+### Two hosts or ten: which privilege route
+
+Three ways to give the bridge its capability, and they do not scale the same way.
+
+| | grant lands on | survives reboot | logs | per-host cost |
+|---|---|---|---|---|
+| `sudo -E bash scripts/agents.sh` | the whole process tree | no | files in /tmp, root-owned | none |
+| `setcap` on python3 | **every python3 on the host** | until the next `apt upgrade` of python3 | files, user-owned | one command |
+| **systemd template** (`deploy/`) | **one unit** | yes | journald, rotated | one env file |
+
+`setcap` is the tempting middle option and it is the one that does not scale: it
+grants `CAP_NET_ADMIN` to every python3 process the machine will ever run,
+including a shell one-liner. It is also silently cleared when the interpreter is
+replaced by a package upgrade, and it sets `AT_SECURE`, so the dynamic loader
+starts ignoring `LD_*` -- worth knowing before debugging a venv.
+
+`deploy/vertex-agent@.service` is the extensible answer. The capability lives in
+`vertex-agent@bridge.service.d/capabilities.conf` and applies to **that instance
+only**, which is the thing neither shell route can express:
+
+```
+[Service]
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+Conflicts=bluetooth.service
+ExecStartPre=/usr/bin/hciconfig hci0 down
+```
+
+`ble` and `wifi` keep `CapabilityBoundingSet=` empty, so they cannot acquire it at
+all. `Conflicts=bluetooth.service` encodes the exclusivity of the user channel --
+bluetoothd holding hci0 is the EBUSY that reads as a missing adapter -- and
+`After=chrony-wait.service` encodes the thing that caught pi2: an agent started
+before the clock is synchronised stamps its early samples on an origin nobody
+shares. Neither dependency is expressible in a shell launcher; both are one line
+here.
+
+**Sequencing.** For the two-host run, use the script -- it sudo's the bridge and
+nothing else, and it is already working. Install the units when going past two
+hosts, which is where enabling agents by hand stops being reasonable:
+
+```
+sudo bash deploy/install.sh          # then edit /etc/default/vertex-agent
+sudo systemctl enable --now vertex-agent@{ble,wifi,bridge}
+```
+
+One trap worth recording, caught by `systemd-analyze verify` rather than on the
+bench: **only `ExecStart=` expands `${VAR}` from an `EnvironmentFile`.** `User=`,
+`WorkingDirectory=` and `ReadWritePaths=` take literals, and a unit that references
+a variable there fails to start with "path is not absolute". `install.sh` generates
+those three into a drop-in from the env file, and runs `systemd-analyze verify` on
+all three instances before it finishes.
+
+### Privileges: only the bridge needs them
+
+Of the three agents, `bridge` alone needs elevation -- it binds the **HCI user
+channel**, which is exclusive and root-only. `ble` needs the serial port
+(`dialout` group) and `wifi` needs nothing beyond the LAN.
+
+`scripts/agents.sh` therefore elevates the bridge and nothing else. Running all
+three under `sudo` would be simpler and wrong: every run log becomes root-owned,
+and two processes that never touch the radio get the capability anyway.
+
+Three ways to satisfy it, in order of preference:
+
+```
+# 1. capability on the interpreter -- one-time, then everything runs unprivileged
+sudo setcap cap_net_admin,cap_net_raw+eip $(readlink -f $(command -v python3))
+
+# 2. nothing: the script sudo's the bridge by itself, if sudo is available
+bash scripts/agents.sh start
+
+# 3. everything as root -- works, leaves root-owned logs
+sudo -E bash scripts/agents.sh start
+```
+
+`preflight` reports which route will actually be used rather than failing on the
+absence of any one of them.
+
+Two details this forced, both of which look like bugs when they bite:
+
+* `kill -0` cannot test a root-owned process from an unprivileged shell -- it
+  returns EPERM, indistinguishable from "gone", so `status` reported a running
+  bridge as DOWN. The liveness test reads `/proc/<pid>` instead.
+* Stopping a sudo'd agent signals `sudo`, which forwards TERM to its child. The
+  stop path tries a plain `kill` first and falls back to `sudo kill`.
+
 ### Sequence
 
 **On each Pi**, once:

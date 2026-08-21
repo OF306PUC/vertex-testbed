@@ -1,0 +1,80 @@
+# One agent, templated by type: vertex-agent@ble, @wifi, @bridge.
+#
+#   sudo bash deploy/install.sh
+#   sudo systemctl enable --now vertex-agent@{ble,wifi,bridge}
+#   journalctl -u vertex-agent@bridge -f
+#
+# Why this rather than scripts/agents.sh, once there is more than one host:
+#
+#   * The capability goes to the SERVICE, not to the interpreter. `setcap` on
+#     python3 grants CAP_NET_ADMIN to every python3 process on the machine;
+#     the @bridge drop-in grants it to one unit. That is the whole argument, and
+#     it only gets stronger with more hosts.
+#   * No sudo in the process tree: no signal forwarding to get wrong, no
+#     root-owned run logs to chase with chown before they can be collected.
+#   * Survives a reboot, and restarts a crashed agent rather than leaving a hole
+#     in one node's data that is discovered at collection time.
+#   * chrony-wait ordering: an agent that starts before the clock is synchronised
+#     stamps its early samples on an origin nobody else shares.
+#   * Enabling 30 agents across 10 hosts is one idempotent loop.
+#
+# Host-specific values -- user, repo path, data path -- are NOT here. Only
+# ExecStart= expands ${VAR} from EnvironmentFile; User=, WorkingDirectory= and
+# ReadWritePaths= take literals, so install.sh writes them into a drop-in.
+# `systemd-analyze verify` catches this, which is worth running after any edit.
+#
+# Deliberately NO --epoch: the epoch is per-run and the hub sends it with the
+# trigger. One fixed at boot would give every agent its own origin.
+
+[Unit]
+Description=VERTEX %i agent
+# network-online, not network: resolve_local_ip needs an address to exist.
+After=network-online.target
+Wants=network-online.target
+# chronyd having started is not enough -- it must have stepped. chrony-wait
+# blocks until the clock is actually synchronised.
+After=chrony-wait.service
+Wants=chrony-wait.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/default/vertex-agent
+# ExecStart= is NOT here. install.sh generates it into the host drop-in, because
+# the interpreter path has to be a literal and three things rule out the
+# alternatives:
+#
+#   * systemd expands ${VAR} in ExecStart's *arguments* but not in the executable
+#     position, so `ExecStart=${VERTEX_PYTHON} ...` fails to start with
+#     "Command ${VERTEX_PYTHON} is not executable".
+#   * A unit inherits no shell, so an activated venv is invisible to it. The venv's
+#     interpreter must be named outright.
+#   * A stable symlink to it does not work either: invoking a venv python through a
+#     symlink loses the venv -- sys.prefix comes back as /usr and the venv's
+#     site-packages are not on the path. Measured, not assumed.
+#
+# So the one definition lives in the generated drop-in, sourced from
+# VERTEX_PYTHON. This file is a fragment on its own; verify it via install.sh.
+
+Restart=on-failure
+RestartSec=2
+
+# SIGTERM is what the agent handles: it closes its control server's open
+# connections and finalises the run log. Give it room to finish.
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vertex-%i
+
+# Least privilege by default; the bridge lifts exactly what it needs in its
+# drop-in. ProtectSystem=strict makes the whole hierarchy read-only, so the data
+# directory is granted back explicitly (install.sh writes that line).
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

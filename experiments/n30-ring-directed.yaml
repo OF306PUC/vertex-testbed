@@ -55,152 +55,152 @@ structure:
     - 30
 nodes:
 - id: 1
-  ip: 192.168.0.190
+  ip: 10.6.5.1
   type: ble
   enabled: true
   publish_period_s: 1.0
 - id: 2
-  ip: 192.168.0.198
+  ip: 10.6.5.2
   type: ble
   enabled: true
   publish_period_s: 1.0
 - id: 3
-  ip: 192.168.0.179
+  ip: 10.6.5.3
   type: ble
   enabled: true
   publish_period_s: 1.0
 - id: 4
-  ip: 192.168.0.138
+  ip: 10.6.5.4
   type: ble
   enabled: true
   publish_period_s: 1.0
 - id: 5
-  ip: 192.168.0.124
+  ip: 10.6.5.5
   type: ble
   enabled: true
   publish_period_s: 1.0
 - id: 6
-  ip: 192.168.0.167
+  ip: 10.6.5.6
   type: ble
   enabled: true
   publish_period_s: 1.0
 - id: 7
-  ip: 192.168.0.180
+  ip: 10.6.5.7
   type: ble
   enabled: true
   publish_period_s: 1.0
 - id: 8
-  ip: 192.168.0.137
+  ip: 10.6.5.8
   type: ble
   enabled: true
   publish_period_s: 1.0
 - id: 9
-  ip: 192.168.0.127
+  ip: 10.6.5.9
   type: ble
   enabled: true
   publish_period_s: 1.0
 - id: 10
-  ip: 192.168.0.176
+  ip: 10.6.5.10
   type: ble
   enabled: true
   publish_period_s: 1.0
 - id: 11
-  ip: 192.168.0.190
+  ip: 10.6.5.1
   type: wifi
   enabled: true
   publish_period_s: 1.0
 - id: 12
-  ip: 192.168.0.198
+  ip: 10.6.5.2
   type: wifi
   enabled: true
   publish_period_s: 1.0
 - id: 13
-  ip: 192.168.0.179
+  ip: 10.6.5.3
   type: wifi
   enabled: true
   publish_period_s: 1.0
 - id: 14
-  ip: 192.168.0.138
+  ip: 10.6.5.4
   type: wifi
   enabled: true
   publish_period_s: 1.0
 - id: 15
-  ip: 192.168.0.124
+  ip: 10.6.5.5
   type: wifi
   enabled: true
   publish_period_s: 1.0
 - id: 16
-  ip: 192.168.0.167
+  ip: 10.6.5.6
   type: wifi
   enabled: true
   publish_period_s: 1.0
 - id: 17
-  ip: 192.168.0.180
+  ip: 10.6.5.7
   type: wifi
   enabled: true
   publish_period_s: 1.0
 - id: 18
-  ip: 192.168.0.137
+  ip: 10.6.5.8
   type: wifi
   enabled: true
   publish_period_s: 1.0
 - id: 19
-  ip: 192.168.0.127
+  ip: 10.6.5.9
   type: wifi
   enabled: true
   publish_period_s: 1.0
 - id: 20
-  ip: 192.168.0.176
+  ip: 10.6.5.10
   type: wifi
   enabled: true
   publish_period_s: 1.0
 - id: 21
-  ip: 192.168.0.190
+  ip: 10.6.5.1
   type: bridge
   enabled: true
   publish_period_s: 1.0
 - id: 22
-  ip: 192.168.0.198
+  ip: 10.6.5.2
   type: bridge
   enabled: true
   publish_period_s: 1.0
 - id: 23
-  ip: 192.168.0.179
+  ip: 10.6.5.3
   type: bridge
   enabled: true
   publish_period_s: 1.0
 - id: 24
-  ip: 192.168.0.138
+  ip: 10.6.5.4
   type: bridge
   enabled: true
   publish_period_s: 1.0
 - id: 25
-  ip: 192.168.0.124
+  ip: 10.6.5.5
   type: bridge
   enabled: true
   publish_period_s: 1.0
 - id: 26
-  ip: 192.168.0.167
+  ip: 10.6.5.6
   type: bridge
   enabled: true
   publish_period_s: 1.0
 - id: 27
-  ip: 192.168.0.180
+  ip: 10.6.5.7
   type: bridge
   enabled: true
   publish_period_s: 1.0
 - id: 28
-  ip: 192.168.0.137
+  ip: 10.6.5.8
   type: bridge
   enabled: true
   publish_period_s: 1.0
 - id: 29
-  ip: 192.168.0.127
+  ip: 10.6.5.9
   type: bridge
   enabled: true
   publish_period_s: 1.0
 - id: 30
-  ip: 192.168.0.176
+  ip: 10.6.5.10
   type: bridge
   enabled: true
   publish_period_s: 1.0

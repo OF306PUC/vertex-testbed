@@ -24,9 +24,9 @@ OUT = Path(__file__).resolve().parent.parent / "experiments"
 #: agents. These are the current lab addresses; they change when a host is
 #: re-imaged or moved to a different interface, and they are the ONLY part of a
 #: manifest that is not derivable.
-HOSTS = ["192.168.0.190", "192.168.0.198", "192.168.0.179", "192.168.0.138",
-         "192.168.0.124", "192.168.0.167", "192.168.0.180", "192.168.0.137",
-         "192.168.0.127", "192.168.0.176"]
+HOSTS = ["10.6.5.1", "10.6.5.2", "10.6.5.3", "10.6.5.4", 
+         "10.6.5.5", "10.6.5.6", "10.6.5.7", "10.6.5.8",
+         "10.6.5.9", "10.6.5.10"]
 
 #: Ids 1-10 are BLE agents, 11-20 Wi-Fi, 21-30 bridges; agent k of each band
 #: lives on HOSTS[k]. Bridges carry both radios, which is why they are the ones

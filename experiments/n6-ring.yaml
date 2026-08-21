@@ -21,7 +21,7 @@ controller:
     period_samples: 1000
 nodes:
 - id: 1
-  ip: 192.168.0.190
+  ip: 10.6.5.1
   type: ble
   enabled: true
   publish_period_s: 1.0
@@ -29,7 +29,7 @@ nodes:
   - 22
   - 2
 - id: 2
-  ip: 192.168.0.198
+  ip: 10.6.5.2
   type: ble
   enabled: true
   publish_period_s: 1.0
@@ -37,7 +37,7 @@ nodes:
   - 1
   - 21
 - id: 11
-  ip: 192.168.0.190
+  ip: 10.6.5.1
   type: wifi
   enabled: true
   publish_period_s: 1.0
@@ -45,7 +45,7 @@ nodes:
   - 12
   - 22
 - id: 12
-  ip: 192.168.0.198
+  ip: 10.6.5.2
   type: wifi
   enabled: true
   publish_period_s: 1.0
@@ -53,7 +53,7 @@ nodes:
   - 21
   - 11
 - id: 21
-  ip: 192.168.0.190
+  ip: 10.6.5.1
   type: bridge
   enabled: true
   publish_period_s: 1.0
@@ -61,7 +61,7 @@ nodes:
   - 2
   - 12
 - id: 22
-  ip: 192.168.0.198
+  ip: 10.6.5.2
   type: bridge
   enabled: true
   publish_period_s: 1.0
