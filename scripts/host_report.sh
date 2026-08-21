@@ -71,6 +71,18 @@ kv bluez "$(dpkg-query -W -f='${Version}' bluez 2>/dev/null)"
 kv bluetoothd_active "$(systemctl is-active bluetooth 2>/dev/null)"
 
 # ── the two things that silently invalidate a comparison ────────────────────
+# The AP, from cached scan results so this stays non-disruptive. Beacon interval
+# x DTIM period is the worst-case time a BROADCAST frame waits at the AP -- the
+# candidate explanation for a 171 ms median UDP delay on links with a 16 ms
+# minimum. See PLATFORM.md 8a-xi and scripts/ap_info.sh.
+if [ -n "${VERTEX_SSID:-}" ] && command -v iw >/dev/null 2>&1; then
+    kv ap_bssid "$(iw dev "$IFACE" link 2>/dev/null | awk '/Connected to/{print $3}')"
+    kv ap_ssid "$(iw dev "$IFACE" link 2>/dev/null | awk -F': ' '/SSID/{print $2}')"
+    kv ap_beacon_dtim "$(bash "$(dirname "${BASH_SOURCE[0]}")/ap_info.sh" \
+        "$VERTEX_SSID" --dump 2>/dev/null |
+        awk -F': +' '/beacon interval|DTIM period/{printf "%s ", $2}')"
+fi
+
 kv chrony_ref "$(chronyc tracking 2>/dev/null | awk -F': *' '/Reference ID/{print $2}')"
 kv chrony_offset "$(chronyc tracking 2>/dev/null | awk -F': *' '/System time/{print $2}')"
 kv wlan_channel "$(iw dev wlan0 info 2>/dev/null | awk '/channel/{print $2, $3, $4}')"

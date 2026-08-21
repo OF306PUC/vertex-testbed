@@ -1292,6 +1292,65 @@ BLE nRF-to-nRF, BLE nRF-to-Pi in both directions, and UDP between hosts; the epo
 transfer; the STATE relay path; v1 on the air; and the hub configuring, triggering,
 stopping and collecting six agents across two machines.
 
+### 8a-undecies. It is not power save: UDP broadcast is being held at the AP
+
+`power_save off` recorded in the run's own metadata, and the delay did not move:
+
+```
+power_save off   wlan_channel 11   wlan_freq_mhz 2462   wlan_txpower_dbm 31.0
+wlan_type managed
+
+    link  med   ratio  dup  min ms  median ms    n
+  12->11  UDP  0.9816    0   20.80     175.36  588
+  11->12  UDP  0.9850    0   16.50     171.39  590
+   2->21  BLE  0.9000  314    6.49     107.55  854
+   1->22  BLE  0.8915  265    4.93     104.39  799
+```
+
+`min_delay_us` is what settled it. **The minimum is 8-21x below the median on every
+link**, so the 172 ms is a distribution, not a link property -- and each medium has
+its own explanation.
+
+**BLE is understood and correct.** A published value waits 0-100 ms for the next
+advertising event, and about 35% of samples are the *second* advertisement of the
+same value roughly 100 ms later (265-314 duplicates of ~800 samples). A mixture of
+U(0,100) and U(100,200) has its median above 100 ms. min 5 ms, median 105 ms,
+consistent.
+
+**UDP is not.** `duplicates = 0` and 588-595 samples against 600 published, so every
+datagram arrives exactly once -- there is no duplication to shift the median. A
+16 ms minimum with a 171 ms median means the datagrams are being **held**.
+
+`wlan_type = managed`: both Pis are stations on an access point, so every packet
+goes Pi -> AP -> Pi. **Broadcast and multicast frames through an AP are buffered
+until the next DTIM beacon whenever any associated station is dozing** -- not just
+ours. A 100 ms beacon with DTIM 1-3 gives 100-300 ms of buffering, mean wait
+50-150 ms. That is why `power_save off` on our own Pis changed nothing: the
+buffering is at the AP, driven by other clients.
+
+If that holds it is a first-order finding rather than a nuisance. The platform's
+Wi-Fi transport is **subnet broadcast** (chosen in the §10 log to avoid IGMP
+snooping and get one-frame-reaches-all airtime), and on infrastructure WLAN that
+choice buys a DTIM-scale latency penalty that unicast does not pay. With a 200 ms
+publish period, Wi-Fi neighbour data is nearly a full period stale while BLE is half
+that -- **the opposite of the ordering anyone would assume**, and squarely the kind
+of transport asymmetry this testbed exists to find.
+
+Three tests, in order of cost:
+
+1. **Read the AP's beacon interval and DTIM period** -- `iw dev wlan0 scan` on the
+   associated BSS. If DTIM x beacon is near 170 ms, that is the answer.
+2. **Send unicast instead of broadcast.** Unicast is not DTIM-buffered.
+   `UdpTransport` already takes `send_to`, so one datagram per neighbour is a small
+   change and a decisive experiment. It costs airtime proportional to degree, which
+   is itself the traffic knob the reviewer's question needs.
+3. **Remove the AP** -- IBSS or a direct link. Cleanest, most disruptive.
+
+Percentiles are now recorded per link (`p10/p25/p50/p75/p90/p99`) because the shape
+is the diagnosis: a hard mode at a multiple of the beacon interval is DTIM
+buffering, a smooth heavy tail is contention. min and median alone cannot separate
+them.
+
 ### 8a-decies. A1/A3 closed; the new baseline, and a 172 ms UDP delay
 
 Both ADs now carry the manufacturer element and nothing else -- 20 bytes,
@@ -2427,6 +2486,8 @@ Unsorted ideas go here; promote into a workstream once shaped.
 | 2026-08-18 | **Python, for raw HCI User Channel access** | A5. Reaching adv interval / scan window / channel map is the central constraint, and it's stdlib in Python vs. a native binding in Node |
 | — | How to reuse the existing C++ min-BLE stack | **Open — blocked on reading it.** Prefer porting its knowledge to pure Python; sidecar daemon over a unix socket if it's substantial; in-process binding only with a measured reason. See A5.1 |
 | — | UDP: subnet broadcast vs. IP multicast | Open — test both (C2.1). Broadcast avoids IGMP snooping
+| 2026-08-21 | **Broadcast's latency cost on infrastructure WLAN is measured, not assumed** | UDP median one-way delay 171 ms with a 16 ms minimum and zero duplication, on stations whose own `power_save` is **off**. Broadcast and multicast through an AP are buffered to the next DTIM beacon whenever *any* associated station dozes — including stations that are not ours, which is why turning ours off changed nothing. With a 200 ms publish period, Wi-Fi neighbour data is nearly a full period stale while BLE is half that: the reverse of the assumed ordering. `scripts/ap_info.sh` reads beacon interval x DTIM to confirm |
+| — | UDP: broadcast vs multicast vs **unicast-per-neighbour** | **Reopened**, with a third option. Unicast is not DTIM-buffered, so it should collapse the 171 ms; its cost is airtime proportional to degree — which is also the traffic knob the G1/G2 question needs, since broadcast airtime is degree-independent. `UdpTransport` already takes `send_to`, so this is a small change and a decisive experiment |
 | 2026-08-20 | **Firmware integrates in `float`, publishes rounded int32** | Storing the step result back into `int32_t` re-injected the truncation error every period, so the C and Python laws were different dynamical systems. Accumulators are the truth, the int32 fields a mirror. Residual is now the float32 floor, 4.5e-5 over 400 steps |
 | 2026-08-20 | **PCG32 in the firmware, replacing `rand()`** | `rand()` was unseeded (unreproducible) *and* implementation-defined (picolibc ≠ glibc), so no seeding would have made the C and Python noise comparable. PCG32 is ~10 lines with a fully specified sequence |
 | 2026-08-20 | **The PRNG seed travels in the CONTROL frame** | It is a per-run quantity — the same gains replayed with a new seed is a new run — so it belongs with the trigger, not in ALGORITHM. Node id is the stream selector, so two nodes on one seed still differ |

@@ -525,7 +525,13 @@ class AgentService:
                # residual clock skew between the two nodes, which is the cheapest
                # check that chrony is actually working (CLOCK_MODEL.md).
                "min_delay_us": st.min_delay_us,
-               "samples": len(st.delays_us)}
+               "samples": len(st.delays_us),
+               # Percentiles, because min and median already showed the delay is a
+               # DISTRIBUTION and not a link property: 16 ms minimum against a
+               # 171 ms median on UDP. The shape is the diagnosis. A hard mode at a
+               # multiple of the AP's beacon interval is DTIM buffering of
+               # broadcast frames; a smooth heavy tail is contention.
+               "delay_pctl_us": _percentiles(st.delays_us)}
             for nid, st in self.agent.neighbors.link_stats().items()
         }
         st = getattr(t, "stats", None)
@@ -597,6 +603,20 @@ class AgentService:
 
         blob = path.read_bytes()
         return Response(ok=True, kind="blob", n_bytes=len(blob), name=path.name), blob
+
+
+def _percentiles(values: list[int],
+                 pct: tuple[int, ...] = (10, 25, 50, 75, 90, 99)) -> dict[str, int]:
+    """Nearest-rank percentiles. Empty in, empty out.
+
+    Nearest-rank rather than interpolated: these are observed delays, and an
+    interpolated value is a number no packet actually had.
+    """
+    if not values:
+        return {}
+    xs = sorted(values)
+    return {f"p{p}": xs[min(len(xs) - 1, max(0, round(p / 100 * len(xs)) - 1))]
+            for p in pct}
 
 
 def _interpreter_provenance() -> dict[str, Any]:
