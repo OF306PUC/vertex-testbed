@@ -55,6 +55,50 @@ CONTROLLER = {
 }
 
 
+#: 25 Hz dynamics, 5 Hz publish. Same continuous-time experiment as CONTROLLER,
+#: sampled five times finer -- which requires rescaling, not just a smaller dt.
+#:
+#: `alpha` and `eta` are PER-STEP gains: the law does `vstate += alpha * v_i` with
+#: no dt anywhere, so the per-second gain is alpha/dt. They are kept at
+#: CONTROLLER's values by request, which makes the coupling 5x faster per second
+#: than n6-ring rather than equivalent to it.
+#:
+#: `delta` is a dead-band in state units rather than a rate, so it does not scale.
+#:
+#: `beta` and `sine_amplitude` are dt-invariant: the step adds `disturbance * dt`,
+#: so their per-second contribution is independent of dt.
+#:
+#: `noise_amplitude` is NOT. Independent draws accumulate as a random walk with
+#: std proportional to amp*sqrt(dt), so a 5x smaller dt gives sqrt(5) less noise
+#: for the same amplitude. Multiplied by sqrt(5) to hold the noise power fixed.
+CONTROLLER_FAST = {
+    "name": "finite_time_adaptive",
+    "dt_s": 0.04,                       # 25 Hz
+    # Reverted to CONTROLLER's values on request. Note the consequence: alpha is
+    # a per-step gain, so at dt=0.04 the per-second coupling is alpha/dt =
+    # 0.5 /s against n6-ring's 0.1 /s. This configuration converges ~5x faster in
+    # wall-clock terms and is NOT the same continuous-time experiment as n6-ring
+    # -- deliberate, but the two are no longer directly comparable.
+    "eta": 2e-6,
+    "alpha": 0.02,
+    "delta": 0.01,                      # unchanged: a threshold, not a rate
+    "disturbance": {
+        "enabled": True,
+        "noise_amplitude": 5.5902e-3,   # 2.5e-3 * sqrt(5)
+        "noise_offset": 0.5,
+        "beta": 5e-4,                   # dt-invariant
+        "sine_amplitude": 3.75e-3,      # dt-invariant
+        "sine_frequency_hz": 11.0,
+        # 3000 * 0.04 s = 120 s, so the disturbance does not repeat inside a
+        # 120 s run. At the old 1000 it would cycle every 40 s and repeat three
+        # times, correlating the run with its own disturbance.
+        "period_samples": 3000,
+        # sine_phase_s omitted: each node derives a distinct reproducible phase
+        # from `seed`, so the fleet is not disturbed in lockstep.
+    },
+}
+
+
 def hosts_for(n_per_band: int = 10, publish_period_s: float = 1.0,
               hosts: list[str] | None = None) -> list[dict]:
     """Declare the agent-to-host binding, without any graph structure.
@@ -156,6 +200,44 @@ def manifests() -> dict[str, dict]:
         "seed": 20260818,
         "controller": CONTROLLER,
         "nodes": n4,
+    }
+
+    # ── n6-fast: the symmetric-rate configuration ───────────────────────────
+    # Same topology as n6-ring, same forced ordering, different rates: 25 Hz
+    # dynamics and a 5 Hz publish, with the gains rescaled so the continuous-time
+    # dynamics are unchanged (see CONTROLLER_FAST).
+    #
+    # The sine is at 11 Hz, not 10. At dt = 0.04 a 10 Hz sine advances 0.4 cycles
+    # per step = 2/5, so its evaluated sequence repeats every 5 steps -- exactly
+    # the publish period -- and those five values sum to zero. That holds for ANY
+    # initial phase: 0.4*(n+5) = 0.4n + 2 is two whole cycles later regardless of
+    # phase, and the five samples are the 5th roots of unity rotated by it. So the
+    # per-node phase desynchronises the nodes from EACH OTHER, which is real, but
+    # cannot desynchronise a node from its own publish rate. The sine would ripple
+    # at 25 Hz and contribute exactly nothing cumulative.
+    #
+    # 11 Hz gives 11/25 cycles per step: a 25-step repeat (1.00 s), 25 distinct
+    # values, no coincidence with the 5-step publish period, and a non-zero net
+    # contribution per window. It is the fastest frequency this step rate carries
+    # cleanly -- 2.27 samples per cycle, inside the 12.5 Hz Nyquist limit.
+    n6f = hosts_for(2, hosts=HOSTS[:2])
+    n6f_edges = ring(ids=[1, 2, 21, 12, 11, 22])
+    for node in n6f:
+        node["neighbors"] = n6f_edges[node["id"]]
+        node["publish_period_s"] = 0.2
+    out["n6-fast"] = {
+        "name": "n6-fast",
+        "description": (
+            "n6-ring's topology at 25 Hz dynamics and a 5 Hz publish, with alpha "
+            "and eta divided by 5 so the continuous-time dynamics match n6-ring "
+            "and the two are comparable. Symmetric rates: the nRF now absorbs, "
+            "steps and reports at dt and publishes at publish_period_s, exactly "
+            "as a Pi agent does. Sine disturbance at 10 Hz -- note its evaluated "
+            "sequence repeats every 5 steps, which is the publish period."
+        ),
+        "seed": 20260818,
+        "controller": CONTROLLER_FAST,
+        "nodes": n6f,
     }
 
     # ── n6: two hosts, six agents. The step before n9. ──────────────────────

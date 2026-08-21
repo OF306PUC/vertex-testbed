@@ -1255,6 +1255,201 @@ matches them.
 
 ---
 
+### 8a-sexies. First fully working run (2026-08-21)
+
+`n6-ring`, 30 s, 6/6 nodes, trigger spread 27 ms. Every link delivering, every node
+converging. The first result the testbed has produced.
+
+```
+udp_broadcast          10.6.7.255
+udp_broadcast_source   kernel/wlan0
+prefixlen              22
+interface_used         wlan0
+```
+
+**All twelve directed links carried traffic:**
+
+```
+ 22(bridge h2) ->  1(ble    h4)  BLE  fresh 0.65   <-- the one outlier
+  2(ble    h2) ->  1(ble    h4)  BLE  fresh 1.00
+ 21(bridge h4) ->  2(ble    h2)  BLE  fresh 0.97
+  1(ble    h4) -> 22(bridge h2)  BLE  fresh 1.00
+  2(ble    h2) -> 21(bridge h4)  BLE  fresh 1.00
+ 11/12/21/22 UDP, both directions        fresh 0.97
+```
+
+**Convergence, all six agents:**
+
+```
+t= 0s  spread 24.283
+t=15s  spread 10.323
+t=30s  spread  4.359    still falling
+```
+
+What that jointly demonstrates, on hardware, for the first time: the C control law
+on two nRFs and the Python law on four Pi agents driving one coordination problem;
+BLE nRF-to-nRF, BLE nRF-to-Pi in both directions, and UDP between hosts; the epoch
+transfer; the STATE relay path; v1 on the air; and the hub configuring, triggering,
+stopping and collecting six agents across two machines.
+
+### Symmetry between the two implementations: three rates, all backwards
+
+The 0.65 link led to this. `main.c` had **three** rate asymmetries against a Pi
+agent, all in its thread layout, and all in the wrong direction:
+
+| | Pi agent | nRF (before) | consequence |
+|---|---|---|---|
+| neighbour data absorbed | on packet arrival | at `clock` (1 Hz) | the law took `clock/dt` steps on values up to 1 s stale |
+| state published | every `publish_period_s` | every `dt` | `clock/dt` times more airtime, and that many more chances past a receiver's duplicate filter |
+| sample logged | every `dt` | every `clock` | the `ble` trajectory `clock/dt` times coarser than the `wifi` one in the same run |
+
+**No wire change was needed.** `dt` and `clock` were both already being sent; they
+were wired to the wrong things. Now:
+
+* `dynamics_thread` (`dt`): drain the observer queue, then step. **No I/O** -- this
+  is the thread whose period the experiment depends on, and an HCI round trip or a
+  UART write in it is jitter in the control period.
+* `network_thread` (`dt`): snapshot and `report_state()` every tick; publish every
+  `clock/dt`-th tick.
+
+One trap in doing it: **`tx_seq` must increment per publish, never per step.** A
+sequence number advancing per step while only every Nth packet goes out reads at
+the receiver as `(N-1)/N` of the traffic lost -- it would have manufactured 80%
+packet loss out of nothing.
+
+```
+dt=200ms clock=1000ms -> step  5.0 Hz  report  5.0 Hz  publish 1.0 Hz
+dt= 40ms clock= 200ms -> step 25.0 Hz  report 25.0 Hz  publish 5.0 Hz
+```
+
+### `n6-fast`: the symmetric-rate manifest
+
+`experiments/n6-fast.yaml`. Same topology and forced ordering as `n6-ring`, 25 Hz
+dynamics, 5 Hz publish, gains rescaled so the two are comparable.
+
+```
+dt_s   0.04     alpha 0.004   (0.02 / 5)    per-second coupling 0.1000 /s
+                eta   4e-07   (2e-6 / 5)    n6-ring: 0.02/0.2 = 0.1000 /s
+                delta 0.01    unchanged -- a dead-band, not a rate
+publish_period_s 0.2  -> step & report 25 Hz, publish every 5 ticks = 5 Hz
+```
+
+Verified rather than argued: the real C law run at both configurations produces the
+same continuous-time trajectory, converging as `dt` shrinks.
+
+```
+t(s)   n6-ring vstate   n6-fast vstate    diff
+   0       22.293928       22.298784   +0.004856
+  19       22.042884       22.044270   +0.001386
+```
+
+Which fields scale and which do not:
+
+| field | scales with dt? | why |
+|---|---|---|
+| `alpha`, `eta` | **yes, /5** | per-step gains; `vstate += alpha*v_i` has no dt, so the per-second gain is `alpha/dt` |
+| `delta` | no | a threshold on `|sigma|` in state units |
+| `beta`, `sine_amplitude` | no | the step adds `disturbance * dt`, so their per-second contribution is dt-invariant |
+| `noise_amplitude` | **yes, x sqrt(5)** | independent draws accumulate as a random walk, std proportional to `amp*sqrt(dt)`; 2.5e-3 -> 5.5902e-3 |
+| `period_samples` | **yes, x5** | the disturbance repeats every `samples*dt`; 1000 would cycle every 40 s and repeat three times inside a 120 s run. 3000 gives exactly 120 s |
+
+### The 10 Hz sine: requested, and worth knowing about
+
+At `dt = 0.04` a 10 Hz sine advances **0.4 cycles per step = 2/5**, so the
+evaluated sequence repeats every **5 steps -- exactly the publish period**:
+
+```
+f= 10.0 Hz  0.40 cycles/step = 2/5   -> repeats every  5 steps (0.20 s)
+f=  9.0 Hz  0.36 cycles/step = 9/25  -> repeats every 25 steps (1.00 s)
+f= 11.0 Hz  0.44 cycles/step = 11/25 -> repeats every 25 steps (1.00 s)
+```
+
+Two consequences. Every publish samples the same phase of the disturbance, and the
+sine's net contribution to the state between publishes is exactly zero -- it sums to
+zero over its 5-step repeat. So it ripples *within* a window, visible in the 25 Hz
+log, but does not perturb the inter-agent dynamics, which is presumably the point of
+having it.
+
+It is also only 2.5 samples per cycle. That is inside the 12.5 Hz Nyquist limit, so
+the sequence is well-defined, but it does not resemble a smooth sine.
+
+9 Hz or 11 Hz repeats every 25 steps and avoids the coincidence. Shipped at 10 Hz
+as asked -- `sine_frequency_hz` is a one-field change in `CONTROLLER_FAST`.
+
+### Choosing dt and the publish period
+
+**25 Hz dynamics with a 0.2 s publish period is a good choice, but alpha and eta
+must be rescaled with it.**
+
+The discrete law does not multiply the coupling by `dt`:
+
+```c
+gi = alpha * v_i(a);          /* no dt */
+vstate_f = z + gi;
+vartheta_f = vartheta + eta * dvtheta;   /* no dt */
+nu = disturbance(a) * dt;     /* the disturbance IS dt-scaled */
+```
+
+So `alpha` is a **per-step** gain and the per-second gain is `alpha/dt`:
+
+```
+dt=0.2   alpha=0.02   -> 0.100 /s
+dt=0.04  alpha=0.02   -> 0.500 /s     <- 5x faster: a different experiment
+dt=0.04  alpha=0.004  -> 0.100 /s     <- same dynamics, finer sampling
+```
+
+Dropping `dt` from 0.2 to 0.04 without touching `alpha` makes the coupling five
+times faster per second. That is not a finer sample of the same experiment; it is a
+different one. Divide `alpha` and `eta` by the same factor as `dt` to keep the
+continuous-time behaviour, which is what the validator's "both absorb the step
+size" warning is about.
+
+A side benefit: the finite-time law overshoots once `|sigma| < alpha^2`, so a
+smaller `alpha` also lowers the chatter floor -- `4.0e-4` at `alpha=0.02` against
+`1.6e-5` at `0.004`.
+
+Everything else about 25 Hz / 0.2 s checks out:
+
+```
+advertisements per published value  2      (adv interval 100 ms) -- want >= 2
+STATE at 25 Hz, 4 neighbours        1275 B/s of 11520  = 11% of the UART
+a 120 s run                         3000 rows/node = 164 KB
+```
+
+One thing to change with `dt`: the disturbance repeats every `samples * dt`, so
+`samples=1000` goes from a 200 s cycle to a 40 s one. For a 120 s run use
+`samples=3000` to keep the disturbance from repeating three times inside it.
+
+### The one anomaly worth chasing
+
+`22 -> 1` at **0.65** while every other link is 0.97-1.00. Both are bridge-to-nRF
+BLE hops, and its mirror `21 -> 2` is 0.97, so it is not purely structural.
+
+The likely mechanism is the **publish-rate asymmetry**, and this is the first
+measurement that makes it visible. An nRF re-advertises on every control step
+(`dt` = 200 ms, 5 Hz) because `main.c`'s dynamics thread calls
+`broadcaster_update()` after each `discrete_step()`. A Pi agent publishes at
+`publish_period_s` (1 Hz here). Combined with the nRF's scanner running
+`BT_LE_SCAN_OPT_FILTER_DUPLICATE` (§8b.A0), a receiver gets one un-suppressed
+report per *distinct payload*: five chances per second from an nRF source, one from
+a Pi source. Losing one of five is invisible; losing one of one is a 1.00 -> 0.00
+step for that window.
+
+That would make every Pi-to-nRF link fragile in a way no Pi-to-Pi or nRF-to-anything
+link is -- and it sits exactly on the axis being compared. Three things to separate,
+in order of cost:
+
+1. Set `publish_period_s = dt_s` so both sources publish at the same rate. Also
+   fixes the 5x sampling-resolution gap between `ble` (31 rows) and `wifi`/`bridge`
+   (150 rows) in the same run.
+2. Turn off duplicate filtering on the nRF's scanner (§8b.A0) and re-measure.
+3. Only then look at RF: `21 -> 2` at 0.97 versus `22 -> 1` at 0.65 across
+   nominally identical hops may still be geometry, and the recorded RSSI is the
+   thing to check.
+
+Do not read 0.65 as a per-link loss figure yet. It is a *freshness* figure over
+1 s windows, and with a 1 Hz publisher the window boundary alone can produce it.
+
 ### Second two-host run: timestamps fixed, UDP still dead -- and the log said why
 
 Re-run of `n6-ring`, 30 s, trigger spread 19 ms.

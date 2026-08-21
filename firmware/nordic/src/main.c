@@ -68,6 +68,7 @@ static void network_fetching_thread(void);
 static void dynamics_timer_cb(struct k_timer *dummy);
 static void network_timer_cb(struct k_timer *dummy);
 static void on_control_frame(void);
+static void absorb_neighbors(const neighbor_info_type *info);
 
 K_THREAD_DEFINE(dynamics_thread_id, APP_STACK_SIZE,
                 dynamics_thread, NULL, NULL, NULL,
@@ -171,32 +172,35 @@ static state_packet_type on_air_packet(int64_t uptime_us)
 }
 
 /**
- * --- CONTROL LOOP ---
- * One discrete step per `dt`, then put the new vstate on the air.
+ * --- CONTROL LOOP --- every `dt`
+ *
+ * Absorb whatever the observer has heard, then take one step. Deliberately no
+ * I/O: this is the thread whose period the experiment depends on, and an HCI
+ * round trip or a UART write here shows up as jitter in the control period.
+ *
+ * Absorbing at `dt` rather than at `clock` is what makes this symmetric with a Pi
+ * agent, which folds a packet in the moment it arrives. Absorbing at `clock` meant
+ * the law took `clock/dt` steps against neighbour values up to a full second old.
  */
 static void dynamics_thread(void)
 {
+    static neighbor_info_type neighbor_info;
+
     while (1) {
         k_sem_take(&dynamics_sem, K_FOREVER);
 
-        state_packet_type pkt;
-        bool publish = false;
+        /* Non-blocking: a period with no new neighbour data is normal. */
+        const bool fresh_data =
+            k_msgq_get(&custom_observer_msg_queue, &neighbor_info, K_NO_WAIT) == 0;
 
         k_mutex_lock(&coordination_mutex, K_FOREVER);
         if (agent.params.running && agent.params.enabled) {
+            if (fresh_data) {
+                absorb_neighbors(&neighbor_info);
+            }
             discrete_step(&agent);
-            /* Advance before stamping, so the first advertisement of the run is
-             * seq 0 (sent by broadcaster_init) and this one is seq 1. A repeated
-             * seq reads at the receiver as a duplicate, not as a new packet. */
-            agent.vars.tx_seq++;
-            pkt = on_air_packet(k_ticks_to_us_floor64(k_uptime_ticks()));
-            publish = true;
         }
         k_mutex_unlock(&coordination_mutex);
-
-        if (publish) {
-            (void)broadcaster_update(&pkt);
-        }
     }
 }
 
@@ -229,9 +233,11 @@ static void absorb_neighbors(const neighbor_info_type *info)
  */
 static void network_fetching_thread(void)
 {
-    static struct agent       log_data_copy;
-    static neighbor_info_type neighbor_info;
+    static struct agent log_data_copy;
     static bool was_running = false;
+    /* Publish on every `publish_every`-th tick of this loop, which runs at `dt`. */
+    static uint32_t publish_every = 1u;
+    static uint32_t tick = 0u;
 
     while (1) {
         /* Idle fallback so a new trigger is noticed while the timer is stopped. */
@@ -267,25 +273,56 @@ static void network_fetching_thread(void)
             broadcaster_init(&initial_data);
             observer_init();
             k_timer_start(&dynamics_timer, K_MSEC(0), K_MSEC(dt_ms));
-            k_timer_start(&network_timer, K_MSEC(clock_ms), K_MSEC(clock_ms));
+            /* Both loops tick at `dt`. Publishing is every `publish_every`-th tick
+             * of this one, so `clock` still sets the publish period -- see below. */
+            k_timer_start(&network_timer, K_MSEC(dt_ms), K_MSEC(dt_ms));
+            publish_every = (dt_ms > 0) ? (uint32_t)(clock_ms / dt_ms) : 1u;
+            if (publish_every == 0u) {
+                publish_every = 1u;     /* clock < dt: publish every step */
+            }
+            tick = 0u;
             was_running = true;
         }
 
-        /* Absorb whatever the observer has, if anything. Non-blocking: a period
-         * with no new neighbour data is normal and must not stall reporting. */
-        const bool fresh_data =
-            k_msgq_get(&custom_observer_msg_queue, &neighbor_info, K_NO_WAIT) == 0;
-
         k_mutex_lock(&coordination_mutex, K_FOREVER);
-        if (fresh_data) {
-            absorb_neighbors(&neighbor_info);
-        }
         /* A real snapshot: struct agent holds its neighbour arrays inline, where
          * the struct this replaced held pointers. */
         memcpy(&log_data_copy, &agent, sizeof(agent));
         k_mutex_unlock(&coordination_mutex);
 
-        /* Every period, unconditionally. */
+        /* REPORT every `dt`, matching a Pi agent, which logs a sample per control
+         * step. Reporting at `clock` made the ble trajectory `clock/dt` times
+         * coarser than the wifi one in the same run -- a resolution difference
+         * across the axis being compared. At 25 Hz with four neighbours this is
+         * ~1.3 kB/s against 11.5 kB/s of UART. */
         report_state(&log_data_copy);
+
+        /* PUBLISH every `clock`, matching a Pi agent's publish loop. It used to
+         * happen once per control step, so an nRF put `clock/dt` times more
+         * traffic on the air than a Pi did -- more airtime, and more chances to
+         * get past a receiver's duplicate filter, which is the leading suspect
+         * for the 0.65 freshness on the one bridge-to-nRF link. */
+        if (++tick >= publish_every) {
+            tick = 0u;
+            state_packet_type pkt;
+            bool publish = false;
+
+            k_mutex_lock(&coordination_mutex, K_FOREVER);
+            if (agent.params.running && agent.params.enabled) {
+                /* Incremented per PUBLISH, never per step. A sequence number that
+                 * advanced per step while only every Nth packet went out would
+                 * read at the receiver as (N-1)/N of the traffic lost. */
+                agent.vars.tx_seq++;
+                pkt = on_air_packet(k_ticks_to_us_floor64(k_uptime_ticks()));
+                publish = true;
+            }
+            k_mutex_unlock(&coordination_mutex);
+
+            /* Outside the mutex: an HCI round trip must not block the control
+             * thread, which needs this lock every `dt`. */
+            if (publish) {
+                (void)broadcaster_update(&pkt);
+            }
+        }
     }
 }
