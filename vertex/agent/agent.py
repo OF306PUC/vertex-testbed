@@ -195,7 +195,10 @@ class Agent:
                 neighbor_vstates=tuple(vstates), neighbor_enabled=tuple(enabled),
             ))
         if self.on_sample is not None:
-            self.on_sample(t_s, out, vstates, self.neighbors.freshness(now_us))
+            # arrivals(), not freshness(): the log wants "a packet arrived since
+            # the last sample", which is what the nRF's `fresh` bit means. The
+            # staleness test above still drives the controller.
+            self.on_sample(t_s, out, vstates, self.neighbors.arrivals())
         return out
 
     def _publish_step(self, now_s: float) -> None:

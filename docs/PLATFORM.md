@@ -1292,6 +1292,60 @@ BLE nRF-to-nRF, BLE nRF-to-Pi in both directions, and UDP between hosts; the epo
 transfer; the STATE relay path; v1 on the air; and the hub configuring, triggering,
 stopping and collecting six agents across two machines.
 
+### 8a-septies. After the reflash: the collapse is gone, and `fresh` meant two things
+
+`n6-fast`, 120 s, reflashed. Both firmware fixes took:
+
+```
+all six nodes  3002 rows  25.0 Hz     (was 601 rows / 5 Hz on ble)
+every link     last packet at t=120.3s  (was: two links dead from t=104 and t=111)
+spread         24.378 -> 0.001 by t=15 s, flat for the remaining 105 s
+```
+
+**The link collapse was the un-reflashed firmware.** The old code called
+`broadcaster_update()` every `dt` -- 25 times a second -- while scanning
+continuously. After 80-100 s of that, both nRFs stopped receiving from their
+bridges. At the new 5 Hz publish rate neither does. So sustained 25 Hz
+`bt_le_adv_update_data` degrades the Zephyr BT stack's own scan-report delivery;
+worth remembering as a ceiling on how fast an nRF can be asked to re-advertise.
+
+**But the freshness figures inverted**, and that turned out to be a defect in the
+measurement, not the radio:
+
+```
+into an nRF      0.315 - 0.345
+into a Pi agent  0.995 - 0.998
+```
+
+The same column name meant two different things:
+
+| | definition | window | result on a healthy 5 Hz link |
+|---|---|---|---|
+| Pi agent | value younger than `max_neighbor_age_s` = `3 * publish_period_s` | 600 ms | ~1.00 |
+| nRF | a packet arrived since the last report | 40 ms | ceiling 0.2 |
+
+A **staleness** test against a **arrival** test. Neither is wrong; they answer
+different questions, and the platform's headline comparison runs straight across
+the boundary. It stayed hidden while the nRF reported at 1 Hz -- both windows were
+then longer than the publish period, so both read ~1.0 -- and surfaced the moment
+the nRF began reporting five times faster than anyone published.
+
+Fixed on the host side, because an arrival flag is strictly more informative:
+staleness can be derived from arrivals, not the reverse. `NeighborTable` now has
+both, and they have different jobs:
+
+* `freshness()` -- the staleness test, still what the **controller** reads. A
+  neighbour whose value is 200 ms old must not drop out of the coupling term just
+  because nothing arrived in the last 40 ms control period.
+* `arrivals()` -- read-and-clear, what the **log** records. Identical semantics to
+  the nRF's `fresh` mask.
+
+Note what nearly went wrong in the diagnosis: a "definition-independent" metric of
+rising edges per second gave 7.9-8.6 /s for the nRF receivers and 0.02 /s for the Pi
+receivers. That is not a radio difference either -- a staleness flag sits at 1 and
+therefore has almost no rising edges. The metric was measuring the second definition
+rather than escaping both.
+
 ### Symmetry between the two implementations: three rates, all backwards
 
 The 0.65 link led to this. `main.c` had **three** rate asymmetries against a Pi

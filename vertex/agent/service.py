@@ -315,6 +315,18 @@ class AgentService:
                            "median_delay_us": st.median_delay_us}
                 for nid, st in self.agent.neighbors.link_stats().items()
             }
+            # Transport counters. They exist on every transport and were reachable
+            # from nowhere -- so when both bridges' BLE transmit path collapsed
+            # 80-100 s into a run, the numbers that would have named the cause
+            # (send_errors, send_timeouts, per-medium failures) were unobtainable
+            # during the run and unrecorded after it.
+            t = self.agent.transport
+            st = getattr(t, "stats", None)
+            if st is not None:
+                data["transport"] = {"name": t.name, "stats": st.summary()}
+            if hasattr(t, "member_stats"):
+                data.setdefault("transport", {})["media"] = t.member_stats()
+
             data["timing"] = {
                 "control_iterations": self.agent.control_timing.iterations,
                 "control_mean_error_s": self.agent.control_timing.mean_error_s,
@@ -454,6 +466,25 @@ class AgentService:
                            list(report.neighbor_fresh),
                            device_t_s=device_t_s)
 
+    def _transport_meta(self) -> dict[str, Any]:
+        """Transport counters, for the run's metadata at stop.
+
+        Recorded because a link that works and then stops is indistinguishable, in
+        the rows alone, from a link that was never there -- and the difference is
+        entirely in these counters.
+        """
+        if self.agent is None or self.agent.transport is None:
+            return {}
+        t = self.agent.transport
+        out: dict[str, Any] = {"transport": t.name}
+        st = getattr(t, "stats", None)
+        if st is not None:
+            from dataclasses import asdict, is_dataclass
+            out["transport_stats"] = asdict(st) if is_dataclass(st) else repr(st)
+        if hasattr(t, "member_stats"):
+            out["transport_media"] = t.member_stats()
+        return out
+
     async def _stop(self, args: dict[str, Any]) -> tuple[Response, None]:
         if self.is_relay:
             if self.run_name is None:
@@ -474,9 +505,13 @@ class AgentService:
         if not self.running:
             return ok(run_name=self.run_name, samples=
                       self.runlog.samples if self.runlog else 0, was_running=False), None
+        # Read BEFORE _halt(): it stops the transport, and the counters go with it.
+        tmeta = self._transport_meta()
         await self._halt()
         samples = 0
         if self.runlog is not None:
+            if tmeta:
+                self.runlog.meta.environment.update(tmeta)
             self.runlog.finalize(ended_at=_utc_now())
             samples = self.runlog.samples
         run_name, self.run_name = self.run_name, None

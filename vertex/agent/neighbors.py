@@ -34,7 +34,7 @@ class NeighborRecord:
 class NeighborTable:
     """Latest state per neighbour, with freshness accounting."""
 
-    __slots__ = ("neighbor_ids", "max_age_us", "monitor", "_records",
+    __slots__ = ("neighbor_ids", "max_age_us", "monitor", "_records", "_arrived",
                  "_ignored", "_first_seen_us")
 
     def __init__(
@@ -50,6 +50,10 @@ class NeighborTable:
         self.max_age_us = int(round(max_age_s * 1e6))
         self.monitor = monitor if monitor is not None else LinkMonitor()
         self._records: dict[int, NeighborRecord] = {}
+        #: Neighbours heard since the last `arrivals()` call. Set on receipt,
+        #: cleared on read -- the same "since the last report" semantics the nRF's
+        #: `fresh` bit has, so the two agent types' logged columns mean one thing.
+        self._arrived: set[int] = set()
         self._ignored = 0
         self._first_seen_us: dict[int, int] = {}
 
@@ -63,6 +67,7 @@ class NeighborTable:
             self._ignored += 1
             return False
 
+        self._arrived.add(pkt.node_id)
         self._first_seen_us.setdefault(pkt.node_id, reception.rx_time_us)
         self.monitor.observe(pkt, rx_time_us=reception.rx_time_us)
 
@@ -101,6 +106,32 @@ class NeighborTable:
         for nid in self.neighbor_ids:
             rec = self._records.get(nid)
             out.append(bool(rec is not None and rec.age_us(now_us) <= self.max_age_us))
+        return out
+
+    def arrivals(self) -> list[bool]:
+        """Which neighbours were heard since the last call. Read-and-clear.
+
+        This is what the LOG records, and it is deliberately not `freshness()`.
+        The two answer different questions and both are needed:
+
+            freshness()  is the value younger than max_neighbor_age_s?
+                         A staleness test -- what the CONTROLLER needs, because a
+                         neighbour whose value is 200 ms old must not be dropped
+                         from the coupling term just because nothing arrived in the
+                         last control period.
+            arrivals()   did a packet arrive since the last sample?
+                         An arrival test -- what the LOG needs, and exactly what
+                         the nRF's `fresh` bit already means.
+
+        Logging the staleness test made the same column mean two different things
+        on the two agent types. It only became visible once the nRF reported five
+        times faster than anyone published: the relay's column read 0.32 (an
+        arrival flag against a 40 ms window) while a Pi agent's read 0.996 (a
+        staleness flag against a 600 ms window), and the two were being compared
+        as though they measured the same thing.
+        """
+        out = [nid in self._arrived for nid in self.neighbor_ids]
+        self._arrived.clear()
         return out
 
     def fresh_count(self, now_us: int) -> int:
