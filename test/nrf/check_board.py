@@ -48,6 +48,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+from vertex.clock import WallClock
 from vertex.numeric import dequantize
 from vertex.serial import (FrameType, LinkError, LinkRejected, SerialLink,
                            decode_state, encode_algorithm, encode_control,
@@ -81,9 +82,13 @@ def main() -> int:
         print(f"  FAIL {exc}")
         return 1
 
-    # STATE frames arrive on the reader thread; no event loop here, so take them
-    # directly. Appending to a list from one thread is fine.
-    link.on_state(lambda f: reports.append((time.monotonic(), f)))
+    # STATE frames arrive on the reader thread; there is no event loop here, so
+    # take them directly. Appending to a list from one thread is fine.
+    #
+    # The callback receives a TimedFrame -- the frame plus the instant it came off
+    # the port. That arrival stamp is the whole point of the host timeline, so use
+    # it rather than reading the clock again here.
+    link.on_state(reports.append)
 
     try:
         # ── 1. PING ──────────────────────────────────────────────────────────
@@ -144,12 +149,24 @@ def main() -> int:
                 fails.append(f"{name}: {exc}")
                 print(f"  FAIL {name:<10} {exc}")
 
-        epoch_us = int(time.time() * 1e6) % (1 << 48)
+        # Anchor the host clock at the trigger, so `rx_time_us` and the board's
+        # `t_us` both count from (near) the same instant and their difference is
+        # directly the transit plus report-assembly offset. A real run gets this
+        # epoch from the hub, shared across the fleet; here it only has to be
+        # consistent with what the board is told.
+        link.clock = WallClock(time.time())
+        # The epoch sent to the board is this host's clock at the moment CONTROL is
+        # built -- the same rule `BleRelay.start()` follows. Read after anchoring,
+        # so `rx_time_us` (host) and `tx_time_us` (board, = epoch + elapsed) are on
+        # one base and directly comparable. Floored at 1: zero is the sentinel for
+        # "no epoch", and the air stage checks for it.
+        epoch_us = max(1, link.clock.now_us())
         try:
             link.request(FrameType.CONTROL,
                          encode_control(trigger=True, seed=12345,
                                         epoch_us=epoch_us), timeout=2.0)
-            print(f"  ok   CONTROL    triggered, epoch {epoch_us}")
+            print(f"  ok   CONTROL    triggered, epoch_us={epoch_us} "
+                  f"(host clock anchored at the trigger)")
         except (LinkError, LinkRejected) as exc:
             fails.append(f"CONTROL: {exc}")
             print(f"  FAIL CONTROL    {exc}")
@@ -162,9 +179,9 @@ def main() -> int:
         time.sleep(args.seconds)
 
         decoded = []
-        for t, frame in list(reports):
+        for timed in list(reports):
             try:
-                decoded.append((t, decode_state(frame.payload)))
+                decoded.append((timed.rx_time_us, decode_state(timed.frame.payload)))
             except Exception as exc:
                 fails.append(f"undecodable STATE: {exc}")
 
@@ -175,7 +192,7 @@ def main() -> int:
                          "not reporting")
             print("  FAIL STATE      nothing received")
         else:
-            gaps = [(b[0] - a[0]) * 1000 for a, b in zip(decoded, decoded[1:])]
+            gaps = [(b[0] - a[0]) / 1000 for a, b in zip(decoded, decoded[1:])]
             med = statistics.median(gaps) if gaps else float("nan")
             flag = "ok  " if abs(n - expected) <= max(2, expected * 0.3) else "FAIL"
             print(f"  {flag} STATE      {n} reports, median gap {med:.0f} ms")
@@ -206,6 +223,19 @@ def main() -> int:
             print(f"       neighbours n={len(last.neighbor_vstates)} "
                   f"enabled={list(last.neighbor_enabled)} "
                   f"fresh={list(last.neighbor_fresh)}")
+
+            # The two timelines the log now carries. `device - host` is the serial
+            # transit plus the gap between a state being computed and its report
+            # being assembled; it should be small and roughly constant. A drift
+            # across the run is the board's crystal against this host's clock.
+            offs = [(d.t_us - rx) / 1000.0 for rx, d in decoded if rx is not None]
+            if offs:
+                print(f"       device - host  {min(offs):+.1f} .. {max(offs):+.1f} ms "
+                      f"(first {offs[0]:+.1f}, last {offs[-1]:+.1f})")
+            first_rx = decoded[0][0]
+            if first_rx is not None:
+                print(f"       first report   {first_rx/1000:.0f} ms after the "
+                      f"trigger (was 442/555 ms before the trigger hook)")
             if len(last.neighbor_vstates) != len(NEIGHBOURS):
                 fails.append(f"reported {len(last.neighbor_vstates)} neighbours, "
                              f"declared {len(NEIGHBOURS)}")
