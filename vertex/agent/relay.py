@@ -171,6 +171,14 @@ class BleRelay:
         if self.assignment is None:
             raise RelayError("configure() before start()")
         self._t0 = time.monotonic()
+        # Push the run's clock down to the link BEFORE the first report can
+        # arrive. The link stamps rx_time_us in its reader thread and was handed
+        # whatever clock existed at configure time -- the agent's launch clock, not
+        # the run's. That put a `ble` agent's host timeline on its own process
+        # uptime: measured at 85.285 s instead of 0 on the first two-host run,
+        # silently, because an offset timeline still looks like a timeline.
+        if self.clock is not None and hasattr(self.link, "clock"):
+            self.link.clock = self.clock
         # Read as late as possible: everything between this line and the nRF
         # latching the frame is bias on every timestamp that node emits.
         epoch_us = max(0, self.clock.now_us()) if self.clock is not None else 0

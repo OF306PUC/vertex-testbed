@@ -11,6 +11,7 @@ from enum import StrEnum
 
 __all__ = ["AgentType", "HUB_PORT", "STATE_PORT", "CONTROL_PORTS",
            "DEFAULT_INTERFACE", "AGENT_MEDIA", "InterfaceError", "list_interfaces",
+           "interface_broadcast", "interface_prefixlen", "SIOCGIFBRDADDR",
            "resolve_local_ip", "control_endpoint", "state_endpoint",
            "broadcast_address"]
 
@@ -109,12 +110,66 @@ def state_endpoint(ip: str) -> tuple[str, int]:
     return (ip, STATE_PORT)
 
 
-def broadcast_address(ip: str, prefixlen: int = 24) -> str:
-    """Subnet broadcast address for ``ip``.
+#: ioctl for "give me this interface's broadcast address" (linux/sockios.h).
+SIOCGIFBRDADDR = 0x8919
 
-    Subnet broadcast is preferred over IP multicast for state distribution: it
-    avoids IGMP snooping and any access-point-side group handling, while giving
-    the same one-frame-reaches-all-neighbours airtime property.
+
+def interface_broadcast(interface: str = DEFAULT_INTERFACE) -> str:
+    """The **kernel's own** broadcast address for ``interface``.
+
+    Ask, do not derive. `broadcast_address()` below has to be told a prefix
+    length, and a wrong one is silent: on a /22 lab network a /24 guess sends to
+    10.6.5.255, which is an ordinary host address nobody holds. Both agents stay
+    healthy, every datagram is accepted by the socket, and the link simply never
+    carries anything -- measured as 0/3 UDP links delivering while 3/3 BLE links
+    worked.
+
+    SIOCGIFBRDADDR via ioctl: Linux-specific and stdlib-only, so it adds no
+    dependency to ten Raspberry Pis.
+
+    :raises InterfaceError: if the interface has no broadcast address.
+    """
+    import fcntl
+    import struct
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        packed = fcntl.ioctl(s.fileno(), SIOCGIFBRDADDR,
+                             struct.pack("256s", interface.encode()[:15]))
+        return socket.inet_ntoa(packed[20:24])
+    except OSError as exc:
+        raise InterfaceError(
+            f"cannot read a broadcast address for {interface!r}: {exc}. "
+            f"available: {sorted(list_interfaces()) or 'none'}"
+        ) from None
+    finally:
+        s.close()
+
+
+def interface_prefixlen(interface: str = DEFAULT_INTERFACE) -> int | None:
+    """Prefix length of ``interface``, or None. For recording with a run."""
+    import fcntl
+    import struct
+    SIOCGIFNETMASK = 0x891B
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        packed = fcntl.ioctl(s.fileno(), SIOCGIFNETMASK,
+                            struct.pack("256s", interface.encode()[:15]))
+        mask = socket.inet_ntoa(packed[20:24])
+        return ipaddress.IPv4Network(f"0.0.0.0/{mask}").prefixlen
+    except (OSError, ValueError):
+        return None
+    finally:
+        s.close()
+
+
+def broadcast_address(ip: str, prefixlen: int = 24) -> str:
+    """Subnet broadcast address for ``ip``, from an ASSUMED prefix length.
+
+    Prefer :func:`interface_broadcast`, which asks the kernel. This is the
+    fallback for when the interface name is not known, and its default of /24 is a
+    guess that has already been wrong on the lab network (/22). Wrong here is
+    silent, so callers should say which one they used.
     """
     return str(ipaddress.IPv4Network(f"{ip}/{prefixlen}", strict=False).broadcast_address)
 

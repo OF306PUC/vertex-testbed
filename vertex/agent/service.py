@@ -24,7 +24,8 @@ from ..clock import Clock, WallClock
 from ..control.protocol import Response, ok
 from ..control.server import ControlServer
 from ..controllers.base import create
-from ..net import CONTROL_PORTS, STATE_PORT, AgentType, broadcast_address
+from ..net import (CONTROL_PORTS, STATE_PORT, AgentType, InterfaceError,
+                   broadcast_address, interface_broadcast, interface_prefixlen)
 from ..transports.base import Transport
 from ..transports.ble import BleTransport
 from ..transports.multi import MultiTransport
@@ -49,6 +50,7 @@ class AgentService:
         *,
         data_dir: str | Path = "data",
         host_ip: str | None = None,
+        interface: str | None = None,
         control_host: str = "0.0.0.0",
         control_port: int | None = None,
         state_port: int = STATE_PORT,
@@ -62,6 +64,12 @@ class AgentService:
         self.node_type = AgentType(node_type)
         self.data_dir = Path(data_dir)
         self.host_ip = host_ip
+        #: Interface name, used to ask the KERNEL for the broadcast address rather
+        #: than deriving one from an assumed prefix. A /24 guess on the lab's /22
+        #: network sends every datagram to an ordinary host address, and the
+        #: failure is completely silent -- 0/3 UDP links delivered while 3/3 BLE
+        #: links worked.
+        self.interface = interface
         self.state_port = state_port
         self.log_format = log_format
         self.clock = clock or WallClock(time.time())
@@ -116,8 +124,27 @@ class AgentService:
             channel_map=int(r.get("channel_map", 0x07)),
             passive_scan=bool(r.get("passive_scan", True)))
 
+    def _broadcast_target(self) -> tuple[str, str]:
+        """(address, how it was determined). Never guesses silently."""
+        if self.interface:
+            try:
+                return interface_broadcast(self.interface), f"kernel/{self.interface}"
+            except InterfaceError:
+                pass
+        if self.host_ip:
+            # Fallback with the assumption named, so a wrong prefix is at least
+            # visible in the recorded environment rather than only in the delivery
+            # ratio.
+            return broadcast_address(self.host_ip), "assumed /24"
+        return "255.255.255.255", "limited broadcast"
+
     def _udp_transport(self, node_id: int) -> UdpTransport:
-        target = broadcast_address(self.host_ip) if self.host_ip else "255.255.255.255"
+        target, how = self._broadcast_target()
+        self.environment.setdefault("udp_broadcast", target)
+        self.environment.setdefault("udp_broadcast_source", how)
+        if self.interface:
+            self.environment.setdefault("prefixlen",
+                                        interface_prefixlen(self.interface))
         return UdpTransport(node_id, self.clock,
                             send_to=(target, self.state_port),
                             bind_port=self.state_port, broadcast=True)

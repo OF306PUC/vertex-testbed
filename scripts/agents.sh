@@ -289,17 +289,31 @@ PYDEPS
         wifi)
             # UdpTransport broadcasts to this; a wrong prefix means neighbours
             # never hear each other while both agents look healthy.
+            # Ask the kernel; a derived prefix is what killed the first run.
             local bcast
             bcast=$($PY -c "
 import sys
-from vertex.net import broadcast_address, resolve_local_ip, InterfaceError
+from vertex.net import (InterfaceError, broadcast_address, interface_broadcast,
+                        interface_prefixlen, resolve_local_ip)
 try:
-    print(broadcast_address(resolve_local_ip('$IFACE')))
+    ip = resolve_local_ip('$IFACE')
+    plen = interface_prefixlen('$IFACE')
+    kern = interface_broadcast('$IFACE')
+    guess = broadcast_address(ip)
+    flag = 'OK' if kern == guess else 'DIFFERS'
+    print(f'{flag} {ip}/{plen} {kern} {guess}')
 except InterfaceError as exc:
     sys.exit(str(exc))
-" 2>&1) \
-                && printf '  %-22s %s (assumes /24)\n' "UDP broadcast to" "$bcast" \
-                || printf '  %-22s ?    %s\n' "UDP broadcast to" "$bcast"
+" 2>&1) || { printf '  %-22s FAIL %s\n' "UDP broadcast" "$bcast"; bad=1; }
+            case "$bcast" in
+            OK*)      set -- $bcast
+                      printf '  %-22s %s (kernel, %s)\n' "UDP broadcast to" "$3" "$2" ;;
+            DIFFERS*) set -- $bcast
+                      printf '  %-22s %s (kernel, %s)\n' "UDP broadcast to" "$3" "$2"
+                      printf '  %-22s note a /24 assumption gives %s -- an ordinary\n' "" "$4"
+                      printf '  %-22s      host address on this subnet. The agent asks\n' ""
+                      printf '  %-22s      the kernel, so this is informational.\n' "" ;;
+            esac
             ;;
         esac
     done

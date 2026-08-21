@@ -1182,6 +1182,79 @@ transit is a near-constant offset rather than jitter.
 
 ---
 
+### 8a-quinquies. First two-host run: the law works, UDP did not (2026-08-21)
+
+`n6-ring`, 30 s, 6/6 nodes, 662 samples, trigger spread 32 ms. Two results and two
+defects.
+
+**The coordination law runs on hardware.** Every BLE link delivered and `vstate`
+converged:
+
+```
+t= 0s  1:  6.896  2:  5.213  21: 21.807  22: 29.495   spread 24.28
+t=29s  1: 14.339  2: 13.923  21: 14.495  22: 19.269   spread  4.93
+```
+
+`fresh` 0.97-1.00 on nRF-to-nRF (1-2) and on both nRF-advertises/Pi-scans hops
+(1-22, 2-21). The C law, the Python law, the epoch transfer, the STATE path and the
+v1 air format all work together.
+
+**Every UDP link delivered nothing.** 3/3 BLE, 0/3 UDP, both directions, so it was
+the medium and not a node. Nodes 11 and 12 never moved because they heard nothing.
+
+Cause: **`broadcast_address()` assumed a /24 and the lab network is a /22.**
+
+```
+kernel:  10.6.5.2/22 brd 10.6.7.255
+we sent:                 10.6.5.255
+```
+
+On a /22, `10.6.5.255` is an ordinary host address that nobody holds. Every
+`sendto` succeeded, every socket stayed healthy, and delivery was zero -- the
+failure mode is completely silent. `scripts/udp_check.py` isolated it in one run on
+each host; its "not even our own datagrams came back" line is what ruled out AP
+client isolation and pointed at the address.
+
+Fixed by asking the kernel instead of deriving: `interface_broadcast()` uses
+`SIOCGIFBRDADDR` via ioctl (Linux-specific, stdlib-only, no new dependency on ten
+Pis). `AgentService` now takes the interface name for exactly this, and records
+`udp_broadcast`, `udp_broadcast_source` and `prefixlen` in the run's environment --
+so a future wrong address is visible in the data rather than only in a delivery
+ratio. `broadcast_address()` survives as a named fallback with its assumption
+stated. Preflight prints the kernel's value and flags when a /24 guess would have
+differed.
+
+Note the diagnostic gap this exposed: the no-intra-host-edge rule means **every**
+UDP link in `n6-ring` is cross-host, so there was no local UDP link to compare
+against and nothing to separate "the transport is broken" from "the network does
+not carry broadcast". `udp_check.py` exists to fill that gap from outside.
+
+**A `ble` agent's host timestamps were on the wrong origin.** `timestamp` ran
+85.285 -> 115.285 while `device_timestamp` ran 0.002 -> 30.003 and the `wifi` nodes
+ran 0.202 -> 30.002. `_start` reset `self.clock` and `self.relay.clock` but not
+`self.link.clock`, and the link is what stamps `rx_time_us` -- so the relay's host
+timeline was anchored at process launch, offset by that agent's uptime.
+`BleRelay.start()` now pushes the run's clock to the link before any report can
+arrive.
+
+The lesson is about the check, not the code. `check_fleet.py` asserted that a `ble`
+node's two time columns **differ**. They did; one was simply wrong. It now asserts
+the origin too -- the first row's `timestamp` must be near zero for every agent type
+-- and the harness idles 1.5 s before triggering so that a launch-anchored clock is
+distinguishable from a run-anchored one. Verified to catch the regression.
+
+For the smoke run's data, `device_timestamp` is the usable column on the `ble`
+nodes: run-relative and correct, on the same origin as the others' `timestamp` to
+within the 32 ms trigger spread.
+
+**One asymmetry to decide before collecting comparable data.** `ble` logged 31 rows,
+`wifi` and `bridge` logged 150: the relay reports at `clock` (1 Hz here) while local
+agents log every control step (5 Hz at `dt = 0.2`). The BLE path's trajectory is 5x
+coarser, across exactly the axis being compared. Setting `publish_period_s = dt_s`
+matches them.
+
+---
+
 ### Restarting agents, and stale pidfiles
 
 `scripts/agents.sh start` is idempotent -- it skips what is already alive, so after

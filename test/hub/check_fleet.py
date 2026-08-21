@@ -198,6 +198,12 @@ async def main(manifest_path: str) -> int:
         runner.assignments[nid] = a.model_copy(
             update={"dt_s": DT_S, "publish_period_s": DT_S})
 
+    # Let the agents idle before the run. Without this every clock is created at
+    # about the same instant, so a timeline anchored at launch and one anchored at
+    # the run epoch are indistinguishable -- which is why the 85 s offset on
+    # hardware was invisible here.
+    await asyncio.sleep(1.5)
+
     epoch = time.time()
     report = await runner.run("fleet-0", DURATION, epoch_unix_s=epoch)
     print(report.summary())
@@ -289,6 +295,16 @@ async def main(manifest_path: str) -> int:
             continue
         it, idv = cols.index("timestamp"), cols.index("device_timestamp")
         deltas = [r[idv] - r[it] for r in rows]
+
+        # The origin, not just the difference. `timestamp` is seconds since the
+        # run's epoch, so the first row must be near zero for EVERY agent type. A
+        # ble agent whose link kept the launch-time clock produced a timeline
+        # offset by the process uptime -- and the difference check above passed,
+        # because the two columns did differ. One of them was simply wrong.
+        if rows[0][it] > 1.0:
+            fails.append(f"node {nid} ({node.type}): first timestamp is "
+                         f"{rows[0][it]:.3f}s, not near 0 -- that column is not on "
+                         f"the run's epoch")
         if node.type is AgentType.BLE:
             # The board's clock is its own; a delta of exactly zero would mean the
             # arrival stamp never reached the row and the board's time was reused.
