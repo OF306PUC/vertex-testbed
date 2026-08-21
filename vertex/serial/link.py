@@ -159,7 +159,17 @@ class SerialLink:
     # ── lifecycle ────────────────────────────────────────────────────────────
     def open(self) -> "SerialLink":
         if self._io is None:
-            import serial                    # imported here so tests need no port
+            # Lazy so a `wifi` agent never imports pyserial -- but inside the
+            # error handling, because a missing module here is the most likely
+            # failure of all and it deserves a sentence, not a traceback.
+            try:
+                import serial
+            except ImportError:
+                raise LinkError(
+                    "pyserial is not installed, so this agent cannot reach its "
+                    "nRF. Install the project's dependencies: "
+                    "pip install pyserial (or -e .)"
+                ) from None
             try:
                 # timeout=0: the reader blocks in `select`, not in `read`. A read
                 # timeout would round every arrival up to its granularity, and that

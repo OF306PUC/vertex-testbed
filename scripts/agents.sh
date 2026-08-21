@@ -38,9 +38,14 @@ pidfile() { echo "$RUNDIR/$1.pid"; }
 logfile() { echo "$RUNDIR/$1.log"; }
 
 # Does the interpreter already carry CAP_NET_ADMIN?
+# The file the capability is actually ON. A default venv's bin/python3 is a
+# SYMLINK, and file capabilities live on regular files -- so `setcap` there
+# silently applies to the base interpreter, shared by everything that uses it.
+cap_target() { readlink -f "$PY"; }
+
 has_cap() {
     command -v getcap >/dev/null 2>&1 &&
-        getcap "$(readlink -f "$(command -v $PY)")" 2>/dev/null | grep -q net_admin
+        getcap "$(cap_target)" 2>/dev/null | grep -q net_admin
 }
 
 # Only `bridge` needs privileges -- it binds the HCI user channel, which is
@@ -53,7 +58,15 @@ needs_sudo() {
 
 privilege_note() {
     if [ "$(id -u)" -eq 0 ]; then echo "running as root"
-    elif has_cap; then echo "cap_net_admin on $PY"
+    elif has_cap; then
+        local tgt; tgt=$(cap_target)
+        if [ "$tgt" = "$PY" ]; then
+            echo "cap_net_admin on $PY"
+        else
+            # Worth spelling out: the capability is not scoped to the venv, and it
+            # will be left behind on the old binary if the venv is recreated.
+            echo "cap_net_admin on $tgt (NOT the venv -- $PY is a symlink to it)"
+        fi
     elif command -v sudo >/dev/null 2>&1; then echo "sudo, for the bridge only"
     else echo "NONE -- bridge cannot bind the HCI user channel"
     fi
@@ -62,10 +75,16 @@ privilege_note() {
 alive() {
     local pf pid; pf=$(pidfile "$1")
     [ -f "$pf" ] || return 1
-    pid=$(cat "$pf")
+    pid=$(cat "$pf" 2>/dev/null) || return 1
+    [ -n "$pid" ] || return 1
     # /proc rather than `kill -0`: signalling a root-owned process from an
     # unprivileged shell fails with EPERM, which is indistinguishable from "gone".
-    [ -d "/proc/$pid" ]
+    [ -d "/proc/$pid" ] || return 1
+    # And confirm it is OUR agent. An agent that died -- as both ble agents just
+    # did -- leaves a stale pidfile, and Linux recycles pids; a recycled one would
+    # make `start` skip a dead agent and `status` report it up. Cheap to rule out.
+    grep -qz -- "vertex.agent" "/proc/$pid/cmdline" 2>/dev/null &&
+        grep -qz -- "$1" "/proc/$pid/cmdline" 2>/dev/null
 }
 
 preflight() {
@@ -112,14 +131,83 @@ except InterfaceError as exc:
     # and pyyaml, and a fresh venv has none of them. Importing the agent module is
     # the check that matches what `start` will actually do -- checking the version
     # and then failing on ModuleNotFoundError three times is not a preflight.
+    # Two very different failures land here and they need different advice:
+    #   * a missing third-party package    -> pip install
+    #   * a missing stdlib C extension     -> the INTERPRETER is incomplete, and no
+    #                                         amount of pip will fix it
+    # The second happens with a source-built Python: CPython skips optional
+    # modules whose dev library was absent at build time, and it does so silently.
+    # Telling someone to pip install `_bz2` sends them a long way in the wrong
+    # direction, so classify it here.
     local imp
-    imp=$($PY -c 'import vertex.agent.__main__' 2>&1) \
-        && printf '  %-22s vertex.agent imports\n' "dependencies" \
-        || {
-            printf '  %-22s FAIL %s\n' "dependencies" "$(echo "$imp" | tail -1)"
-            printf '  %-22s      fix: %s -m pip install -e .\n' "" "$PY"
-            bad=1
-        }
+    imp=$($PY - <<'PYCHK' 2>&1
+import sys
+STDLIB_EXT = {
+    "_bz2": "libbz2-dev", "_lzma": "liblzma-dev", "_ssl": "libssl-dev",
+    "_sqlite3": "libsqlite3-dev", "_ctypes": "libffi-dev",
+    "readline": "libreadline-dev", "_curses": "libncurses-dev",
+    "zlib": "zlib1g-dev", "_hashlib": "libssl-dev", "_tkinter": "tk-dev",
+}
+try:
+    import vertex.agent.__main__            # noqa: F401
+except ModuleNotFoundError as exc:
+    name = exc.name or ""
+    if name in STDLIB_EXT or (name.startswith("_") and name not in ("_vertex",)):
+        print(f"STDLIB {name} {STDLIB_EXT.get(name, '?')}")
+    else:
+        print(f"PACKAGE {name}")
+    sys.exit(1)
+except Exception as exc:
+    print(f"OTHER {type(exc).__name__}: {exc}")
+    sys.exit(1)
+print("OK")
+PYCHK
+)
+    case "$imp" in
+    OK)
+        printf '  %-22s vertex.agent imports\n' "dependencies"
+        # The digest is the cheap cross-host check: two Pis in one experiment
+        # should print the same one. A difference is a difference between the
+        # machines being compared, and it does not appear in the collected data.
+        if [ -r scripts/check_interpreter.py ]; then
+            printf '  %-22s %s\n' "module set" \
+                "$($PY scripts/check_interpreter.py --fingerprint 2>/dev/null || echo '?')"
+        fi ;;
+    STDLIB*)
+        set -- $imp
+        printf '  %-22s FAIL this interpreter has no %s -- a stdlib C extension.\n' "stdlib" "$2"
+        printf '  %-22s      Full picture: %s scripts/check_interpreter.py\n' "" "$PY"
+        printf '  %-22s      It was built from source without %s, and CPython\n' "" "$3"
+        printf '  %-22s      skips such modules silently. networkx needs bz2+lzma.\n' ""
+        printf '  %-22s      Simplest fix: use the distro interpreter instead --\n' ""
+        printf '  %-22s        /usr/bin/python3 -m venv --clear .venv\n' ""
+        printf '  %-22s        .venv/bin/pip install -e .\n' ""
+        printf '  %-22s      That also makes the hosts identical, which matters:\n' ""
+        printf '  %-22s      differing interpreters across Pis is a variable in an\n' ""
+        printf '  %-22s      experiment that compares Pis.\n' ""
+        bad=1 ;;
+    PACKAGE*)
+        set -- $imp
+        printf '  %-22s FAIL no module %s\n' "dependencies" "$2"
+        # Deps only, NOT `pip install -e .`. Everything runs from the repo root --
+        # agents.sh cds here, the systemd unit sets WorkingDirectory, and
+        # `python -m` puts the CWD on sys.path -- so vertex itself never needs
+        # installing. That also sidesteps PEP 660: an editable install from
+        # pyproject.toml alone needs pip >= 21.3, and Bullseye bundles 20.3.4.
+        local deps
+        deps=$($PY - <<'PYDEPS' 2>/dev/null
+import re, tomllib, pathlib
+d = tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["dependencies"]
+print(" ".join(re.split(r"[><=!~\[]", x)[0].strip() for x in d))
+PYDEPS
+)
+        printf '  %-22s      fix: %s -m pip install %s\n' "" "$PY" "${deps:-numpy pydantic networkx pyyaml}"
+        printf '  %-22s      (vertex itself is imported from the repo, not installed)\n' ""
+        bad=1 ;;
+    *)
+        printf '  %-22s FAIL %s\n' "dependencies" "$(echo "$imp" | tail -1)"
+        bad=1 ;;
+    esac
 
     echo "== clock (the shared epoch is only shared if these are)"
     if command -v chronyc >/dev/null 2>&1; then
@@ -150,6 +238,17 @@ except InterfaceError as exc:
         echo "== $t"
         case "$t" in
         ble)
+            # pyserial is imported lazily inside SerialLink.open(), so the
+            # dependency check above -- which imports vertex.agent.__main__ --
+            # does not reach it. Checked here, where it is actually needed.
+            if $PY -c 'import serial' 2>/dev/null; then
+                printf '  %-22s %s\n' "pyserial" \
+                    "$($PY -c 'import serial; print(serial.__version__)' 2>/dev/null)"
+            else
+                printf '  %-22s FAIL not installed -- the ble agent cannot open a port\n' "pyserial"
+                printf '  %-22s      fix: %s -m pip install pyserial\n' "" "$PY"
+                bad=1
+            fi
             if [ -e "$SERIAL" ]; then
                 printf '  %-22s %s\n' "nRF port" "$SERIAL"
                 [ -r "$SERIAL" ] && [ -w "$SERIAL" ] \
@@ -250,12 +349,15 @@ stop() {
 
 status() {
     for t in $TYPES; do
+        local last; last=$(tail -n1 "$(logfile "$t")" 2>/dev/null | cut -c1-88)
         if alive "$t"; then
-            printf '  %-8s up   pid %-8s %s\n' "$t" "$(cat "$(pidfile "$t")")" \
-                "$(tail -n1 "$(logfile "$t")" 2>/dev/null | cut -c1-90)"
+            printf '  %-8s up   pid %-8s %s\n' "$t" "$(cat "$(pidfile "$t")")" "$last"
+        elif [ -f "$(pidfile "$t")" ]; then
+            # Distinguish "started and died" from "never started": the last log
+            # line is the reason, and it is the first thing worth reading.
+            printf '  %-8s DIED      %s\n' "$t" "$last"
         else
-            printf '  %-8s DOWN      %s\n' "$t" \
-                "$(tail -n1 "$(logfile "$t")" 2>/dev/null | cut -c1-90)"
+            printf '  %-8s stopped   %s\n' "$t" "$last"
         fi
     done
 }

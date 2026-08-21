@@ -360,6 +360,7 @@ class AgentService:
                 # `vertex.analysis.units` normalises on read.
                 units="scaled_int" if self.is_relay else "engineering",
                 environment={**self.environment, **self._radio_meta(a),
+                             **_interpreter_provenance(),
                              "epoch_unix_s": getattr(self.clock, "epoch_unix_s", None)},
             ),
             fmt=self.log_format,
@@ -472,6 +473,26 @@ class AgentService:
 
         blob = path.read_bytes()
         return Response(ok=True, kind="blob", n_bytes=len(blob), name=path.name), blob
+
+
+def _interpreter_provenance() -> dict[str, Any]:
+    """What is running this agent, recorded with its data.
+
+    Not pedantry. Two Pis in one experiment turned out to be on 3.11.2 (the distro
+    package) and 3.11.8 (built from source, and missing `_bz2` because libbz2-dev
+    was absent at build time). That is a difference between hosts in an experiment
+    whose whole purpose is comparing hosts, and it is not reconstructable from the
+    data afterwards -- which is exactly what `environment` is for.
+    """
+    import platform
+    import sys as _sys
+    return {
+        "python": platform.python_version(),
+        "python_build": " ".join(platform.python_build()),
+        "python_impl": platform.python_implementation(),
+        "executable": _sys.executable,
+        "platform": platform.platform(),
+    }
 
 
 def _utc_now() -> str:

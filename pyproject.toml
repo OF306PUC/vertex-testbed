@@ -3,7 +3,15 @@ name = "vertex"
 version = "0.1.0"
 description = "Testbed for distributed and multi-agent control over real heterogeneous radio links"
 requires-python = ">=3.11"
-dependencies = ["numpy>=1.26", "pydantic>=2.7", "networkx>=2.8", "pyyaml>=6.0"]
+# pyserial is required, not optional: a `ble` agent relays to an nRF over a serial
+# port and cannot start without it. The import stays lazy inside SerialLink.open(),
+# so a `wifi` agent never loads it -- but "not imported on every path" is not the
+# same as "not needed", and leaving it undeclared made the install instructions
+# quietly incomplete: wifi and bridge came up, ble died with ModuleNotFoundError.
+dependencies = [
+    "numpy>=1.26", "pydantic>=2.7", "networkx>=2.8", "pyyaml>=6.0",
+    "pyserial>=3.5",
+]
 
 [project.optional-dependencies]
 # Nothing extra is needed to run an agent, a hub, a simulation, or the tests. The

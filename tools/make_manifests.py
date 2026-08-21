@@ -7,6 +7,8 @@ their edges explicitly.
 """
 from __future__ import annotations
 
+import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -102,7 +104,7 @@ CLUSTER_DISABLED = {21, 30}
 #: exercises every path the platform compares -- BLE-only, Wi-Fi-only, and the
 #: bridge that carries both -- with each host running all three at once, which is
 #: where the CYW43455 coexistence effect actually appears.
-FIRST_RUN_HOSTS = HOSTS[:3]
+FIRST_RUN_HOSTS = list(HOSTS[:3])
 
 #: Traversal order for the generated topologies: the ble block, five bridges, the
 #: wifi block, five bridges. A generator walks its id list in order, so this is
@@ -116,7 +118,45 @@ BAND_ORDER = (list(range(1, 11))       # ble     1..10
 
 
 def manifests() -> dict[str, dict]:
+    """Every manifest that the declared hosts can actually accommodate.
+
+    A manifest needing more hosts than exist is skipped with a note rather than
+    aborting the run: `--hosts` with two addresses is a two-host bench, and it
+    should still get its two-host manifests written.
+    """
     out: dict[str, dict] = {}
+
+    # ── n4: two hosts, no nRF. The step before n6. ──────────────────────────
+    # Only `wifi` and `bridge`, so **no nRF is needed at all** -- no serial link,
+    # no firmware to flash. Useful when the second board is not ready, and useful
+    # on its own: `bridge` and `wifi` run the SAME controller in the same process,
+    # so a difference between them is the medium and not the implementation. That
+    # is the platform's cleanest comparison and this is the smallest manifest that
+    # makes it.
+    #
+    # Covers UDP between hosts (11-12) and Pi-to-Pi BLE via the two bridges
+    # (21-22), which n6-ring does not -- its cycle leaves the 21-22 edge out.
+    #
+    # 4-cycle: 11(wifi,h0) - 12(wifi,h1) - 21(bri,h0) - 22(bri,h1) - back to 11.
+    # Every edge crosses hosts; no ble/wifi pair exists to worry about.
+    N4_ORDER = [11, 12, 21, 22]
+    n4 = [n for n in hosts_for(2, hosts=HOSTS[:2]) if n["type"] != "ble"]
+    n4_edges = ring(ids=N4_ORDER)
+    for node in n4:
+        node["neighbors"] = n4_edges[node["id"]]
+    out["n4-noble"] = {
+        "name": "n4-noble",
+        "description": (
+            "4 agents on 2 hosts, wifi + bridge only: no nRF, no firmware, no "
+            "serial link. The smallest manifest that isolates the medium -- "
+            "`bridge` and `wifi` run the same controller in the same process, so a "
+            "difference between them is the transport. Also the only manifest that "
+            "exercises bridge-to-bridge BLE, which n6-ring's cycle omits."
+        ),
+        "seed": 20260818,
+        "controller": CONTROLLER,
+        "nodes": n4,
+    }
 
     # ── n6: two hosts, six agents. The step before n9. ──────────────────────
     # At this size the topology is FORCED, not chosen. Every edge must cross hosts
@@ -176,6 +216,10 @@ def manifests() -> dict[str, dict]:
     #
     # Degree 2 everywhere, well inside the firmware's 4-neighbour limit.
     N9_ORDER = [21, 2, 1, 3, 22, 13, 11, 12, 23]
+    if len(FIRST_RUN_HOSTS) < 3:
+        print(f"skip     n9-ring                  needs 3 hosts, "
+              f"{len(FIRST_RUN_HOSTS)} declared")
+        return out
     n9 = hosts_for(3, hosts=FIRST_RUN_HOSTS)
     n9_edges = ring(ids=N9_ORDER)
     for node in n9:
@@ -214,6 +258,11 @@ def manifests() -> dict[str, dict]:
         "nodes": clustered,
     }
 
+    if len(HOSTS) < 10:
+        print(f"skip     n30-*                    need 10 hosts, "
+              f"{len(HOSTS)} declared")
+        return out
+
     # Regular topologies over BAND_ORDER rather than 1..30.
     #
     # The generators walk their id list in order, so the *order* decides who
@@ -250,7 +299,26 @@ def manifests() -> dict[str, dict]:
     return out
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(
+        description="Regenerate the experiment manifests.")
+    ap.add_argument(
+        "--hosts", default=os.environ.get("VERTEX_HOSTS"),
+        help="comma-separated host addresses, replacing the built-in HOSTS. The "
+             "one part of a manifest that is not derivable, and the part that "
+             "changes when a Pi is re-imaged or swapped -- so it belongs here "
+             "rather than in a hand-edit of a generated file, which the next run "
+             "of this script would silently revert. Also VERTEX_HOSTS.")
+    args = ap.parse_args(argv)
+    if args.hosts:
+        hosts = [h.strip() for h in args.hosts.split(",") if h.strip()]
+        if not hosts:
+            print("--hosts was empty", file=sys.stderr)
+            return 2
+        HOSTS[:] = hosts
+        FIRST_RUN_HOSTS[:] = hosts[:3]
+        print(f"hosts: {', '.join(HOSTS)}")
+
     OUT.mkdir(exist_ok=True)
     failures = 0
     for name, doc in manifests().items():

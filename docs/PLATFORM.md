@@ -1182,6 +1182,138 @@ transit is a near-constant offset rather than jitter.
 
 ---
 
+### Restarting agents, and stale pidfiles
+
+`scripts/agents.sh start` is idempotent -- it skips what is already alive, so after
+a partial failure it brings up only the dead ones. `restart` stops and starts
+everything.
+
+`status` now distinguishes three states, because "DOWN" conflated two that need
+different responses:
+
+```
+wifi     up   pid 3062441  wifi agent on 127.0.0.1, control port 3002
+wifi     DIED      <last log line -- the reason>
+wifi     stopped   shutting down
+```
+
+`DIED` means a pidfile exists but the process does not: it started and exited, and
+the last log line is the reason. `stopped` means it was never started or was
+stopped cleanly.
+
+Liveness also verifies the pid is *ours*. A dead agent leaves a stale pidfile and
+Linux recycles pids, so `/proc/<pid>` existing is not enough -- a recycled pid would
+make `start` skip a dead agent and `status` report it up. It now also checks
+`/proc/<pid>/cmdline` contains `vertex.agent` and the agent type.
+
+### Updating an editable install after a dependency is added
+
+`pip install -e .` does **not** pick up a new dependency retroactively. pip resolves
+dependencies at install time, so an editable install performed before `pyserial`
+was declared did not install it and will not notice.
+
+Re-running `pip install -e .` does re-resolve -- but only against the
+`pyproject.toml` present on that machine. So the order matters:
+
+```
+1. sync the repo to the Pi        # pyproject.toml must already contain pyserial
+2. .venv/bin/pip install -e .
+```
+
+Reversed, step 2 is a no-op and the `ble` agent still dies with the same error.
+`pip install pyserial` works too and is independent of how `vertex` was installed;
+re-running `-e .` is preferable only because it keeps the declared set
+authoritative and picks up any later additions.
+
+### pyserial was never declared, and preflight could not see it
+
+`hub status` on the first two-host attempt:
+
+```
+FAIL   1 10.6.5.4:3001  cannot connect ([Errno 111] Connect call failed)
+FAIL   2 10.6.5.2:3001  cannot connect ([Errno 111] Connect call failed)
+ok    11 10.6.5.4:3002  type=wifi    ...
+ok    21 10.6.5.4:3003  type=bridge  ...
+```
+
+Both `ble` agents dead, both `wifi` and `bridge` up, on both hosts. ECONNREFUSED
+means nothing is listening -- the process exited at startup.
+
+**`pyserial` was missing from `pyproject.toml`.** A `ble` agent relays to an nRF
+over a serial port and cannot start without it; the other two never touch it. So
+the dependency list -- and the install instructions derived from it -- were quietly
+incomplete in exactly the way that lets two thirds of a fleet come up.
+
+Three defects, one cause:
+
+* **Undeclared.** Now in `dependencies`, with a comment on why "not imported on
+  every path" is not the same as "not needed".
+* **`import serial` sat outside the `try`** in `SerialLink.open()`, so a missing
+  module escaped as a bare `ModuleNotFoundError` traceback -- and
+  `vertex/agent/__main__.py` only catches `LinkError`. It now raises `LinkError`
+  with the install command.
+* **Preflight could not catch it.** Its dependency check imports
+  `vertex.agent.__main__`, which reaches `SerialLink` but not the lazy
+  `import serial` inside `open()`. It now checks `import serial` under the `ble`
+  section, where it is actually needed, and prints the version.
+
+The general shape, worth remembering: a lazily-imported dependency is invisible to
+an import-the-entrypoint check. Anything imported inside a function needs its own
+probe at the point of use.
+
+### Host addresses belong in the generator, not in the generated file
+
+The two boards were `10.6.5.4` and `10.6.5.2`, and `n6-ring.yaml` had been edited
+by hand to match -- a file whose own header says "edit the generator, not this",
+and which the next `make_manifests.py` run would have silently reverted to
+`HOSTS[:2]`.
+
+`tools/make_manifests.py` now takes `--hosts` (or `VERTEX_HOSTS`):
+
+```
+python3 tools/make_manifests.py --hosts 10.6.5.4,10.6.5.2
+```
+
+which reproduces that hand-edited file byte for byte, and skips the manifests that
+need more hosts than were declared rather than aborting:
+
+```
+hosts: 10.6.5.4, 10.6.5.2
+skip     n9-ring                  needs 3 hosts, 2 declared
+ok       n4-noble.yaml            nodes=4 edges=8 lambda2=2.0
+ok       n6-ring.yaml             nodes=6 edges=12 lambda2=1.0
+```
+
+Addresses are the one part of a manifest that is not derivable, and the part that
+changes when a Pi is re-imaged or swapped. That makes them an argument, not an
+edit.
+
+### 8d-0. `n4-noble`: two hosts, no nRF
+
+`experiments/n4-noble.yaml`. Below n6-ring, and worth running first regardless of
+whether the second nRF is ready.
+
+`wifi` + `bridge` only, so **no nRF, no firmware, no serial link**. 4-cycle,
+lambda_2 = 2.0:
+
+```
+11(wifi,h0) - 12(wifi,h1) - 21(bri,h0) - 22(bri,h1) - back to 11
+```
+
+Two reasons it is not merely a fallback:
+
+* It is the **cleanest comparison the platform can make**. `bridge` and `wifi` run
+  the *same* controller in the same process, so a difference between them is the
+  medium and nothing else -- no firmware, no second language, no clock transfer.
+* It is the **only manifest that exercises bridge-to-bridge BLE**. n6-ring's forced
+  cycle leaves the 21-22 edge out, so Pi-to-Pi BLE via HCI is untested there.
+
+It also halves the number of things that can be wrong on a first two-host run: no
+`--serial`, no `dialout`, no flashed board, and the `ble` agent -- the one whose
+reporting path had no caller at all until recently -- is absent.
+
+Rehearsed host-side: 4/4 nodes, 160 samples, one epoch.
+
 ### 8d. Runbook: two hosts, six agents
 
 `experiments/n6-ring.yaml`. The step between one board and the full nine.
@@ -1243,6 +1375,226 @@ If the Pis are on an isolated LAN with no route to an NTP server, one of them ha
 to serve time to the other (`local stratum 10` plus an `allow` line in
 `chrony.conf`) -- and then the *served* host is the reference, so its own accuracy
 is what bounds every delay measurement in the experiment.
+
+### The hosts are on different OS releases, and that is the bigger problem
+
+`/usr/bin/python3 --version` returning 3.9 on pi1 settles it: that host is on
+**Bullseye**, while pi2's 3.11.2 is **Bookworm**. Confirm with:
+
+```
+cat /etc/os-release          # VERSION_CODENAME=bullseye | bookworm
+cat /etc/debian_version      # 11.x = bullseye, 12.x = bookworm
+uname -r
+```
+
+The python version is the symptom that surfaced first, not the difference that
+matters most. Two OS releases apart means a different **kernel**, a different
+**BlueZ**, and -- the one that goes straight to the experiment -- possibly
+different **CYW43455 firmware**. §3 A2/A3 is entirely about BLE/Wi-Fi contention on
+that chip. A firmware difference between the two Pis is a difference in the thing
+being measured, and it appears in no log.
+
+`scripts/host_report.sh` prints everything that can differ, one `key: value`
+per line, for diffing:
+
+```
+diff <(ssh pi1 'bash -s' < scripts/host_report.sh) \
+     <(ssh pi2 'bash -s' < scripts/host_report.sh)
+```
+
+It covers the OS release and kernel, every interpreter on the box plus the module
+digest, the **md5 of each radio firmware blob** (`brcmfmac43455-sdio.bin`, its
+`clm_blob`, and `BCM4345C0.hcd` for the Bluetooth side), the Pi firmware version,
+the BlueZ package version, whether bluetoothd is running, and the chrony reference
+and WLAN channel/power-save. Firmware blobs are hashed from disk rather than read
+out of `dmesg`, which is often root-only and says nothing after a reboot.
+
+**Recommended: bring pi1 to Bookworm.** It fixes the python question as a side
+effect, retires the source build, and -- the actual reason -- makes the two hosts
+comparable, which is the premise of every result the testbed produces. A source-built
+3.11 on Bullseye leaves the kernel, BlueZ and radio firmware still mismatched.
+
+Note that some of this is already captured with the data: `RunMeta.environment`
+records `platform.platform()`, whose glibc component distinguishes the releases
+(Bullseye 2.31, Bookworm 2.36). Radio firmware is not, and should be -- see A2.
+
+### `pip install -e .` is not needed, and on an old pip it cannot work
+
+```
+ERROR: File "setup.py" not found. Directory cannot be installed in editable mode
+(A "pyproject.toml" file was found, but editable mode currently requires a setup.py based build.)
+```
+
+That is the pre-21.3 pip message: an editable install from `pyproject.toml` alone
+needs **PEP 660**, which arrived in pip 21.3. Bullseye bundles 20.3.4; Bookworm
+bundles 23.0.1.
+
+But the editable install was never required. **`vertex` is imported from the repo,
+not installed:** `scripts/agents.sh` cds to the repo root, the systemd unit sets
+`WorkingDirectory`, and `python -m` puts the working directory on `sys.path`.
+Verified in a venv containing the four dependencies and nothing else -- `pip list`
+shows no `vertex`, and `python3 -m vertex.agent` runs.
+
+So install only the dependencies:
+
+```
+.venv/bin/pip install numpy pydantic networkx pyyaml
+```
+
+Preflight now says this rather than `pip install -e .`, and derives the list from
+`pyproject.toml` so it cannot drift.
+
+**The pip version is also a diagnostic.** pip 20.3.4 is bundled with python **3.9**,
+not 3.11 -- so seeing that error from a venv built with `/usr/bin/python3` says
+`/usr/bin/python3` is 3.9, i.e. the host is on Bullseye. In that case:
+
+* the venv just created cannot run vertex at all (`requires-python >= 3.11`), and
+* the source-built 3.11.8 was a reasonable workaround rather than a mistake.
+
+The choice is then between upgrading that host to Bookworm -- which also makes it
+match the other Pi, the point of the whole exercise -- and keeping the source build
+with the full dev-library set. Check `/usr/bin/python3 --version` before deciding;
+everything else follows from it.
+
+### Rebuilding the interpreter, if that is the route
+
+CPython's configure step skips any optional extension whose dev library is absent,
+prints the list once, and **succeeds**. `_bz2` was only the first module that
+happened to be reached; `_lzma` is needed by the same import and `_ctypes` by
+`vertex/radio/hci.py` for `sockaddr_hci`, so a partial rebuild trades one late
+failure for another.
+
+Install the full set before configuring -- this is CPython's own devguide list:
+
+```
+sudo apt install build-essential pkg-config \
+    libbz2-dev libffi-dev libgdbm-dev libgdbm-compat-dev liblzma-dev \
+    libncurses-dev libreadline-dev libsqlite3-dev libssl-dev \
+    tk-dev uuid-dev zlib1g-dev
+```
+
+Then verify positively rather than reading the build log:
+
+```
+/path/to/new/python3 scripts/check_interpreter.py
+```
+
+It imports every optional extension, names the Debian package behind each missing
+one, and prints a digest of the module set. **Installing a dev package after the
+fact does nothing** -- extensions are selected at configure time, so the build has
+to be redone.
+
+Rebuilding also invalidates two things downstream:
+
+* **The venv** points at the replaced binary. Recreate it (`--copies --clear`).
+* **The file capability** is cleared when the file is replaced. Re-apply `setcap`,
+  and see the section above for why `--copies` matters when doing so.
+
+**Compare the digest across hosts.** That was the substantive concern behind
+recommending the distro interpreter, and it survives the choice to rebuild -- it is
+just now something to check rather than something guaranteed:
+
+```
+pi1$ .venv/bin/python3 scripts/check_interpreter.py --fingerprint
+pi2$ .venv/bin/python3 scripts/check_interpreter.py --fingerprint
+```
+
+Identical output means the interpreters match. A difference is a difference between
+two machines whose comparison is the experiment, and it does not appear anywhere in
+the collected data -- which is why `RunMeta.environment` now carries the version and
+build, and why preflight prints the digest on a clean run.
+
+### File capabilities and venvs: the capability is not where preflight said
+
+pi1's preflight reported
+
+```
+privileges  cap_net_admin on /home/plant123/.../.venv/bin/python3
+```
+
+which is not where the capability is. A default venv's `bin/python3` is a
+**symlink**, and file capabilities attach only to regular files -- so `setcap` on it
+resolved through and landed on the **base interpreter**, shared by everything that
+uses it. `getcap` follows the link, so the check reported success against a
+different file than the one it printed.
+
+```
+/tmp/vc/bin/python3 -> /usr/bin/python3        (islink=True)
+readlink -f          -> /usr/bin/python3.12    <- where setcap actually applied
+```
+
+Two consequences, and the first one bites on the very next step:
+
+* **Recreating the venv loses it.** The capability stays on the old source-built
+  binary; the new venv points somewhere else, and the bridge fails with EPERM that
+  reads as a missing adapter.
+* **It was never scoped to the venv.** Every process using that base interpreter
+  had CAP_NET_ADMIN, which is the same objection as `setcap` on the system python
+  -- the thing the systemd drop-in exists to avoid.
+
+The fix, if staying with the shell launcher, is `--copies`, which makes the venv's
+interpreter a real file that can carry its own capability:
+
+```
+/usr/bin/python3 -m venv --copies --clear .venv
+.venv/bin/pip install -e .
+sudo setcap cap_net_admin,cap_net_raw+eip .venv/bin/python3
+```
+
+Preflight now names the file the capability is on, and says explicitly when that is
+not the interpreter being used.
+
+Untested claim, flagged as such: a file capability sets `AT_SECURE`, and whether
+that interacts badly with a venv's `.pth`-based editable install has not been
+checked here -- no root available. If `--copies` plus `setcap` misbehaves, use
+`sudo -E bash scripts/agents.sh start` or the systemd units, where
+`AmbientCapabilities` grants the capability to the process rather than to a file
+and the question does not arise.
+
+### A source-built interpreter, and why the hosts should match
+
+pi1 failed preflight with `ModuleNotFoundError: No module named '_bz2'` while pi2
+passed. Not a missing package -- `_bz2` is a **CPython stdlib C extension**, and no
+`pip install` can supply it. The interpreter was built from source without
+`libbz2-dev` present, and CPython skips optional modules whose dev library is
+missing **silently**: the build prints them in a list and succeeds.
+
+`networkx` is what needs it, for its compressed-graph readers:
+
+```
+numpy     pulls in: -
+pydantic  pulls in: -
+networkx  pulls in: ['_bz2', '_lzma', 'bz2', 'lzma']
+yaml      pulls in: -
+```
+
+So `_lzma` is almost certainly missing on that host too, and quite possibly
+`_sqlite3` and `readline`. `_ssl` evidently is not, since pip reached PyPI.
+
+Preflight's advice was wrong here -- it said `pip install -e .` for any
+ImportError. It now classifies the two cases, because they point in opposite
+directions: a missing package is a pip problem, a missing `_`-prefixed stdlib
+module means the interpreter itself is incomplete and names the dev library that
+was absent.
+
+**The recommendation is to use the distro interpreter on both Pis**, not to rebuild
+pi1's with libbz2-dev. Bookworm ships 3.11.2, which satisfies `requires-python`:
+
+```
+/usr/bin/python3 -m venv --clear .venv
+.venv/bin/pip install -e .
+```
+
+The reason is not convenience. pi1 was on 3.11.8 and pi2 on 3.11.2, from different
+builds with different module sets -- a difference between hosts in an experiment
+whose entire purpose is comparing hosts. It would not change the control law
+(float arithmetic is identical), but it is needless variance in the one place the
+platform is trying to isolate.
+
+Which is also why `RunMeta.environment` now records the interpreter with every
+run -- version, build, implementation, executable path and platform. This
+difference existed for some time and nothing in the collected data would have shown
+it.
 
 ### Virtual environments: three separate traps
 
