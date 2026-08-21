@@ -1292,6 +1292,64 @@ BLE nRF-to-nRF, BLE nRF-to-Pi in both directions, and UDP between hosts; the epo
 transfer; the STATE relay path; v1 on the air; and the hub configuring, triggering,
 stopping and collecting six agents across two machines.
 
+### 8a-octies. Freshness is a proxy; the real per-link figure was never recorded
+
+Same manifest, host-side `arrivals()` fix in place, so both agent types now log the
+same *definition*. Convergence unchanged: spread 24.378 -> 0.001 by t=15 s, held for
+105 s. But the columns still are not comparable, and the transport counters -- added
+one run earlier for exactly this -- showed why.
+
+```
+freshness column      into an nRF 0.33-0.34   into a Pi (UDP) 0.133-0.137
+UdpTransport counters sent 600  received 2367  self_filtered 600  delivered 1767
+```
+
+**UDP delivery is 98%, not the 14% the freshness column suggests.** Two separate
+effects, both in the measurement:
+
+*Extra receivers.* Node 11's neighbours sent 600 each = 1200, yet 1767 were
+delivered. The third sender is node **21, on the same host**: subnet broadcast
+reaches every socket on the subnet, so a bridge's UDP half lands in its host-mate's
+socket too. 3 x 600 = 1800 expected, 1767 seen = **98.2%**. The extras are then
+dropped by `NeighborTable` as not-a-neighbour, so they never reached the rows.
+
+*Arrival bunching.* The flag is a boolean per sampling window, and the gap pattern
+gives it away:
+
+```
+12->11 UDP  gaps of 7-8 samples (91%)  = 280-320 ms between flags
+            but node 12 publishes every 200 ms (5 samples)
+            589 arrivals / 407 flags = 1.45 per window -> 7.2 samples. Exact match.
+```
+
+Two datagrams land inside one 40 ms window about 31% of the time, and a boolean can
+only record one.
+
+*And the rates still differ by medium.* On BLE the gaps are 2-3 samples =
+80-120 ms, which is the **100 ms advertising interval**, not the 200 ms publish
+period. Each published value is advertised about twice over its life and the
+duplicate filter is not suppressing the repeat, so a BLE receiver flags ~8.2/s
+against 5 publishes/s while a UDP receiver flags ~3.4/s. Same definition, different
+rate: a BLE link repeats each value, a UDP link sends it once.
+
+So freshness cannot be compared across media at all. It is useful for one thing --
+"was this link alive at time t", which is what caught the collapse -- and nothing
+more.
+
+**The comparable metric already existed and was not recorded.** `LinkStats` infers
+`expected` from **sequence-number gaps**, which counts published values rather than
+transmissions: a re-advertised value scores a `duplicate` rather than a second
+delivery, and a receiver sampling faster than the sender publishes cannot undercount
+it. `link_stats()` was surfaced in `status` and nowhere else, so it vanished when a
+run ended. Now written into the run's environment beside the transport counters:
+
+```json
+"links": {"12": {"received": 40, "expected": 40, "lost": 0, "duplicates": 0,
+                 "reordered": 0, "delivery_ratio": 1.0, "median_delay_us": 1542.0}}
+```
+
+That is the number to compare BLE against UDP with, and the next run will carry it.
+
 ### 8a-septies. After the reflash: the collapse is gone, and `fresh` meant two things
 
 `n6-fast`, 120 s, reflashed. Both firmware fixes took:

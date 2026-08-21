@@ -47,7 +47,15 @@ __all__ = ["SCHEMA_VERSION", "FORMATS", "RunMeta", "RunLog", "read_run_file",
            "recover_rows", "record_width"]
 
 #: Bumped whenever the on-disk layout changes in a way readers must notice.
-SCHEMA_VERSION = 4      # v4 added device_timestamp as the second column
+SCHEMA_VERSION = 5
+# v5  rx_<id> became an ARRIVAL flag on every agent type -- "a packet arrived since
+#     the last sample". Previously a Pi agent logged a STALENESS flag ("younger
+#     than max_neighbor_age_s") while the nRF logged an arrival flag, so the same
+#     column meant two things and the two were compared as though they did not.
+#     The LAYOUT is identical to v4, which is exactly why this needed a bump: a
+#     reader keying on the version is the only way to tell the two apart, and runs
+#     collected as v4 are ambiguous between the two meanings.
+# v4  added device_timestamp as the second column.
 
 LogFormat = Literal["binary", "csv", "jsonl"]
 FORMATS: dict[str, str] = {"binary": ".bin", "csv": ".csv", "jsonl": ".jsonl"}

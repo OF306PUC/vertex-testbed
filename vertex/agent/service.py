@@ -477,6 +477,21 @@ class AgentService:
             return {}
         t = self.agent.transport
         out: dict[str, Any] = {"transport": t.name}
+
+        # Per-link delivery from SEQUENCE NUMBERS -- the only per-link figure that
+        # is comparable across media. `expected` is inferred from seq gaps, so it
+        # counts published values rather than transmissions: a BLE link that
+        # re-advertises each value twice scores a duplicate, not two deliveries,
+        # and a receiver sampling faster than the sender publishes cannot undercount
+        # it. The freshness column in the rows is a proxy for this and is affected
+        # by both -- it read 0.14 on a UDP link the counters show at 98%.
+        from dataclasses import asdict
+        out["links"] = {
+            str(nid): {k: v for k, v in asdict(st).items() if k != "delays_us"}
+            | {"delivery_ratio": round(st.delivery_ratio, 4),
+               "median_delay_us": st.median_delay_us}
+            for nid, st in self.agent.neighbors.link_stats().items()
+        }
         st = getattr(t, "stats", None)
         if st is not None:
             from dataclasses import asdict, is_dataclass
