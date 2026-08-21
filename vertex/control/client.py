@@ -120,6 +120,17 @@ class ControlClient:
     async def fetch(self, run_name: str, artifact: str) -> bytes:
         return (await self.call("fetch", run_name=run_name, artifact=artifact))[1]
 
+    async def fetch_named(self, run_name: str, artifact: str) -> tuple[str, bytes]:
+        """As :meth:`fetch`, but also the agent's own filename for the artefact.
+
+        The name carries the format: a rows file is `<node>.bin`, `.csv` or
+        `.jsonl`, and `recover_rows` dispatches on that suffix. A collector that
+        invents its own name discards the only thing that says how to read the
+        bytes back.
+        """
+        resp, blob = await self.call("fetch", run_name=run_name, artifact=artifact)
+        return (resp.name or ""), blob
+
     async def __aenter__(self) -> "ControlClient":
         await self.connect()
         return self

@@ -12,8 +12,24 @@ file matters more than speed. The cost is stated above; nothing else changes.
 :meth:`finalize` transposes into the columnar layout the analysis UI already reads::
 
     { "meta": {...}, "params": {...},
-      "data": { "timestamp": [...], "state": [...], "vstate": [...],
-                "vartheta": [...], "<neighbour_id>": [...], "rx_<id>": [...] } }
+      "data": { "timestamp": [...], "device_timestamp": [...], "state": [...],
+                "vstate": [...], "vartheta": [...],
+                "<neighbour_id>": [...], "rx_<id>": [...] } }
+
+## Two time columns, and which one to plot against
+
+``timestamp``        This host's clock, seconds since the experiment epoch. Shared
+                     across the fleet through chrony, so **this is the timeline to
+                     plot against** and the only one on which two nodes' samples
+                     are comparable.
+``device_timestamp`` The clock of whatever computed the sample.
+
+For a `wifi` or `bridge` agent the controller runs in this process, so the two are
+the same number. For a `ble` agent they are not: the law runs on an nRF with no
+synchronised clock, and its `t_us` counts from when its own CONTROL frame arrived.
+Recording both keeps that distinction instead of picking one and losing it --
+``device_timestamp - timestamp`` is the serial transit plus scheduling, which is
+otherwise indistinguishable from the board having been late.
 """
 
 from __future__ import annotations
@@ -31,7 +47,7 @@ __all__ = ["SCHEMA_VERSION", "FORMATS", "RunMeta", "RunLog", "read_run_file",
            "recover_rows", "record_width"]
 
 #: Bumped whenever the on-disk layout changes in a way readers must notice.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4      # v4 added device_timestamp as the second column
 
 LogFormat = Literal["binary", "csv", "jsonl"]
 FORMATS: dict[str, str] = {"binary": ".bin", "csv": ".csv", "jsonl": ".jsonl"}
@@ -41,8 +57,8 @@ _ITEM = 8
 
 
 def record_width(n_neighbors: int) -> int:
-    """Columns per record: t, x, z, theta, then (vstate, fresh) per neighbour."""
-    return 4 + 2 * n_neighbors
+    """Columns per record: t, device_t, x, z, theta, then (vstate, fresh) each."""
+    return 5 + 2 * n_neighbors
 
 
 def git_hash(cwd: str | Path | None = None) -> str:
@@ -124,7 +140,7 @@ class RunLog:
         self._count = 0
 
     def column_names(self) -> list[str]:
-        cols = ["timestamp", "state", "vstate", "vartheta"]
+        cols = ["timestamp", "device_timestamp", "state", "vstate", "vartheta"]
         for nid in self.meta.neighbors:
             cols += [str(nid), f"rx_{nid}"]
         return cols
@@ -179,10 +195,15 @@ class RunLog:
         vartheta: float,
         neighbor_vstates: Sequence[float] = (),
         neighbor_fresh: Sequence[bool] = (),
+        device_t_s: float | None = None,
     ) -> None:
         """Record one control step.
 
         The hot path: build the row, pack it into an in-memory buffer, return.
+
+        ``t_s`` is this host's clock and is the timeline to plot against.
+        ``device_t_s`` is the computing device's own -- omit it when that device is
+        this process, which is every case except a `ble` agent relaying an nRF.
 
         ``neighbor_fresh`` is 1 when a packet arrived from that neighbour inside its
         freshness window and 0 when the value is a retained stale one.
@@ -190,7 +211,8 @@ class RunLog:
         if self._fh is None:
             raise RuntimeError("append() before start()")
 
-        row = [t_s, state, vstate, vartheta]
+        row = [t_s, t_s if device_t_s is None else device_t_s,
+               state, vstate, vartheta]
         n = len(self.meta.neighbors)
         for i in range(n):
             row.append(float(neighbor_vstates[i]) if i < len(neighbor_vstates) else 0.0)
@@ -255,7 +277,7 @@ class RunLog:
         names = self.column_names()
         cols: dict[str, list[Any]] = {n: [] for n in names}
         for row in rows:
-            if len(row) < 4:
+            if len(row) < 5:
                 continue
             for i, name in enumerate(names):
                 if i < len(row):

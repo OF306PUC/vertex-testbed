@@ -187,6 +187,40 @@ into a device that does not have one:
   skips delay accounting for those packets rather than recording a wrong figure.
   Silence is the correct output when the anchor is missing.
 
+### The log plots against #4, not the nRF's clock
+
+Given the above, the nRF's own reading is the *worst* available axis for a
+`ble` agent's samples: it counts from that board's CONTROL arrival and free-runs on
+its crystal, so two nodes' trajectories cannot be overlaid on it.
+
+The run log therefore carries **two** time columns, and the primary one is this
+host's #4:
+
+| column | clock | comparable across nodes? |
+|---|---|---|
+| `timestamp` | this host's #4, epoch-relative | **yes** -- chrony keeps the Pis aligned |
+| `device_timestamp` | whatever computed the sample | only within one node |
+
+For a `wifi` or `bridge` agent the controller runs in the agent process, so the two
+columns are the same number to the bit. For a `ble` agent they are not, and the
+difference is the serial transit plus scheduling -- around 120 ms in the loopback
+harness, and measurable on hardware for the first time. Previously the board's
+reading was the only column, so "the board reported late" and "the link was slow"
+were the same observation.
+
+The arrival stamp is taken in `SerialLink`'s **reader thread**, at the moment the
+frame comes off the port, not after it has been handed to the event loop.
+`call_soon_threadsafe` scheduling delay is part of the host, not part of the link,
+and stamping late would charge it to the board.
+
+Note what this does *not* fix: the samples themselves are still produced on the
+nRF's schedule, so plotting against `timestamp` aligns *when the host learned* a
+value, not when the board computed it. Those differ by the transit plus up to one
+reporting period, because `report_state()` stamps assembly rather than computation
+(`counter` is the step index, so `counter x dt` recovers the board's own step time).
+For comparing trajectories across nodes the host axis is the right one anyway; for
+attributing a value to a control step, use `counter`.
+
 None of this touches #6. The modelled clock is still `state`/`vstate`/`vartheta`
 and is still not driven by any of these readings — see "Which variant actually
 runs". What the epoch transfer buys is that **#3 now reaches the nRF**, so

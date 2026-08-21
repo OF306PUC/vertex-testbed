@@ -15,6 +15,15 @@
 
 LOG_MODULE_REGISTER(control, LOG_LEVEL_INF);
 
+/* Called on every accepted CONTROL frame, so the run loops react to a trigger
+ * immediately instead of at the next idle poll. See control.h. */
+static void (*trigger_hook)(void);
+
+void control_set_trigger_hook(void (*hook)(void))
+{
+    trigger_hook = hook;
+}
+
 static void send_ack(uint8_t type, int status)
 {
     uint8_t p[2] = { type, (uint8_t)(int8_t)status };
@@ -90,6 +99,12 @@ void control_on_frame(uint8_t type, const uint8_t *payload, uint16_t len, void *
 
     if (rc == AGENT_OK) {
         send_ack(type, 0);
+        /* After the ACK: the host's next frame can then arrive while the run
+         * loops are already spinning up, rather than behind them. Fires on stop
+         * as well as start, so teardown is just as prompt. */
+        if (type == PROTO_T_CONTROL && trigger_hook != NULL) {
+            trigger_hook();
+        }
     } else {
         /* Reported, not just logged: the host is the only place that can
          * correlate a rejection with what it sent. */

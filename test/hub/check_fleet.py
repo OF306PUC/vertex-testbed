@@ -22,7 +22,13 @@ What it proves, in order of how badly each has already gone wrong:
 3. `bridge` agents publish on both media -- they are the only path between the
    `ble` and `wifi` subnets.
 4. Collected artefacts exist and the metadata is readable, in the units each agent
-   type actually logs.
+   type actually logs -- and the rows are readable *back*, which needs the agent's
+   own filename to survive collection, because the suffix is what says how to
+   decode them.
+5. The two time columns behave: identical for an agent whose controller runs in
+   this process, and different for a `ble` agent, whose law runs on a board with no
+   synchronised clock. `timestamp` is the host's and is the axis to plot against;
+   `device_timestamp` is the board's, and the difference is the link.
 
     python3 test/hub/check_fleet.py [manifest]
 """
@@ -254,6 +260,65 @@ async def main(manifest_path: str) -> int:
         if d.get("units") != want:
             fails.append(f"node {nid} ({node.type}) logged units="
                          f"{d.get('units')!r}, expected {want!r}")
+
+    # 5. the two timelines
+    from vertex.agent.runlog import RunMeta, recover_rows
+    for nid, node in manifest.by_id.items():
+        meta_path = report.out_dir / f"{nid}.meta.json"
+        if not meta_path.exists():
+            continue
+        raw = json.loads(meta_path.read_text())
+        m = RunMeta(**{k: v for k, v in raw.items()
+                       if k in RunMeta.__dataclass_fields__})
+        rows_name = report.nodes[nid].files.get("rows")
+        if rows_name is None:
+            fails.append(f"node {nid}: no rows collected")
+            continue
+        try:
+            rows = recover_rows(report.out_dir / rows_name, meta=m)
+        except Exception as exc:
+            fails.append(f"node {nid}: collected rows are unreadable ({exc}); "
+                         f"the filename's suffix carries the format")
+            continue
+        if not rows:
+            fails.append(f"node {nid}: rows file decoded to nothing")
+            continue
+        cols = raw["columns"]
+        if "device_timestamp" not in cols:
+            fails.append(f"node {nid}: no device_timestamp column")
+            continue
+        it, idv = cols.index("timestamp"), cols.index("device_timestamp")
+        deltas = [r[idv] - r[it] for r in rows]
+        if node.type is AgentType.BLE:
+            # The board's clock is its own; a delta of exactly zero would mean the
+            # arrival stamp never reached the row and the board's time was reused.
+            if max(abs(d) for d in deltas) == 0.0:
+                fails.append(f"ble node {nid}: device_timestamp == timestamp on "
+                             f"every row -- the host arrival time is not being "
+                             f"recorded")
+        else:
+            if any(d != 0.0 for d in deltas):
+                fails.append(f"{node.type} node {nid}: the two timelines differ "
+                             f"(max {max(abs(d) for d in deltas):.6f}s) but its "
+                             f"controller runs in this process")
+
+    ble_deltas = []
+    for nid, node in manifest.by_id.items():
+        if node.type is not AgentType.BLE:
+            continue
+        rows_name = report.nodes[nid].files.get("rows")
+        if not rows_name:
+            continue
+        raw = json.loads((report.out_dir / f"{nid}.meta.json").read_text())
+        m = RunMeta(**{k: v for k, v in raw.items()
+                       if k in RunMeta.__dataclass_fields__})
+        cols = raw["columns"]
+        it, idv = cols.index("timestamp"), cols.index("device_timestamp")
+        for r in recover_rows(report.out_dir / rows_name, meta=m):
+            ble_deltas.append(r[idv] - r[it])
+    if ble_deltas:
+        print(f"  relay device-vs-host offset: {min(ble_deltas):+.4f} .. "
+              f"{max(ble_deltas):+.4f} s over {len(ble_deltas)} rows")
 
     counts = {str(t): 0 for t in AgentType}
     for nid, node in manifest.by_id.items():

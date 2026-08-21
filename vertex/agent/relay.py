@@ -29,6 +29,7 @@ class RelayCounters:
     malformed: int = 0
     rejected: int = 0
     frames_sent: int = 0
+    untimed: int = 0            # reports that arrived with no host receive time
 
     def summary(self) -> str:
         return (f"reports={self.reports} malformed={self.malformed} "
@@ -116,7 +117,8 @@ class BleRelay:
     stand-in for the link.
     """
 
-    def __init__(self, link, *, on_report: Callable[[StateReport], None] | None = None,
+    def __init__(self, link, *,
+                 on_report: Callable[[StateReport, "int | None"], None] | None = None,
                  timeout: float = 1.0, clock=None) -> None:
         self.link = link
         #: Supplies the epoch reading sent with the trigger, so the nRF can stamp
@@ -129,6 +131,9 @@ class BleRelay:
         self.on_report = on_report
         self.assignment: AgentAssignment | None = None
         self.last: StateReport | None = None
+        #: Host clock at the last report's arrival, on the experiment epoch. This is
+        #: the timeline the log plots against; see runlog's module docstring.
+        self.last_rx_time_us: int | None = None
         self._t0: float | None = None
 
         # Subscribed here, not in start(): the nRF logs on boot and on reset, so a
@@ -179,12 +184,21 @@ class BleRelay:
         self._send(FrameType.CONTROL, encode_control(trigger=False))
 
     # reporting:
-    def handle_frame(self, frame) -> StateReport | None:
+    def handle_frame(self, inbound) -> StateReport | None:
         """Feed an inbound frame. Returns the report if it was one.
+
+        Accepts a :class:`~vertex.serial.link.TimedFrame` -- the link stamps the
+        arrival instant in its reader thread, and that stamp is the timeline the log
+        plots against. A bare frame is accepted too, with no arrival time; the row
+        then falls back to the board's own clock, which is the only honest thing to
+        do when the host's is unknown.
 
         A malformed report is counted and dropped, never raised: the nRF logs on
         boot and reset.
         """
+        frame = getattr(inbound, "frame", inbound)
+        rx_time_us = getattr(inbound, "rx_time_us", None)
+
         if frame.type != FrameType.STATE:
             return None
         try:
@@ -193,9 +207,12 @@ class BleRelay:
             self.counters.malformed += 1
             return None
         self.counters.reports += 1
+        if rx_time_us is None:
+            self.counters.untimed += 1
         self.last = report
+        self.last_rx_time_us = rx_time_us
         if self.on_report is not None:
-            self.on_report(report)
+            self.on_report(report, rx_time_us)
         return report
 
     @property

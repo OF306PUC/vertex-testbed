@@ -45,8 +45,9 @@ LOG_MODULE_REGISTER(Module_Main, LOG_LEVEL_INF);
 #define THREAD_SLOW_NETWORK_PRIORITY   7
 #define THREAD_FAST_DYNAMICS_PRIORITY  5
 
-/** Idle wake-up period while stopped, so a new CONTROL trigger is noticed
- *  promptly without the network timer running. */
+/** Idle wake-up period while stopped. A safety net only: control.c wakes this
+ *  thread directly when a CONTROL frame lands, so a trigger is not waited for at
+ *  this granularity. */
 #define IDLE_POLL_MS                   1000
 
 /**
@@ -66,6 +67,7 @@ static void dynamics_thread(void);
 static void network_fetching_thread(void);
 static void dynamics_timer_cb(struct k_timer *dummy);
 static void network_timer_cb(struct k_timer *dummy);
+static void on_control_frame(void);
 
 K_THREAD_DEFINE(dynamics_thread_id, APP_STACK_SIZE,
                 dynamics_thread, NULL, NULL, NULL,
@@ -90,10 +92,8 @@ int main(void)
     k_timer_init(&dynamics_timer, dynamics_timer_cb, NULL);
     k_timer_init(&network_timer,  network_timer_cb,  NULL);
 
+    control_set_trigger_hook(on_control_frame);
     if (uart_link_init(control_on_frame, &agent)) {
-        /* Blink fast and keep going rather than returning: without the control
-         * plane the board can never be configured, and a board that has simply
-         * stopped blinking is indistinguishable from one that is unpowered. */
         LOG_ERR("UART link init failed -- no control plane");
         blink_ms = BLINK_FAULT_MS;
     }
@@ -137,18 +137,18 @@ static void network_timer_cb(struct k_timer *dummy)
 }
 
 /**
+ * Wake the network thread now, from control.c's frame callback.
+ *
+ * Without this the thread learns of a trigger only when its idle poll next fires,
+ * so the first control step lands anywhere in a 0..IDLE_POLL_MS window. 
+ */
+static void on_control_frame(void)
+{
+    k_sem_give(&network_sem);
+}
+
+/**
  * Build the packet to advertise. Caller holds the mutex.
- *
- * `tx_time_us` is on the *host's* epoch, not this board's uptime: the receiver
- * computes `rx_time_us - tx_time_us` against a fleet-wide epoch, so a
- * board-relative stamp would yield a number rather than a delay. `epoch_us` is
- * the host's reading at the moment it built the CONTROL frame and `time_us` is
- * this board's uptime at the moment that frame landed, so their difference is the
- * offset between the two clocks -- accurate to one UART transit. See air_wire.h.
- *
- * If the host sent no epoch (`epoch_us == 0`) the stamp stays 0, which is how the
- * host's LinkMonitor is told to skip delay accounting rather than record a wrong
- * one.
  */
 static state_packet_type on_air_packet(int64_t uptime_us)
 {
@@ -194,9 +194,6 @@ static void dynamics_thread(void)
         }
         k_mutex_unlock(&coordination_mutex);
 
-        /* Outside the mutex on purpose. Updating the advertising data is an HCI
-         * round trip, and holding the agent's lock across it stalls the network
-         * thread -- which is trying to meet its own period. */
         if (publish) {
             (void)broadcaster_update(&pkt);
         }
@@ -205,10 +202,6 @@ static void dynamics_thread(void)
 
 /**
  * Fold one observer snapshot into the agent. Caller holds the mutex.
- *
- * The observer cannot do this itself: it runs in the Bluetooth RX thread with no
- * lock. So availability arrives as the cumulative `heard` bitmask and is applied
- * here, where the agent is already protected.
  */
 static void absorb_neighbors(const neighbor_info_type *info)
 {
@@ -288,25 +281,11 @@ static void network_fetching_thread(void)
             absorb_neighbors(&neighbor_info);
         }
         /* A real snapshot: struct agent holds its neighbour arrays inline, where
-         * the struct this replaced held pointers -- so this copy used to alias
-         * live memory and the reported values could change mid-frame. */
+         * the struct this replaced held pointers. */
         memcpy(&log_data_copy, &agent, sizeof(agent));
         k_mutex_unlock(&coordination_mutex);
 
-        /* Every period, unconditionally.
-         *
-         * This used to report only when a queue message arrived AND every
-         * neighbour had been heard at least once. Both conditions are wrong for a
-         * log the host reconstructs delivery ratio from: a node with one silent
-         * neighbour reported nothing for the entire run, and the surviving
-         * timestamps were event-driven rather than periodic, so a gap meant
-         * "nothing arrived" and "nothing was sent" indistinguishably. The `fresh`
-         * bits already carry which links delivered in this window -- but only if
-         * the window closes on schedule.
-         *
-         * Sent from the snapshot, not from the live agent: uart_link_send() can
-         * block on a full TX ring, and holding the mutex across it would stall the
-         * control loop. */
+        /* Every period, unconditionally. */
         report_state(&log_data_copy);
     }
 }

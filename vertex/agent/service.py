@@ -157,6 +157,12 @@ class AgentService:
             raise RuntimeError(
                 f"a {self.node_type} agent relays to an nRF and needs a serial "
                 "link; construct AgentService with link=...")
+        # The link stamps arrivals, so it needs the clock the log is written on.
+        if getattr(self.link, "clock", None) is None:
+            try:
+                self.link.clock = self.clock
+            except Exception:
+                pass
         relay = BleRelay(self.link, on_report=self._record_report,
                          clock=self.clock)
         relay.configure(assignment, radio=self._radio_frame(assignment))
@@ -384,12 +390,30 @@ class AgentService:
         if self.runlog is not None:
             self.runlog.append(t_s, out.state, out.vstate, out.vartheta, vstates, fresh)
 
-    def _record_report(self, report) -> None:
-        """Write one nRF report. Values pass through unscaled."""
-        if self.runlog is not None:
-            self.runlog.append(report.t_us / 1e6, report.state, report.vstate,
-                               report.vartheta, list(report.neighbor_vstates),
-                               list(report.neighbor_fresh))
+    def _record_report(self, report, rx_time_us: int | None = None) -> None:
+        """Write one nRF report. State values pass through unscaled.
+
+        Two timelines, and the row's primary one is **this host's**. The nRF has no
+        synchronised clock, so its `t_us` counts from its own CONTROL arrival and is
+        not comparable with another node's. This host's clock is chrony-synchronised
+        and epoch-shared, so plotting against the arrival time puts a `ble` agent's
+        samples on the same axis as a `wifi` agent's without touching firmware.
+
+        The board's own reading is kept alongside as `device_timestamp`: their
+        difference is the serial transit plus scheduling, which is otherwise
+        indistinguishable from the board having been late.
+
+        With no arrival time the board's clock is used for both -- better than
+        fabricating a host time.
+        """
+        if self.runlog is None:
+            return
+        device_t_s = report.t_us / 1e6
+        t_s = device_t_s if rx_time_us is None else rx_time_us / 1e6
+        self.runlog.append(t_s, report.state, report.vstate, report.vartheta,
+                           list(report.neighbor_vstates),
+                           list(report.neighbor_fresh),
+                           device_t_s=device_t_s)
 
     async def _stop(self, args: dict[str, Any]) -> tuple[Response, None]:
         if self.is_relay:

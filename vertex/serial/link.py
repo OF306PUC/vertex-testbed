@@ -37,7 +37,25 @@ from typing import Callable
 from .proto import (Frame, FrameParser, FrameType, ProtoError, build_frame,
                     decode_ack)
 
-__all__ = ["LinkError", "LinkRejected", "LinkCounters", "SerialLink"]
+__all__ = ["LinkError", "LinkRejected", "LinkCounters", "TimedFrame", "SerialLink"]
+
+
+@dataclass(frozen=True, slots=True)
+class TimedFrame:
+    """A frame with the instant it was read off the port.
+
+    The stamp is taken in the reader thread, before the frame is handed to the
+    event loop. Taking it on the loop instead would fold `call_soon_threadsafe`
+    scheduling delay into the measurement and charge it to the board -- and the
+    whole point of a host receive time is to separate the two.
+
+    ``rx_time_us`` is on the experiment epoch when a clock was supplied, so it is
+    directly comparable with a `wifi` agent's sample times and with the
+    `rx_time_us` the radio transports report. ``None`` when no clock was given.
+    """
+
+    frame: Frame
+    rx_time_us: int | None
 
 #: Frames that answer a request. Anything else arriving is unsolicited.
 _REPLY_TYPES = frozenset({FrameType.ACK, FrameType.ERR, FrameType.PONG,
@@ -91,9 +109,14 @@ class SerialLink:
     """
 
     def __init__(self, port: str = "/dev/ttyACM0", baud: int = 115200, *,
-                 loop=None, io=None, idle_timeout_s: float = 0.25) -> None:
+                 loop=None, io=None, clock=None,
+                 idle_timeout_s: float = 0.25) -> None:
         self.port = port
         self.baud = baud
+        #: Supplies `rx_time_us` for received STATE frames, on the experiment
+        #: epoch. Without it reports carry no host-side arrival time and the
+        #: board's own clock is the only timeline available.
+        self.clock = clock
         self.idle_timeout_s = idle_timeout_s
         self.counters = LinkCounters()
         self.parser = FrameParser()
@@ -101,7 +124,7 @@ class SerialLink:
         self._loop = loop
         self._io = io
         self._owns_io = io is None
-        self._on_state: Callable[[Frame], None] | None = None
+        self._on_state: Callable[["TimedFrame"], None] | None = None
 
         self._reply: Frame | None = None
         self._reply_ready = threading.Event()
@@ -112,8 +135,11 @@ class SerialLink:
         self._last_rx = 0.0
 
     # ── registration ─────────────────────────────────────────────────────────
-    def on_state(self, callback: Callable[[Frame], None] | None) -> None:
+    def on_state(self, callback: Callable[["TimedFrame"], None] | None) -> None:
         """Register the handler for unsolicited STATE frames.
+
+        The callback receives a :class:`TimedFrame`, not a bare frame: the arrival
+        instant is only knowable here, in the reader thread.
 
         `BleRelay` registers itself here; without that the nRF's reports are read
         off the port, counted, and dropped.
@@ -192,14 +218,17 @@ class SerialLink:
             cb = self._on_state
             if cb is None:
                 return
+            # Stamped here, on the reader thread, at the moment the frame came off
+            # the port -- see TimedFrame.
+            timed = TimedFrame(frame, self.clock.now_us() if self.clock else None)
             loop = self._loop
             if loop is None:
-                cb(frame)
+                cb(timed)
             else:
                 # onto the loop: the handler appends to a RunLog, and the loop is
                 # where every other writer to it runs.
                 try:
-                    loop.call_soon_threadsafe(cb, frame)
+                    loop.call_soon_threadsafe(cb, timed)
                 except RuntimeError:
                     # Loop already closed -- the run is over; dropping is correct.
                     pass

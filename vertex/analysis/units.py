@@ -87,7 +87,11 @@ def normalize_run(payload: dict[str, Any], *, to: str = ENGINEERING) -> dict[str
 
     converted: dict[str, Any] = {}
     for name, column in data.items():
-        if name == "timestamp" or name.startswith("rx_"):
+        # Both time columns and the freshness flags are named explicitly rather
+        # than left to the fall-through: seconds are not a scaled state, and a
+        # column that survives conversion by accident survives it only until
+        # someone adds a branch above.
+        if name in ("timestamp", "device_timestamp") or name.startswith("rx_"):
             converted[name] = column
         elif name in STATE_COLUMNS or name.isdigit():
             converted[name] = [convert_value(v, frm, to) for v in column]

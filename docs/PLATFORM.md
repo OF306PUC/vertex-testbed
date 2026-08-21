@@ -1044,6 +1044,93 @@ of on — writing console text into the binary stream on uart0.
 * §8b.E: `pyproject.toml` `testpaths` still names two deleted directories, so
   `pytest` collects nothing and says so quietly.
 
+### 8a-bis. First hardware bring-up (2026-08-20)
+
+One board flashed and run with `test/nrf/check_board.py`. Every stage passed,
+including the air stage.
+
+| | |
+|---|---|
+| PING RTT | 10.3 ms -- so UARTE hardware byte counting is active, and this bounds the CONTROL epoch bias |
+| Rejection | short ALGORITHM -> `ERR` / `AGENT_ERR_LEN` |
+| Report cadence | **500.006 ms** per interval against `clock = 500` |
+| Steps per report | 2.55 against `dt = 200`, `clock = 500` (2.50 expected) |
+| Air | 30 advertisements in 4 s, decoded as **v1** by the host codec |
+| `vstate` air vs serial | 22.300000 vs 22.300000, delta 0 |
+| Epoch transfer | `tx_time_us - epoch_us` = 9.956 s, matching the trigger-to-scan interval |
+
+Two results that read like faults and are not:
+
+* **`vstate` and `vartheta` never moved.** Correct with one board. `v_i()` sums
+  only over `neighbors_enabled[j]`, and the report shows `enabled=[False]` because
+  no neighbour was ever heard -- so the coupling term is exactly zero and `vstate`
+  cannot change. And `|sigma| = 0.002066 < delta = 0.01`, so `dvtheta = 0` and the
+  adaptive gain stays at zero. `state` did move, by 0.002066, which is the
+  disturbance integrating on its own.
+* **`seq = 48` after ~11 reports.** The scan runs *after* the collection window,
+  so the board had been stepping for ~10 s at `dt = 200 ms`. 48 is right.
+
+**One real defect, now fixed: the run began 442 ms and 555 ms after the trigger**,
+on two consecutive runs of the same command. The run loops are semaphore-driven and
+the network thread only noticed `running` when its 1000 ms idle poll next fired, so
+the first control step landed anywhere in that window.
+
+This does not cancel out. `time_us` and `epoch_us` are latched when CONTROL
+*arrives*, so `t_us` is on a shared origin -- but the first step is not. Two nodes
+reporting the same `t_us` would be at different step counts, which misaligns
+precisely the trajectories a convergence measurement compares. Across nine nodes
+that is up to a second of unmeasured skew sitting underneath the hub's own
+trigger spread, which the hub does report.
+
+Fixed with `control_set_trigger_hook()`: `control.c` calls it on every accepted
+CONTROL frame and `main.c` registers a hook that gives the network semaphore, so
+the loops react immediately and the idle poll is a safety net rather than the
+mechanism. Verify on the next run: `t_us` of the first report should be a few ms,
+not a few hundred.
+
+---
+
+### 8a-ter. Two timelines in the log (2026-08-21)
+
+Prompted by asking whether the nRF's reports were timestamped. They were -- with
+`t_us`, run-relative to that board's CONTROL arrival -- but three things were wrong
+with relying on it, and the fix was chosen to be the smallest of the three.
+
+The row schema is now **v4**: `timestamp`, `device_timestamp`, `state`, `vstate`,
+`vartheta`, then the neighbour pairs. `timestamp` is this host's clock, and it is
+the axis to plot against; `device_timestamp` is whatever computed the sample.
+Identical for `wifi` and `bridge`, whose controllers run in the agent process; for
+`ble` the difference is the serial transit plus scheduling, measured at ~120 ms in
+the loopback harness and now visible on hardware.
+
+This closes the comparability problem **without touching firmware**: the host clock
+is chrony-synchronised and epoch-shared, so a `ble` agent's samples land on the same
+axis as a `wifi` agent's. The firmware's own two bases -- run-relative `t_us` in
+STATE, epoch-relative `tx_time_us` on the air -- are left as they are, and remain
+worth reconciling later.
+
+The arrival stamp is taken in `SerialLink`'s reader thread rather than on the event
+loop, so `call_soon_threadsafe` delay is not charged to the board.
+
+Two bugs fell out of doing it:
+
+* **The collector renamed rows and made them unreadable.** It wrote every rows
+  artefact as `<node>.rows`, but `recover_rows` dispatches on the suffix -- `.bin`
+  vs `.csv` vs `.jsonl` -- so a collected binary run decoded as text and raised
+  `UnicodeDecodeError`. The agent had been sending its real filename all along and
+  `ControlClient.fetch` was dropping it; there is now `fetch_named`, and the hub
+  keeps the agent's name.
+* **`normalize_run` passed the new column through by luck**, via a fall-through
+  branch rather than by name. Named explicitly now: seconds are not a scaled state,
+  and a column that survives conversion by accident survives it only until someone
+  adds a branch above it.
+
+`test/hub/check_fleet.py` asserts both directions -- that a `ble` node's columns
+differ, and that a local agent's are bit-identical -- so a regression that quietly
+reuses the board's clock for both fails rather than looking plausible.
+
+---
+
 ### What is left
 
 Nothing host-side blocks a first run. Remaining, in order:

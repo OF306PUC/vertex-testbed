@@ -188,14 +188,18 @@ class ExperimentRunner:
                            run_dir: Path) -> None:
         for artifact in ARTIFACTS:
             try:
-                blob = await self._client(node_id).fetch(run_name, artifact)
+                name, blob = await self._client(node_id).fetch_named(
+                    run_name, artifact)
             except ControlError as exc:
                 # Not fatal. A node with no rows still has metadata worth keeping,
                 # and the absence is itself the finding.
                 out.errors.append(f"fetch {artifact}: {exc}")
                 continue
-            suffix = ".meta.json" if artifact == "meta" else ".rows"
-            path = run_dir / f"{node_id}{suffix}"
+            # Keep the agent's own filename. It carries the format -- `.bin`,
+            # `.csv`, `.jsonl` -- and `recover_rows` dispatches on that suffix, so
+            # renaming rows to a generic `.rows` made a collected run unreadable
+            # without hand-reconstructing the layout from the metadata.
+            path = run_dir / (name or f"{node_id}.{artifact}")
             path.write_bytes(blob)
             out.files[artifact] = path.name
 
