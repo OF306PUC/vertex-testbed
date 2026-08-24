@@ -99,6 +99,47 @@ CONTROLLER_FAST = {
 }
 
 
+#: The advertising interval is a DELIVERY CEILING, not a tuning knob.
+#:
+#: `broadcaster_update()` / `cmd_le_set_adv_data` rewrite the payload; neither
+#: changes how often the controller radiates. A neighbour therefore observes at
+#: most one distinct value per advertising interval, so publishing faster than
+#: T_adv overwrites values before they are ever transmitted:
+#:
+#:     delivery <= min(1, publish_period_s / adv_interval_ms*1e-3)
+#:
+#: That is undersampling at the TRANSMITTER, and it is indistinguishable from
+#: loss in any statistic counting distinct sequence numbers. Measured over a
+#: 4-point x 10-repeat sweep: the two points where the bound was active
+#: normalised to 0.818 and 0.826 of it, the two unconstrained points to 0.997
+#: and 0.962. See docs/PLATFORM.md A3.4.
+#:
+#: So a manifest that sets `publish_period_s` without setting `radio` is only
+#: honest while publish_period_s >= 0.1 (the RadioSpec default). Below that it
+#: measures the advertising interval. Use this helper instead of writing the
+#: block by hand -- it keeps the two values in step, which is precisely what
+#: drifted apart in the original experiments and drew the reviewer's question.
+def radio_for(publish_period_s: float, *, scan_ratio: float = 1.0) -> dict:
+    """RadioSpec that holds the delivery ceiling at 1.0 for this publish rate.
+
+    `scan_ratio` < 1 shortens the listening window within the interval, which
+    introduces a SECOND ceiling on the receive side; the default keeps the
+    receiver listening continuously.
+    """
+    adv_ms = publish_period_s * 1000.0
+    if not (20.0 <= adv_ms <= 10240.0):
+        raise ValueError(
+            f"publish_period_s={publish_period_s} needs adv_interval_ms={adv_ms}, "
+            f"outside the 20..10240 ms the spec allows for non-connectable "
+            f"undirected advertising. The ceiling cannot be held at 1.0 here; "
+            f"pick a slower publish rate or accept and REPORT the ceiling.")
+    return {
+        "adv_interval_ms": adv_ms,
+        "scan_interval_ms": adv_ms,
+        "scan_window_ms": round(adv_ms * scan_ratio, 4),
+    }
+
+
 def hosts_for(n_per_band: int = 10, publish_period_s: float = 1.0,
               hosts: list[str] | None = None) -> list[dict]:
     """Declare the agent-to-host binding, without any graph structure.
@@ -232,8 +273,8 @@ def manifests() -> dict[str, dict]:
             "and eta divided by 5 so the continuous-time dynamics match n6-ring "
             "and the two are comparable. Symmetric rates: the nRF now absorbs, "
             "steps and reports at dt and publishes at publish_period_s, exactly "
-            "as a Pi agent does. Sine disturbance at 10 Hz -- note its evaluated "
-            "sequence repeats every 5 steps, which is the publish period."
+            "as a Pi agent does. Sine disturbance at 11 Hz, chosen so its "
+            "evaluated sequence does not repeat on the publish period."
         ),
         "seed": 20260818,
         "controller": CONTROLLER_FAST,
@@ -298,52 +339,87 @@ def manifests() -> dict[str, dict]:
     #
     # Degree 2 everywhere, well inside the firmware's 4-neighbour limit.
     N9_ORDER = [21, 2, 1, 3, 22, 13, 11, 12, 23]
+    # NOT `return out`: bailing out of the whole function here silently dropped
+    # every manifest defined below, so a 2-host lab quietly produced 3 manifests
+    # instead of 11 and said only "skip n9-ring".
     if len(FIRST_RUN_HOSTS) < 3:
         print(f"skip     n9-ring                  needs 3 hosts, "
               f"{len(FIRST_RUN_HOSTS)} declared")
-        return out
-    n9 = hosts_for(3, hosts=FIRST_RUN_HOSTS)
-    n9_edges = ring(ids=N9_ORDER)
-    for node in n9:
-        node["neighbors"] = n9_edges[node["id"]]
-    out["n9-ring"] = {
-        "name": "n9-ring",
-        "description": (
-            "9 agents on 3 hosts: the bring-up target. Every host runs ble + wifi "
-            "+ bridge, so all three paths are exercised and the two radios on each "
-            "Pi contend as they will in a full run. Undirected 9-cycle, degree 2 "
-            "everywhere. The ordering is constrained, not arbitrary: bridges sit "
-            "at each ble/wifi boundary because those two share no medium, and no "
-            "link is intra-host because such a link never reaches the radio. "
-            "Edges are declared for exactly that reason."
-        ),
-        "seed": 20260818,
-        "controller": CONTROLLER,
-        "nodes": n9,
-    }
+    if len(FIRST_RUN_HOSTS) >= 3:
+        n9 = hosts_for(3, hosts=FIRST_RUN_HOSTS)
+        n9_edges = ring(ids=N9_ORDER)
+        for node in n9:
+            node["neighbors"] = n9_edges[node["id"]]
+        out["n9-ring"] = {
+            "name": "n9-ring",
+            "description": (
+                "9 agents on 3 hosts: the bring-up target. Every host runs ble + wifi "
+                "+ bridge, so all three paths are exercised and the two radios on each "
+                "Pi contend as they will in a full run. Undirected 9-cycle, degree 2 "
+                "everywhere. The ordering is constrained, not arbitrary: bridges sit "
+                "at each ble/wifi boundary because those two share no medium, and no "
+                "link is intra-host because such a link never reaches the radio. "
+                "Edges are declared for exactly that reason."
+            ),
+            "seed": 20260818,
+            "controller": CONTROLLER,
+            "nodes": n9,
+        }
 
-    clustered = hosts_for()
-    for n in clustered:
-        n["neighbors"] = CLUSTER_EDGES[n["id"]]
-        if n["id"] in CLUSTER_DISABLED:
-            n["enabled"] = False
-    out["n30-clusters"] = {
-        "name": "n30-clusters",
-        "description": (
-            "30 agents in clustered groups per transport, joined through bridge "
-            "agents. Agents 21 and 30 are the BLE/Wi-Fi cut-points and start "
-            "disabled, so the clusters coordinate only through the remaining "
-            "bridges. Edges are declared because this graph is not regular."
-        ),
-        "seed": 20260818,
-        "controller": CONTROLLER,
-        "nodes": clustered,
-    }
+        clustered = hosts_for()
+        for n in clustered:
+            n["neighbors"] = CLUSTER_EDGES[n["id"]]
+            if n["id"] in CLUSTER_DISABLED:
+                n["enabled"] = False
+        out["n30-clusters"] = {
+            "name": "n30-clusters",
+            "description": (
+                "30 agents in clustered groups per transport, joined through bridge "
+                "agents. Agents 21 and 30 are the BLE/Wi-Fi cut-points and start "
+                "disabled, so the clusters coordinate only through the remaining "
+                "bridges. Edges are declared because this graph is not regular."
+            ),
+            "seed": 20260818,
+            "controller": CONTROLLER,
+            "nodes": clustered,
+        }
+
+    # ── publish-rate sweep: four points, ceiling pinned at 1.0 ──────────────
+    # The point of the sweep is airtime, so the advertising interval MUST track
+    # the publish period; held at the 100 ms default it caps delivery at
+    # min(1, T_pub/0.1) and the sweep measures that instead. The first attempt
+    # did exactly this -- docs/PLATFORM.md A3.4.
+    #
+    # 6 agents, n6-fast's forced ring, identical seed across all four so the
+    # initial conditions are shared and only the rate differs.
+    for tag, pub in (("p400", 0.400), ("p200", 0.200),
+                     ("p080", 0.080), ("p040", 0.040)):
+        sw = hosts_for(2, hosts=HOSTS[:2])
+        sw_edges = ring(ids=[1, 2, 21, 12, 11, 22])
+        for node in sw:
+            node["neighbors"] = sw_edges[node["id"]]
+            node["publish_period_s"] = pub
+        duty = 6.0 * (1.0 / pub) * 864e-6 * 100.0
+        out[f"sweep-{tag}"] = {
+            "name": f"sweep-{tag}",
+            "description": (
+                f"Publish-rate sweep at {1/pub:g} Hz ({pub:g} s). Advertising "
+                f"interval pinned to the publish period, so the delivery ceiling "
+                f"is 1.0 and the run measures the medium rather than the "
+                f"transmitter's sampling rate. ~{duty:.2f}% BLE duty over 6 "
+                f"agents. Same seed and topology as the other three points."
+            ),
+            "seed": 20260818,
+            "controller": CONTROLLER_FAST,
+            "radio": radio_for(pub),
+            "nodes": sw,
+        }
+
 
     if len(HOSTS) < 10:
         print(f"skip     n30-*                    need 10 hosts, "
               f"{len(HOSTS)} declared")
-        return out
+        return out          # last block in the function, so this one is safe
 
     # Regular topologies over BAND_ORDER rather than 1..30.
     #
@@ -378,7 +454,6 @@ def manifests() -> dict[str, dict]:
             "structure": {"generator": gen, "params": params},
             "nodes": hosts_for(),
         }
-    return out
 
 
 def main(argv: list[str] | None = None) -> int:

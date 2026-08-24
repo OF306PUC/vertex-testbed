@@ -33,8 +33,11 @@ import matplotlib.pyplot as plt
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from vertex.analysis import Run, load_run  # noqa: E402
+# Shared with plot_run so a link is the same colour in both tools -- the whole
+# point of the class colouring is being able to carry a reading between plots.
+from plot_run import CLASS_ORDER, LINK_RAMP, _shade, link_class  # noqa: E402
 
-COLOUR = {"BLE": "#c0392b", "UDP": "#2471a3"}
+COLOUR = {"BLE": "#c0392b", "UDP": "#2471a3"}   # still used by the delay panel
 
 
 def medium(run: Run, src: int, dst: int) -> str:
@@ -166,8 +169,21 @@ def plot(runs: list[Run], out: Path, threshold: float, label: str) -> list[Path]
     rows = link_table(runs)
 
     fig, ax = plt.subplots(1, 2, figsize=(13, 5))
+    # Grouped and coloured by direction class, matching plot_run: medium alone
+    # put every BLE link in one red, which hid the fact that the three BLE
+    # classes do not behave alike (PLATFORM.md A3.4).
+    base = runs[0]
+    rows = sorted(rows, key=lambda r: (CLASS_ORDER.index(link_class(base, r[0], r[1])),
+                                       r[0], r[1]))
+    groups: dict[str, list] = {}
+    for r in rows:
+        groups.setdefault(link_class(base, r[0], r[1]), []).append((r[0], r[1]))
+    shade_of = {}
+    for cls, members in groups.items():
+        for i, key in enumerate(sorted(members)):
+            shade_of[key] = _shade(LINK_RAMP[cls], i, len(members))
     labels = [f"{s}→{d}" for s, d, *_ in rows]
-    cols = [COLOUR[m] for _, _, m, *_ in rows]
+    cols = [shade_of[(s, d)] for s, d, *_ in rows]
     x = range(len(rows))
 
     ax[0].bar(x, [r[3][0] for r in rows], yerr=[r[3][1] for r in rows],
@@ -184,7 +200,7 @@ def plot(runs: list[Run], out: Path, threshold: float, label: str) -> list[Path]
     ax[1].set_xticks(list(x)); ax[1].set_xticklabels(labels, rotation=45,
                                                      ha="right", fontsize=7)
     ax[1].set_ylabel("median one-way delay (ms)")
-    ax[1].set_title("delay, mean ± sd  (red BLE, blue UDP)")
+    ax[1].set_title("delay, mean ± sd, by direction class")
     ax[1].grid(alpha=0.25, axis="y")
 
     fig.tight_layout()

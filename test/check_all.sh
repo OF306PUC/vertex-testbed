@@ -39,6 +39,9 @@ run "control law C vs Python"          python3 test/crossval/compare.py
 # Does the BLE transport behave against a fake controller?
 run "ble transport"                    python3 test/transports/check_ble.py
 
+# One HCI socket per process. A socket per run exhausts the adapter mid-sweep.
+run "hci socket reuse"                 python3 test/transports/check_hci_reuse.py
+
 # Does the whole host-side path work: hub -> agents -> logs -> collected files?
 run "fleet end to end"                 python3 test/hub/check_fleet.py
 

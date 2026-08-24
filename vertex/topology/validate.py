@@ -265,4 +265,25 @@ def check(manifest: ExperimentManifest, *, require_strong: bool | None = None) -
                 "transmitting faster than the state changes spends airtime for "
                 "no new information, and airtime is what costs us packet loss"
             )
+
+    # The advertising interval bounds delivery from above. Advertising rewrites
+    # the payload at a fixed cadence, so a neighbour observes at most one distinct
+    # value per interval: publishing faster overwrites values before they are ever
+    # radiated. That is undersampling at the transmitter, and it is
+    # indistinguishable from packet loss downstream -- an unflagged manifest here
+    # produces a delivery ratio that looks like a property of the medium and is
+    # not. Warn rather than reject: a capped run is legitimate if the ceiling is
+    # reported. See docs/PLATFORM.md A3.4.
+    adv_s = manifest.radio.adv_interval_ms / 1000.0
+    for n in manifest.nodes:
+        if n.publish_period_s < adv_s:
+            ceiling = n.publish_period_s / adv_s
+            rep.warnings.append(
+                f"node {n.id}: publish period {n.publish_period_s} s is shorter "
+                f"than the advertising interval {manifest.radio.adv_interval_ms} "
+                f"ms, so BLE delivery for this node is capped at {ceiling:.3f} "
+                f"however good the link is. Set radio.adv_interval_ms to "
+                f"{n.publish_period_s * 1000:g} (tools.make_manifests.radio_for) "
+                f"or report the ceiling alongside the delivery ratio"
+            )
     return rep

@@ -90,6 +90,25 @@ async def main_async(args: argparse.Namespace) -> int:
         for nid, a in runner.assignments.items():
             runner.assignments[nid] = a.model_copy(
                 update={"publish_period_s": args.publish_period})
+        # The override does NOT touch radio.adv_interval_ms, so publishing faster
+        # than the advertising interval caps BLE delivery at min(1, T_pub/T_adv)
+        # and the run measures the transmitter's sampling rate. That is exactly how
+        # the first publish-rate sweep was confounded (PLATFORM.md A3.4). Refuse
+        # rather than warn: the resulting numbers look like a property of the medium
+        # and nothing downstream can tell that they are not.
+        adv_s = manifest.radio.adv_interval_ms / 1000.0
+        if args.publish_period < adv_s and not args.force:
+            ceiling = args.publish_period / adv_s
+            print(f"error: --publish-period {args.publish_period:g}s is shorter than "
+                  f"the manifest's advertising interval "
+                  f"{manifest.radio.adv_interval_ms:g}ms", file=sys.stderr)
+            print(f"       BLE delivery would be capped at {ceiling:.3f} regardless "
+                  f"of link quality, and the sweep would measure that cap",
+                  file=sys.stderr)
+            print(f"       use a manifest whose radio block matches this rate "
+                  f"(tools/make_manifests.py radio_for), or --force to accept and "
+                  f"report the ceiling", file=sys.stderr)
+            return 2
         # The assignment is dumped into RunMeta.controller, so the override travels
         # with the data and a swept run is self-describing.
         print(f"publish period overridden: {args.publish_period:g}s "

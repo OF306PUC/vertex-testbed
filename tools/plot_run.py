@@ -36,6 +36,57 @@ from vertex.analysis import Run, load_run  # noqa: E402
 COLOUR = {"ble": "#c0392b", "wifi": "#2471a3", "bridge": "#1e8449"}
 STYLE = ["-", "--", ":", "-."]
 
+#: Link colouring is by DIRECTION CLASS, not by medium. Medium alone gave every
+#: BLE link one red and every UDP link one blue -- 12 links in two colours, which
+#: is unreadable and also hides the distinction that turned out to matter: the
+#: three BLE classes behave differently, and nRF->Pi is the weak one (PLATFORM.md
+#: A3.3/A3.4). Okabe-Ito, so the classes survive greyscale and colour blindness.
+#: A sequential ramp per class rather than one flat colour. A class can hold six
+#: links (every bridge<->wifi hop is UDP), which is more than the four linestyles,
+#: so the ramp carries the member and the hue carries the class. Chosen over a
+#: blend-to-white of a single colour because that leaves the pale end invisible --
+#: and over pure grey for UDP, which has no chroma to ramp at all.
+CLASS_ORDER = ["nRF->nRF", "nRF->Pi", "Pi->nRF", "Pi->Pi", "UDP"]
+
+LINK_RAMP = {
+    "nRF->nRF": "Greens",       # neither end shares a front-end
+    "nRF->Pi":  "Oranges",      # the weak direction (PLATFORM.md A3.3/A3.4)
+    "Pi->nRF":  "Blues",
+    "Pi->Pi":   "RdPu",         # bridge-to-bridge over BLE
+    "UDP":      "Purples",      # not a BLE path at all
+}
+
+
+def link_class(run: Run, src: int, dst: int) -> str:
+    """Which of the five comparable paths this link is."""
+    a, b = run.nodes[src].node_type, run.nodes[dst].node_type
+    if "wifi" in (a, b):
+        return "UDP"
+    return {("ble", "ble"): "nRF->nRF", ("ble", "bridge"): "nRF->Pi",
+            ("bridge", "ble"): "Pi->nRF",
+            ("bridge", "bridge"): "Pi->Pi"}.get((a, b), "UDP")
+
+
+def _shade(ramp: str, i: int, total: int):
+    """i-th sample of a class ramp, kept clear of both washed-out ends."""
+    lo, hi = 0.42, 0.95
+    f = hi if total < 2 else lo + (hi - lo) * i / (total - 1)
+    return plt.get_cmap(ramp)(f)
+
+
+def _link_styles(run: Run, links: list) -> dict:
+    """(src, dst) -> plot kwargs, unique within the whole link set."""
+    groups: dict[str, list] = {}
+    for src, dst, _ in links:
+        groups.setdefault(link_class(run, src, dst), []).append((src, dst))
+    out = {}
+    for cls, members in groups.items():
+        for i, key in enumerate(sorted(members)):
+            out[key] = {"color": _shade(LINK_RAMP[cls], i, len(members)),
+                        "linestyle": STYLE[i % len(STYLE)],
+                        "label": f"{key[0]}\u2192{key[1]} {cls}"}
+    return out
+
 
 def _style(run: Run, nid: int) -> dict:
     node = run.nodes[nid]
@@ -114,7 +165,12 @@ def plot_links(run: Run, out: Path, window_s: float = 5.0) -> Path:
     report period as much as by the radio. Read it as "was this link live", and
     compare links of the same medium rather than across media.
     """
-    links = run.links()
+    # Ordered by class, so both panels and the legend group the comparable paths
+    # together instead of interleaving them in whatever order run.links() yields.
+    links = sorted(run.links(),
+                   key=lambda l: (CLASS_ORDER.index(link_class(run, l[0], l[1])),
+                                  l[0], l[1]))
+    styles = _link_styles(run, links)
     fig, ax = plt.subplots(2, 1, figsize=(11, 7),
                            gridspec_kw={"height_ratios": [2, 1]})
 
@@ -124,23 +180,17 @@ def plot_links(run: Run, out: Path, window_s: float = 5.0) -> Path:
         k = max(1, int(window_s * max(n.rate_hz, 1e-9)))
         roll = [sum(f[max(0, i - k):i + 1]) / len(f[max(0, i - k):i + 1])
                 for i in range(len(f))]
-        medium = ("BLE" if run.nodes[src].node_type == "ble"
-                  or n.node_type == "ble" else "UDP")
-        ax[0].plot(n.t, roll, linewidth=1.0,
-                   color="#c0392b" if medium == "BLE" else "#2471a3",
-                   alpha=0.8, label=f"{src}→{dst} {medium}")
+        ax[0].plot(n.t, roll, linewidth=1.1, alpha=0.9, **styles[(src, dst)])
     ax[0].set_ylabel(f"freshness, {window_s:g}s rolling")
     ax[0].set_ylim(-0.05, 1.05)
-    ax[0].set_title("per-link freshness  (red = BLE, blue = UDP)")
+    ax[0].set_title("per-link freshness, coloured by direction class")
     ax[0].legend(ncol=4, fontsize=7)
     ax[0].grid(alpha=0.25)
     ax[0].set_xlabel("t (s)")
 
     labels = [f"{s}→{d}" for s, d, _ in links]
     vals = [f for _, _, f in links]
-    cols = ["#c0392b" if (run.nodes[s].node_type == "ble"
-                          or run.nodes[d].node_type == "ble") else "#2471a3"
-            for s, d, _ in links]
+    cols = [styles[(s, d)]["color"] for s, d, _ in links]
     ax[1].bar(range(len(links)), vals, color=cols)
     ax[1].set_xticks(range(len(links)))
     ax[1].set_xticklabels(labels, rotation=45, ha="right", fontsize=7)

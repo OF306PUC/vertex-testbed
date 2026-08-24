@@ -53,6 +53,7 @@ env/
 runs/
 out/
 results/
+*.log
 
 # ── editor / OS ──────────────────────────────────────────────────────────────
 # .vscode/settings.json is kept: it registers the nRF Connect application path

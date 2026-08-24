@@ -90,6 +90,7 @@ class AgentService:
 
         self.assignment: AgentAssignment | None = None
         self.agent: Agent | None = None
+        self._hci = None        # one HCI socket per process, see _hci_socket()
         self.relay: BleRelay | None = None
         self.runlog: RunLog | None = None
         self.run_name: str | None = None
@@ -104,6 +105,13 @@ class AgentService:
     async def shutdown(self) -> None:
         await self._halt()
         await self.control.stop()
+        # Held for the process lifetime, so this is the only place it closes.
+        if self._hci is not None:
+            try:
+                self._hci.close()
+            except Exception:
+                pass          # best effort: the process is going away regardless
+            self._hci = None
 
     @property
     def control_port(self) -> int:
@@ -115,10 +123,36 @@ class AgentService:
         return bool(self._tasks) or (self.is_relay and self.run_name is not None)
 
     # building the agent:
+    def _hci_socket(self):
+        """The ONE HCI user-channel socket for this process.
+
+        Opened lazily and never closed between runs. A fresh socket per run is
+        what a parameter sweep does, and the kernel does not release `hci0`
+        instantly on close: three sweep points in, the next open fails with
+        EBUSY and every remaining repeat of that point records nothing. Measured
+        exactly that -- `sweep2-p080` lost both bridges on all 10 runs after
+        p400 and p200 had already consumed 20 opens.
+
+        Reopening is also unnecessary. Advertising and scan parameters are
+        settable on a live socket once the corresponding function is disabled,
+        which is what `BleTransport.start()` does anyway. An injected socket
+        additionally suppresses `HCI_Reset`, so the adapter is not torn down
+        under a neighbour that is still advertising.
+        """
+        if self._hci is None:
+            from ..radio.hci import HciSocket, cmd_reset
+            self._hci = HciSocket(0).open()
+            # Once per process, not once per run: clears whatever a previous
+            # process left enabled. Doing it per run is what tore the adapter
+            # down mid-sweep.
+            self._hci.command(cmd_reset())
+        return self._hci
+
     def _ble_transport(self, node_id: int) -> BleTransport:
         r = self._radio_settings()
         return BleTransport(
             node_id, self.clock,
+            sock=self._hci_socket(),
             adv_interval_ms=float(r.get("adv_interval_ms", 100.0)),
             scan_interval_ms=float(r.get("scan_interval_ms", 100.0)),
             scan_window_ms=float(r.get("scan_window_ms", 100.0)),

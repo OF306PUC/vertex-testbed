@@ -1,0 +1,51 @@
+\item \textbf{Response 1:} We thank the reviewer for raising this point, which we
+were able to address quantitatively on a revised version of the platform.
+
+\textbf{The concern is well founded, and we can now state the mechanism precisely.}
+Under non-connectable undirected advertising, a broadcaster emits at its advertising
+interval $T_\mathrm{adv}$ irrespective of how often the application updates the
+payload. A receiver therefore observes at most $1/T_\mathrm{adv}$ distinct values per
+second from that neighbour: if the publication period $T_\mathrm{pub}$ is shorter
+than $T_\mathrm{adv}$, values are overwritten before they are ever transmitted. The
+attainable delivery ratio is bounded by
+\[
+  \rho_{\max} \;=\; \min\!\left(1,\; T_\mathrm{pub}/T_\mathrm{adv}\right),
+\]
+so a mismatch in $[T_\mathrm{adv}^\mathrm{min}, T_\mathrm{adv}^\mathrm{max}]$ between
+agent classes is, directly, a mismatch in the delivery ceiling available to them.
+
+We verified this on the revised platform with a four-point sweep in $T_\mathrm{pub}$
+($10$ repeats per point, $120$\,s per run, identical initial conditions across all
+$40$ runs, $T_\mathrm{adv}=100$\,ms fixed). Measured delivery tracks $\rho_{\max}$:
+the two points at which the bound is active normalise to $0.818$ and $0.826$ of it,
+while the unconstrained points reach $0.997$ and $0.962$. The apparent tenfold
+collapse in delivery across the sweep is therefore attributable to the advertising
+interval and not to the medium; over the same sweep the Wi-Fi transport, which has no
+such ceiling, is flat ($0.987 \rightarrow 0.978$).
+
+\textbf{Effect on the original experiments.} Applying this bound to the original
+configuration: the publication period was $500$\,ms; the BLE agents advertised at the
+nRF52 default of $100$--$150$\,ms, giving $\rho_{\max}=1$; the bridge agents
+advertised through the host controller without an explicit interval and therefore
+inherited the controller default of $1280$\,ms, giving $\rho_{\max}\approx0.39$.
+The ceiling thus differed by agent class, along the same axis the experiment
+compares. We consider this a genuine limitation of the original measurements rather
+than a second-order effect, and we have repeated the affected experiments on the
+revised platform.
+
+\textbf{Remediation.} In the revised platform the advertising interval and the
+scan interval/window are configured from a single specification per experiment,
+applied to the Raspberry Pi controller through a raw HCI user channel and to the
+nRF52 through a configuration frame over the serial link. Both the requested value
+and the programmed value (in $0.625$\,ms units) are recorded in the run metadata, so
+the parameter is now reported rather than inferred. The BLE and bridge agents in the
+revised experiments therefore share identical advertising and scanning parameters.
+
+\textbf{Residual asymmetries.} We note three that remain, for completeness:
+(i) transmit power is set explicitly on the nRF52 but left at the controller default
+on the Raspberry Pi; (ii) duplicate filtering is enabled in the nRF52 scanner and
+disabled in the Raspberry Pi scanner, so the two ends apply different acceptance
+policies to repeated advertisements; and (iii) the CYW43455 on the Raspberry Pi
+shares a single front-end between Wi-Fi and BLE with a packet traffic arbitration
+mechanism, which the nRF52, a single-protocol radio, does not have. We find the
+effect of (iii) to be measurable and directional, and we report it separately.
