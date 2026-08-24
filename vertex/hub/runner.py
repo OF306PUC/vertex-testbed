@@ -269,6 +269,50 @@ class ExperimentRunner:
             json.dumps(report.to_dict(), indent=2), encoding="utf-8")
         return report
 
+    async def run_repeated(self, base_name: str, duration_s: float, *,
+                           repeats: int, settle_between_s: float = 5.0,
+                           only: Iterable[int] | None = None,
+                           settle_s: float = 0.0,
+                           before_each=None) -> list[RunReport]:
+        """N runs of the SAME configuration, back to back.
+
+        The run index is deliberately **not** advanced between repeats. It seeds
+        both the initial conditions and every node's disturbance stream, so holding
+        it fixed makes those bit-identical across the set and leaves the network
+        realisation -- which packets arrive, when -- as the only thing that varies.
+        That is what isolates the transport's effect on the control law.
+
+        Each run still gets its own epoch: that is a wall-clock origin, not part of
+        the configuration, and sharing one across runs would put every run's
+        timestamps on the first one's origin.
+
+        Varying the initial conditions is a *separate* dimension: several
+        `--run-index` values, each with its own set of repeats, gives the two-factor
+        design. Mixing the two into one loop would confound them.
+
+        `settle_between_s` lets radios and neighbour tables quiesce, so run *k+1*
+        does not begin with stale values from run *k* still inside a freshness
+        window.
+
+        `before_each(epoch_unix_s)` is called just before each run with that run's
+        epoch. Each repeat gets its own -- an epoch is a wall-clock origin, not part
+        of the configuration -- so anything holding a clock outside `AgentService`'s
+        reach has to be re-anchored per run, the same problem `_rebind_clock` solves
+        inside it. The test harness's shared bus is exactly such a holder.
+        """
+        out: list[RunReport] = []
+        for rep in range(repeats):
+            if rep:
+                await asyncio.sleep(settle_between_s)
+            epoch = time.time()
+            if before_each is not None:
+                before_each(epoch)
+            report = await self.run(f"{base_name}-r{rep}", duration_s,
+                                    epoch_unix_s=epoch, only=only,
+                                    settle_s=settle_s)
+            out.append(report)
+        return out
+
     async def status(self, only: Iterable[int] | None = None) -> dict[int, Any]:
         """Poll every agent. For checking the fleet before committing to a run."""
         ids = sorted(only) if only is not None else sorted(self.assignments)

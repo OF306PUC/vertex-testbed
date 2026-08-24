@@ -80,26 +80,49 @@ class NodeRun:
         return self.data.get(f"rssi_{nid}", [])
 
     def link_delivery(self, nid: int) -> dict[str, float]:
-        """Delivery derived from SEQUENCE GAPS in the rows.
+        """Delivery from sequence numbers in the rows. **A LOWER BOUND.**
 
-        Works for every link, including one terminating at a relay -- an nRF has no
-        local neighbour table, so the end-of-run `links` aggregate covers only links
-        into a locally-computing agent. Four of twelve links in `n6-fast` had no
-        delivery figure at all until `seq` reached the rows.
+        Reaches links the end-of-run `links` aggregate cannot: a relay has no local
+        neighbour table, so four of twelve links in `n6-fast` had no delivery figure
+        at all before `seq` was logged.
 
-        Counts published values rather than transmissions: a value re-advertised
-        before the next publish repeats its seq and scores as a duplicate.
+        But the rows *sample* the last-known seq at the control rate, and two
+        arrivals inside one sample interval leave only the later seq visible -- the
+        earlier one appears in no row. So this undercounts by however often arrivals
+        bunch, and `delivery_ratio` is a floor rather than an estimate.
+
+        Measured: on BLE, arrivals are ~100 ms apart (the advertising interval)
+        against a 40 ms sample interval, and this agrees with `LinkMonitor` to four
+        decimals. On UDP, arrivals bunch inside one interval about 31% of the time,
+        and this reads 0.68 where `LinkMonitor` reads 0.98.
+
+        `bunching_suspected` is set when the seq advances by more than one between
+        consecutive samples, which is the signature -- though a genuine burst loss
+        looks the same, which is exactly why this cannot be made exact by analysis
+        alone. Prefer `meta["environment"]["links"]` when it exists; it counts
+        receptions. Making the row figure exact needs a monotonic reception COUNTER
+        per neighbour, so that a window's delivery is a difference of two counters
+        rather than a set of sampled values.
         """
-        seqs = [int(s) for s in self.neighbour_seq(nid) if s]
+        raw = [int(s) for s in self.neighbour_seq(nid)]
+        seqs = [s for s in raw if s]
         if len(seqs) < 2:
             return {}
         first, last, seen = seqs[0], seqs[-1], set(seqs)
         span = (last - first) % 65536 + 1        # uint16, wraps
         received = len(seen)
+
+        jumps = sum(1 for a, b in zip(seqs, seqs[1:])
+                    if 1 < ((b - a) % 65536) < 1000)
+        exact = (self.meta.get("environment") or {}).get("links", {}).get(str(nid))
         return {"expected": span, "received": received,
                 "lost": max(0, span - received),
-                "duplicates": len(seqs) - received,
-                "delivery_ratio": round(received / span, 4) if span else 0.0}
+                "delivery_ratio": round(received / span, 4) if span else 0.0,
+                "lower_bound": True,
+                "bunching_suspected": jumps > 0,
+                "seq_jumps": jumps,
+                # The exact figure when the receiver kept one. Absent for a relay.
+                "exact_delivery_ratio": (exact or {}).get("delivery_ratio")}
 
     def neighbour_fresh(self, nid: int) -> list[float]:
         """1.0 where a packet arrived from that neighbour in the window, else 0."""

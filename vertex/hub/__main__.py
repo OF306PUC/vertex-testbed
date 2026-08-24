@@ -35,6 +35,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                     help="comma-separated node ids, for bringing up a subset")
     ap.add_argument("--settle", type=float, default=0.0,
                     help="seconds between configuring and triggering")
+    ap.add_argument("--repeat", type=int, default=1, metavar="N",
+                    help="run the SAME configuration N times, named <base>-r0..rN-1. "
+                         "The run index is held fixed, so initial conditions and "
+                         "disturbance streams are identical across the set and the "
+                         "network realisation is the only variable. To vary initial "
+                         "conditions instead, use several --run-index values.")
+    ap.add_argument("--settle-between", type=float, default=5.0, metavar="S",
+                    help="seconds between repeats, so neighbour tables and radios "
+                         "quiesce before the next run (default 5)")
     ap.add_argument("--timeout", type=float, default=10.0,
                     help="per-command control-plane timeout")
     ap.add_argument("--force", action="store_true",
@@ -71,10 +80,34 @@ async def main_async(args: argparse.Namespace) -> int:
             return 0
 
         run_name = args.run_name or f"{manifest.name}-{args.run_index}"
+        n_nodes = len(only or runner.assignments)
+
+        if args.repeat > 1:
+            print(f"{args.repeat} repeats of {run_name}: {n_nodes} nodes, "
+                  f"{args.duration:g}s each, run-index {args.run_index} held fixed "
+                  f"so only the network varies")
+            reports = await runner.run_repeated(
+                run_name, args.duration, repeats=args.repeat,
+                settle_between_s=args.settle_between, only=only,
+                settle_s=args.settle)
+            bad = 0
+            for rep in reports:
+                print()
+                print(rep.summary())
+                if not rep.ok:
+                    bad += 1
+            print()
+            print(f"{len(reports) - bad}/{len(reports)} runs ok"
+                  + (f"; collected under {reports[0].out_dir.parent}"
+                     if reports and reports[0].out_dir else ""))
+            print(f"aggregate with: python3 tools/compare_runs.py "
+                  f"runs/{run_name}-r'*'")
+            return 0 if bad == 0 else 1
+
         # One epoch for the whole fleet, decided here.
         epoch = time.time()
-        print(f"run {run_name}: {len(only or runner.assignments)} nodes, "
-              f"{args.duration:g}s, epoch {epoch:.3f}")
+        print(f"run {run_name}: {n_nodes} nodes, {args.duration:g}s, "
+              f"epoch {epoch:.3f}")
         report = await runner.run(run_name, args.duration, epoch_unix_s=epoch,
                                   only=only, settle_s=args.settle)
         print(report.summary())

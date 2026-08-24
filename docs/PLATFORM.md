@@ -1392,6 +1392,55 @@ BLE nRF-to-nRF, BLE nRF-to-Pi in both directions, and UDP between hosts; the epo
 transfer; the STATE relay path; v1 on the air; and the hub configuring, triggering,
 stopping and collecting six agents across two machines.
 
+### Multi-run: repeats hold the configuration, not the initial conditions
+
+`--repeat N` runs the same configuration N times as `<base>-r0..rN-1`, and
+**deliberately does not advance the run index**. That index seeds both the initial
+conditions and every node's disturbance stream, so holding it fixed makes those
+bit-identical across the set and leaves the network realisation -- which packets
+arrive, and when -- as the only thing that varies. That is what isolates the
+transport's effect on the control law.
+
+Varying the initial conditions is a *separate* dimension: several `--run-index`
+values, each with its own set of repeats, gives the two-factor design. Folding both
+into one loop would confound them, which is why `--repeat` does not touch the index.
+
+```
+python3 -m vertex.hub run experiments/n6-fast.yaml --duration 120 --repeat 10
+python3 tools/compare_runs.py runs/n6-fast-0-r*
+```
+
+Each repeat still gets its **own epoch** -- a wall-clock origin is not part of the
+configuration, and sharing one would put every run's timestamps on the first run's
+origin. `--settle-between` (default 5 s) lets neighbour tables and radios quiesce,
+so run *k+1* does not begin with values from run *k* still inside a freshness
+window.
+
+`tools/compare_runs.py` reports every figure as mean +- sd with n, because a single
+run cannot resolve an effect smaller than the run-to-run spread and on this platform
+that spread is not small: BLE delivery has ranged over 6.2 points across nominally
+identical runs while UDP moved 2.2.
+
+**It verifies the set is a set before computing anything.** Every node's initial
+`vstate` is compared across the runs, and a mismatch is reported as
+`NOT REPLICATES` with the node and both values. Averaging runs that differ in their
+initial conditions silently mixes two sources of variance, and the resulting sd
+would look like network variability. Verified by perturbing one run's first sample:
+the check names it.
+
+Two harness faults surfaced immediately, both of a class the product had already
+fixed:
+
+* **the fake nRF never reset its step counter**, so repeat *r1* began where *r0*
+  stopped and the replicate check failed on the `ble` nodes. Real firmware
+  re-latches state, vstate, counter and `tx_seq` in `apply_control`; the fake did
+  not, and was unfaithful in exactly the way that breaks a replicate set.
+* **the harness's shared bus held a clock from the first run's epoch**, so repeats
+  *r1* and *r2* reported delays of ~3.5 s -- the same stale-clock class as
+  `_rebind_clock`, in the one clock holder outside `AgentService`'s reach.
+  `run_repeated` now takes a `before_each(epoch)` hook for precisely that, and the
+  harness re-anchors the bus per run.
+
 ### Only 8 of 12 links were being measured -- and the missing 4 were the risky ones
 
 `links` in a run's metadata comes from `agent.neighbors.link_stats()`, and a `ble`

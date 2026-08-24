@@ -120,6 +120,10 @@ class FakeNrf:
             running = payload[0] == 1
             if running and not self._running:
                 self._running = True
+                # Re-latch, as apply_control does on the board. Without this a
+                # repeat begins where the previous run stopped, and a set of runs
+                # meant to share initial conditions does not.
+                self._k = 0
                 self._stop.clear()
                 self._thread = threading.Thread(target=self._report_loop, daemon=True)
                 self._thread.start()

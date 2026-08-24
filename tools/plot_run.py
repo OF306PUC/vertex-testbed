@@ -198,12 +198,61 @@ def summarise(run: Run) -> str:
     for frac in (0.0, 0.1, 0.25, 0.5, 0.75, 1.0):
         t = frac * run.duration_s
         lines.append(f"    t={t:>7.1f}s   {run.spread(t):.6f}")
-    lines += ["", f"  {'link':>10} {'medium':<7} freshness"]
+    # Delivery from SEQUENCE GAPS, which counts published values rather than
+    # transmissions and works for links into a relay too. Freshness is kept beside
+    # it but it is a proxy: it is bounded by the publish/report period ratio and by
+    # how often a value is re-advertised, so it is not comparable across media.
+    schema = run.nodes[run.ids[0]].meta.get("schema_version") if run.ids else None
+    if schema is not None and schema < 6:
+        lines += ["", f"  NOTE schema v{schema}: no seq_/rssi_ columns, so per-link "
+                      f"delivery and RSSI",
+                  "       cannot be derived from these rows. Only freshness is "
+                  "available, and it is",
+                  "       a proxy bounded by the publish/report ratio. Re-run on v6 "
+                  "for the real figures."]
+
+    lines += ["", f"  {'link':>10} {'medium':<7} {'delivery':>10} {'from':<6} "
+                  f"{'lost':>6} {'rssi':>7} {'fresh':>7}",
+              "       'exact' counts receptions; 'bound' is derived from sampled "
+              "seq and is a FLOOR"]
     for src, dst, f in run.links():
+        node = run.nodes[dst]
         medium = ("BLE" if run.nodes[src].node_type == "ble"
-                  or run.nodes[dst].node_type == "ble" else "UDP")
-        flag = "" if f > 0.9 else "   <-- low"
-        lines.append(f"  {f'{src}→{dst}':>10} {medium:<7} {f:.3f}{flag}")
+                  or node.node_type == "ble" else "UDP")
+        d = node.link_delivery(src)
+        rs = [x for x in node.neighbour_rssi(src) if x]
+        rssi = f"{sum(rs)/len(rs):.0f}" if rs else "-"
+        # Prefer the exact reception count; fall back to the row-derived LOWER
+        # BOUND and mark it, because the rows sample and arrivals can bunch.
+        exact = d.get("exact_delivery_ratio") if d else None
+        agg = ((node.meta.get("environment") or {}).get("links") or {}).get(str(src))
+        if exact is not None:
+            ratio, src_tag = f"{exact:.4f}", "exact"
+            # `lost` must come from the same source as the ratio, or the row is
+            # internally inconsistent -- 0.985 delivery beside 189 lost.
+            d = dict(d or {}, lost=agg.get("lost", "-"))
+        elif d:
+            ratio, src_tag = f">={d['delivery_ratio']:.4f}", "bound"
+        else:
+            ratio, src_tag = "-", "-"
+        val = exact if exact is not None else (d or {}).get("delivery_ratio")
+        flag = "" if (val is not None and val > 0.9) else "   <--"
+        lines.append(f"  {f'{src}→{dst}':>10} {medium:<7} {ratio:>10} {src_tag:<6} "
+                     f"{d.get('lost','-'):>6} {rssi:>7} {f:>7.3f}{flag}")
+
+    # The end-of-run aggregate carries the delays; the rows do not.
+    delays = []
+    for nid in run.ids:
+        for src, st in (run.nodes[nid].meta.get("environment") or {}).get(
+                "links", {}).items():
+            md, mn = st.get("median_delay_us"), st.get("min_delay_us")
+            if md is not None:
+                delays.append((f"{src}→{nid}", mn, md))
+    if delays:
+        lines += ["", f"  {'link':>10} {'min ms':>9} {'median ms':>10}"]
+        for lbl, mn, md in delays:
+            f_ = lambda v: f"{v/1000:.2f}" if v is not None else "-"
+            lines.append(f"  {lbl:>10} {f_(mn):>9} {f_(md):>10}")
     return "\n".join(lines)
 
 
