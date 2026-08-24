@@ -41,6 +41,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                          "disturbance streams are identical across the set and the "
                          "network realisation is the only variable. To vary initial "
                          "conditions instead, use several --run-index values.")
+    ap.add_argument("--publish-period", type=float, default=None, metavar="S",
+                    help="override the manifest's publish_period_s for this run. "
+                         "MUST be an integer multiple of dt_s: the nRF derives its "
+                         "publish interval by integer division of clock/dt, while a "
+                         "Pi agent sleeps the period exactly, so a non-multiple "
+                         "makes the two publish at different rates and silently "
+                         "reintroduces the asymmetry the rate rewiring removed.")
     ap.add_argument("--settle-between", type=float, default=5.0, metavar="S",
                     help="seconds between repeats, so neighbour tables and radios "
                          "quiesce before the next run (default 5)")
@@ -67,6 +74,26 @@ async def main_async(args: argparse.Namespace) -> int:
     only = ([int(x) for x in args.only.split(",")] if args.only else None)
     runner = ExperimentRunner(manifest, out_dir=args.out_dir,
                               timeout=args.timeout, run_index=args.run_index)
+
+    if args.publish_period is not None:
+        dt = manifest.controller.dt_s
+        ratio = args.publish_period / dt
+        if abs(ratio - round(ratio)) > 1e-9:
+            print(f"error: --publish-period {args.publish_period} is not a multiple "
+                  f"of dt_s={dt}", file=sys.stderr)
+            print(f"       the nRF would publish every {int(ratio)} ticks = "
+                  f"{int(ratio)*dt:g}s while a Pi agent publishes every "
+                  f"{args.publish_period:g}s", file=sys.stderr)
+            mult = [round(k * dt, 6) for k in (1, 2, 3, 5, 10, 25)]
+            print(f"       multiples of dt: {mult}", file=sys.stderr)
+            return 2
+        for nid, a in runner.assignments.items():
+            runner.assignments[nid] = a.model_copy(
+                update={"publish_period_s": args.publish_period})
+        # The assignment is dumped into RunMeta.controller, so the override travels
+        # with the data and a swept run is self-describing.
+        print(f"publish period overridden: {args.publish_period:g}s "
+              f"({1/args.publish_period:g} Hz), {round(ratio)} ticks of dt={dt:g}s")
     try:
         if args.action == "status":
             for nid, st in (await runner.status(only)).items():

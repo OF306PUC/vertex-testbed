@@ -123,6 +123,8 @@ static int apply_control(struct agent *a, const uint8_t *d, uint16_t len,
             a->params.available_neighbors[i] = false;
             a->params.neighbors_enabled[i]   = false;
             a->vars.neighbor_vstates[i]      = 0;
+            a->vars.neighbor_seq[i]          = 0;
+            a->vars.neighbor_rssi[i]         = 0;
         }
 
         a->vars.state    = a->params.state_0;

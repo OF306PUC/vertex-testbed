@@ -1,0 +1,35 @@
+>> BLE and WiFi, both operate in the 2.4 GHz ISM band 
+
+--> 20 MHz of BW in WiFi uses the same frequency space as roughly 20 BLE channels 
+--> If router transmits in WiFi channel 6 it block BLE channels 13 through 32. If the WiFi BW is 40 MHz, double that footprint
+--> Asymmetry is Power: WiFi ~ 15-20 dBm and BLE ~ 0 - 4 dBm (10x to 100x power diff); WiFi might be acting as a block of noise for the BLE channels 
+--> BLE Adv. uses channels 37, 38 and 39 that sits on edges and mid-band to avoid channles 1, 6 and 11 of WiFi
+--> Modern WiFI does not stays in those channels. Network uses wherever access point's auto-channel selection decides is best 
+--> WiFi uses CSMA/CA where the listen threshold is calibrated for other WiFi devices. Signals of BLE are two weak for WiFi radio to notice so it does not backoff-listen because it can notice the BLE waveform 
+--> BLE are two or multiple radios broadcasting neither aware of the other
+
+Recognizing Interference: 
+
+(1) Advertising and discovery failures: Multiple discovery attempts are needed which increases the scanning time --> adv. packets on those channels are being corrupted or drowned by WiFi
+(2) Connection stability: shows up as supervision timeouts 
+(3) Throughput collapse: A connection or broadcasting config. for 10 ms intervals effectively becomes 50 ms+ because retransmissions eat into available airtime 
+(4) Latency spikes: time-sensitive applications like real time control aplications (applications that depend on predictable timing)
+
+BLE's Built-in defenses 
+
+(1) Frequency hopping: statistical frequency spreading across the BLE channels 
+(2) Adaptive Frequency Hoping (AFH): when theres a detection of a failure in an end of connection (no-ack, for example), the channel map is updated to exclude those frquencies that corrupt data 
+
+[Problems]
+- BLE losses the speed contest: WiFi claims the channel in micro-seconds --> By the time BLE starts transmitting, WiFi has already grabbed the spectrum. 
+
+>> Hardware coexistance
+Silicon chips that uses both WiFi and BLE radios. Chips that implement Packet Traffic Arbitration (referee) that enables inter communication and coordination between BLE and WiFi chips. When BLE needs to transmit an advertising packet, it signals its intent. 
+The WiFi radio either defers or allows the BLE transmission to proceed. This coordination can dramatically improve coexistence, when it’s actually configured.
+For devices using separate WiFi and BLE chips, external coexistence interfaces exist. Two-wire, three-wire, and four-wire signaling protocols allow the radios to coordinate. 
+
+>> Deplployment strategies
+(1) WiFi channel planning --> puch access point to channels 1 and 11. Never use 40 MHz channels. 
+(2) Adjust BLE timing parameters --> increase advertising intervals 
+(3) Increase BLE transmite power
+(4) Application layer resilience 

@@ -1392,6 +1392,155 @@ BLE nRF-to-nRF, BLE nRF-to-Pi in both directions, and UDP between hosts; the epo
 transfer; the STATE relay path; v1 on the air; and the hub configuring, triggering,
 stopping and collecting six agents across two machines.
 
+### A3.3 Why nRF -> Pi is the weak direction: PTA cannot schedule someone else's radio
+
+*(2026-08-21, JI's hypothesis, supported by the 10-run set.)*
+
+The nRF52 is a single-protocol radio. It has no Packet Traffic Arbitration, and does
+not need any: nothing else on that chip competes for the antenna. The CYW43455 does
+have PTA, because WLAN and BLE share one front-end there.
+
+**But PTA can only arbitrate transmissions the chip itself originates.** The Pi can
+schedule its own BLE TX into gaps around its own WLAN activity. It cannot schedule
+the nRF's. So a packet from the nRF arrives whenever the nRF's advertising timer
+says, with no knowledge of what the Pi's radio is doing -- and the direction where
+the Pi is *receiving* is the one with no coordination available to it.
+
+That predicts the asymmetry, and the sign is right: nRF -> Pi is the weak direction.
+
+**The RSSI distributions localise it to the Pi's receive path.** Geometry is fixed
+and the transmitter is the same board in each pair, so any spread difference is a
+receiver property:
+
+| case | p5..p95 | span | min | delivery |
+|---|---|---|---|---|
+| nRF -> nRF, neither end shares a front-end | -38..-31 | **7 dB** | -41 | 0.964 |
+| Pi -> nRF, receiver is the nRF | -44..-37 | **7 dB** | -50 | 0.936 |
+| nRF -> Pi, receiver is the CYW43455 | -59..-31 | **28 dB** | -91 | 0.824 |
+| nRF -> Pi, receiver is the CYW43455 | -58..-32 | **26 dB** | -85 | 0.842 |
+
+Four times the spread and a tail 40 dB below the median, on exactly the two links
+where the shared front-end is doing the receiving. The span tracks *which end
+receives*, not distance, channel or transmitter.
+
+Note what this rules out. A weak-signal explanation would show a *lower* median, and
+it does not -- the medians are within a few dB across all four. What changes is the
+variance, which is the signature of a receiver whose sensitivity is being modulated
+by something other than the incoming signal. The CYW43455's coexistence design
+(shared LNA, joint AGC -- the datasheet passage that motivated dropping the USB
+dongle in the first place, §3 A2) gives that a concrete mechanism: an AGC set for
+WLAN levels is not set for a -35 dBm BLE advertisement.
+
+It also rules out the simpler reading of pure TX blanking. Blanking loses packets the
+receiver never hears at all, leaving the ones it does hear looking normal. A 40 dB
+low tail means the Pi *is* hearing marginal packets, so its sensitivity is varying
+rather than its receiver being switched off.
+
+#### The falsifiable prediction, and why it is the experiment the review asked for
+
+Load the Pi's WLAN and watch the two directions separately:
+
+* **nRF -> Pi** delivery degrades, and its RSSI spread widens further.
+* **Pi -> nRF** delivery stays flat, because PTA is scheduling that direction.
+* the **asymmetry between them grows with load**.
+
+If both directions degrade equally, this section is wrong and the cause is shared
+airtime rather than receiver arbitration. If neither degrades, the effect is not
+coexistence at all.
+
+That is a *directional* prediction, which is worth much more than "performance
+degrades under heavier traffic". The review asked for quantitative evidence that
+degradation under G2 is attributable to communication traffic and coexistence. A
+monotonic decline in aggregate delivery cannot separate those two. A decline in one
+direction only, on the link whose receiver shares a front-end, with a widening RSSI
+spread, distinguishes coexistence from congestion by construction.
+
+Note also that the platform's *own* Wi-Fi transport is the load source, so this is
+not a hypothetical interaction: at 0.52% duty the asymmetry is already 12 points.
+`iperf3` between the hosts at stepped rates is the controlled version.
+
+#### It also reframes the G1/G2 comparison
+
+Degree does not change broadcast airtime (C2.2), so G1 vs G2 cannot vary traffic on
+the medium. But it does change how many *accepted* packets each receiver processes,
+and under this mechanism the receiver is where the damage happens. So G1 vs G2 may
+still show an effect -- attributable to receive-side load, not to airtime. Reporting
+it as the latter would be the same error as attributing the 153.6 ms UDP delay to
+congestion.
+
+### 8a-terdecies. Ten repeats: the first measurement with error bars
+
+`n6-fast`, 10 x 120 s, `--run-index 0` held fixed so the initial conditions and
+every node's disturbance stream are bit-identical and the network realisation is the
+only variable. The replicate check passed on all ten.
+
+```
+convergence to spread < 0.01:   13.70 +- 0.17 s   (n=10)
+
+     link  med   delivery            delay ms          rssi dBm
+   22->1   BLE   >=0.9359 +-0.0533        --          -40.1 +- 1.7
+    2->1   BLE   >=0.9635 +-0.0060        --          -33.2 +- 0.5
+    1->2   BLE   >=0.9636 +-0.0087        --          -33.6 +- 0.4
+   21->2   BLE   >=0.9325 +-0.0802        --          -43.5 +- 1.4
+  12->11   UDP     0.9867 +-0.0082   169.90 +- 9.90       --
+  22->11   UDP     0.9843 +-0.0075   169.32 +- 9.07       --
+  21->12   UDP     0.9820 +-0.0093   170.77 +- 9.27       --
+  11->12   UDP     0.9838 +-0.0080   171.80 +- 9.91       --
+   2->21   BLE     0.8235 +-0.0220   105.84 +- 2.03   -38.6 +- 1.3
+  12->21   UDP     0.9867 +-0.0082   169.94 +- 9.91       --
+  11->22   UDP     0.9838 +-0.0080   171.86 +- 9.91       --
+   1->22   BLE     0.8415 +-0.0195   107.38 +- 2.15   -37.3 +- 1.5
+```
+
+**Convergence time is 13.70 +- 0.17 s -- a 1.2% spread.** With the initial
+conditions and disturbance held identical, that sd *is* the network's effect on
+convergence, and at these loss rates it is small. That is the number the two-factor
+design was built to produce.
+
+**The transport asymmetry is now resolved well beyond its error bars.**
+
+| | delivery | median delay |
+|---|---|---|
+| nRF -> Pi (BLE) | 0.824-0.842 +- 0.02 | 106 +- 2 ms |
+| Pi -> nRF (BLE) | >=0.933-0.964 +- 0.01-0.08 | -- |
+| UDP | 0.982-0.987 +- 0.008 | 170 +- 10 ms |
+
+UDP delivers ~15 points better than nRF -> Pi BLE with sd ~0.01 on both, so the gap
+is ~15 sd. And UDP's delay is ~64 ms *worse* with sd ~10 ms, so that gap is ~6 sd.
+Both differences are real; neither transport dominates. Note the UDP delay sd of
+~10 ms against a DTIM-derived mean -- the buffering is the mean, the sd is where in
+the cycle each frame lands.
+
+Also note the two directions of BLE differ by ~12 points on the same physical links,
+and the weak direction is nRF -> Pi, where RSSI is -33 to -43 dBm. Signal is not the
+constraint. The Pi's scanner has duplicate filtering **off**, so it receives roughly
+two advertisements per published value and still misses ~17%; the nRF has it **on**,
+sees about one per value, and misses ~4%. That points at the Pi's HCI receive path.
+
+### Two bugs the repeat set exposed that a single run could not
+
+**The nRF did not clear its neighbour `seq` and `rssi` on trigger.** The first two
+samples of every run carried the *previous* run's values -- seq 600 before it reset
+to 1. `apply_control` re-latched `neighbor_vstates` and not these two. Cross-run
+state leakage is invisible in a single run and fatal to a replicate set, which is
+exactly what a repeat set is for. Fixed in `agent.c`; needs a reflash.
+
+**`link_delivery()` was destroyed by one stale sample.** It took `first` and `last`
+of the seq series, so a leading 600 gave `span = (600-600) % 65536 + 1 = 1` against
+586 distinct values -- a delivery ratio of **586**. Where the run ended at 599
+instead, `span` became 65536 and the ratio 0.0089. Both appeared in the same set, and
+the aggregate reported `253.95 +- 247.15`, which is what made it obvious.
+
+The analysis now starts the window at the series minimum, reports `stale_prefix`,
+and refuses to divide when the series is not monotonic rather than returning a ratio
+above one. That recovers this dataset without a reflash: the four relay links read
+0.933-0.964.
+
+Worth stating the general shape, since it has now happened twice: **a statistic
+computed from endpoints is destroyed by one bad sample, and an aggregate over
+repeats is what surfaces it.** The single run before this reported 0.9583 for the
+same link and looked entirely reasonable.
+
 ### Multi-run: repeats hold the configuration, not the initial conditions
 
 `--repeat N` runs the same configuration N times as `<base>-r0..rN-1`, and

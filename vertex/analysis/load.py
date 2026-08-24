@@ -108,9 +108,27 @@ class NodeRun:
         seqs = [s for s in raw if s]
         if len(seqs) < 2:
             return {}
+
+        # Drop a stale prefix. A sender's seq restarts at 1 each run, so any leading
+        # sample larger than what follows is left over from the previous run -- the
+        # nRF did not clear its neighbour table's seq on trigger. One such sample
+        # sets `first` to 600 and collapses the span to 1, reporting a delivery
+        # ratio of 586. Starting from the minimum makes the window monotonic.
+        stale = seqs.index(min(seqs))
+        seqs = seqs[stale:]
+        if len(seqs) < 2:
+            return {}
+
         first, last, seen = seqs[0], seqs[-1], set(seqs)
         span = (last - first) % 65536 + 1        # uint16, wraps
         received = len(seen)
+        if span < received:
+            # Still inconsistent: more distinct values than the window can hold,
+            # which means the series is not one monotonic run. Say so rather than
+            # returning a ratio above 1.
+            return {"expected": span, "received": received,
+                    "stale_prefix": stale, "inconsistent": True,
+                    "note": "seq series is not monotonic; delivery not derivable"}
 
         jumps = sum(1 for a, b in zip(seqs, seqs[1:])
                     if 1 < ((b - a) % 65536) < 1000)
@@ -119,6 +137,7 @@ class NodeRun:
                 "lost": max(0, span - received),
                 "delivery_ratio": round(received / span, 4) if span else 0.0,
                 "lower_bound": True,
+                "stale_prefix": stale,
                 "bunching_suspected": jumps > 0,
                 "seq_jumps": jumps,
                 # The exact figure when the receiver kept one. Absent for a relay.

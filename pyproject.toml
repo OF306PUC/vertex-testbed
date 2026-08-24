@@ -10,11 +10,9 @@ requires-python = ">=3.11"
 # quietly incomplete: wifi and bridge came up, ble died with ModuleNotFoundError.
 dependencies = [
     "numpy>=1.26", "pydantic>=2.7", "networkx>=2.8", "pyyaml>=6.0",
-    "pyserial>=3.5",
+    "pyserial>=3.5", "matplotlib>=3.8"
 ]
 
-[project.optional-dependencies]
-viz = ["matplotlib>=3.8"]
 
 [project.optional-dependencies]
 # Nothing extra is needed to run an agent, a hub, a simulation, or the tests. The
