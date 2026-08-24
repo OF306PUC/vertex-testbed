@@ -47,7 +47,14 @@ __all__ = ["SCHEMA_VERSION", "FORMATS", "RunMeta", "RunLog", "read_run_file",
            "recover_rows", "record_width"]
 
 #: Bumped whenever the on-disk layout changes in a way readers must notice.
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
+# v6  four columns per neighbour instead of two: `seq_<id>` (the sender's sequence
+#     number) and `rssi_<id>` (dBm) join vstate and the arrival flag. seq makes
+#     per-link delivery, loss, duplicates and reordering derivable OFFLINE at any
+#     window size, which the end-of-run `links` aggregate cannot give -- and it is
+#     the only way to measure a link into an nRF, since a relay has no local
+#     neighbour table. rssi is the discriminator between interference and load.
+#     Both values were already captured on both paths and discarded.
 # v5  rx_<id> became an ARRIVAL flag on every agent type -- "a packet arrived since
 #     the last sample". Previously a Pi agent logged a STALENESS flag ("younger
 #     than max_neighbor_age_s") while the nRF logged an arrival flag, so the same
@@ -65,8 +72,8 @@ _ITEM = 8
 
 
 def record_width(n_neighbors: int) -> int:
-    """Columns per record: t, device_t, x, z, theta, then (vstate, fresh) each."""
-    return 5 + 2 * n_neighbors
+    """Columns per record: t, device_t, x, z, theta, then four per neighbour."""
+    return 5 + 4 * n_neighbors
 
 
 def git_hash(cwd: str | Path | None = None) -> str:
@@ -150,7 +157,10 @@ class RunLog:
     def column_names(self) -> list[str]:
         cols = ["timestamp", "device_timestamp", "state", "vstate", "vartheta"]
         for nid in self.meta.neighbors:
-            cols += [str(nid), f"rx_{nid}"]
+            # vstate, arrival flag, the sender's seq, and RSSI. seq makes per-window
+            # delivery derivable offline at any window size, and rssi separates
+            # interference from load -- see v6 in the schema note.
+            cols += [str(nid), f"rx_{nid}", f"seq_{nid}", f"rssi_{nid}"]
         return cols
 
     # paths: ---------------------------------------------------------------------
@@ -204,6 +214,8 @@ class RunLog:
         neighbor_vstates: Sequence[float] = (),
         neighbor_fresh: Sequence[bool] = (),
         device_t_s: float | None = None,
+        neighbor_seq: Sequence[float] = (),
+        neighbor_rssi: Sequence[float] = (),
     ) -> None:
         """Record one control step.
 
@@ -225,6 +237,8 @@ class RunLog:
         for i in range(n):
             row.append(float(neighbor_vstates[i]) if i < len(neighbor_vstates) else 0.0)
             row.append(1.0 if i < len(neighbor_fresh) and neighbor_fresh[i] else 0.0)
+            row.append(float(neighbor_seq[i]) if i < len(neighbor_seq) else 0.0)
+            row.append(float(neighbor_rssi[i]) if i < len(neighbor_rssi) else 0.0)
 
         if self.fmt == "binary":
             self._buf.extend(self._pack(*row))

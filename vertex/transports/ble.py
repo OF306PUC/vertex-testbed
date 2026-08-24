@@ -375,7 +375,8 @@ class BleTransport(Transport):
             if cb is None:
                 continue
             try:
-                cb(Reception(packet=packet, rx_time_us=rx_time_us))
+                cb(Reception(packet=packet, rx_time_us=rx_time_us,
+                             rssi=report.rssi))
                 self.stats.delivered += 1
             except Exception as exc:                        # pragma: no cover
                 self.stats.last_error = repr(exc)

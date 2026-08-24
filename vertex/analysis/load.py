@@ -71,6 +71,36 @@ class NodeRun:
     def neighbour_vstate(self, nid: int) -> list[float]:
         return self.data[str(nid)]
 
+    def neighbour_seq(self, nid: int) -> list[float]:
+        """The sender's sequence number, per sample. 0 means unknown, not packet 0."""
+        return self.data.get(f"seq_{nid}", [])
+
+    def neighbour_rssi(self, nid: int) -> list[float]:
+        """Last received signal strength in dBm, per sample. 0 if unknown."""
+        return self.data.get(f"rssi_{nid}", [])
+
+    def link_delivery(self, nid: int) -> dict[str, float]:
+        """Delivery derived from SEQUENCE GAPS in the rows.
+
+        Works for every link, including one terminating at a relay -- an nRF has no
+        local neighbour table, so the end-of-run `links` aggregate covers only links
+        into a locally-computing agent. Four of twelve links in `n6-fast` had no
+        delivery figure at all until `seq` reached the rows.
+
+        Counts published values rather than transmissions: a value re-advertised
+        before the next publish repeats its seq and scores as a duplicate.
+        """
+        seqs = [int(s) for s in self.neighbour_seq(nid) if s]
+        if len(seqs) < 2:
+            return {}
+        first, last, seen = seqs[0], seqs[-1], set(seqs)
+        span = (last - first) % 65536 + 1        # uint16, wraps
+        received = len(seen)
+        return {"expected": span, "received": received,
+                "lost": max(0, span - received),
+                "duplicates": len(seqs) - received,
+                "delivery_ratio": round(received / span, 4) if span else 0.0}
+
     def neighbour_fresh(self, nid: int) -> list[float]:
         """1.0 where a packet arrived from that neighbour in the window, else 0."""
         return self.data[f"rx_{nid}"]

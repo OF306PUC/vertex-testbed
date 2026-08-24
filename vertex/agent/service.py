@@ -440,9 +440,10 @@ class AgentService:
         ]
         return ok(run_name=run_name, node_id=a.node_id, mode="local"), None
 
-    def _record(self, t_s: float, out, vstates, fresh) -> None:
+    def _record(self, t_s: float, out, vstates, fresh, seq=(), rssi=()) -> None:
         if self.runlog is not None:
-            self.runlog.append(t_s, out.state, out.vstate, out.vartheta, vstates, fresh)
+            self.runlog.append(t_s, out.state, out.vstate, out.vartheta, vstates,
+                               fresh, neighbor_seq=seq, neighbor_rssi=rssi)
 
     def _record_report(self, report, rx_time_us: int | None = None) -> None:
         """Write one nRF report. State values pass through unscaled.
@@ -467,7 +468,9 @@ class AgentService:
         self.runlog.append(t_s, report.state, report.vstate, report.vartheta,
                            list(report.neighbor_vstates),
                            list(report.neighbor_fresh),
-                           device_t_s=device_t_s)
+                           device_t_s=device_t_s,
+                           neighbor_seq=list(report.neighbor_seq),
+                           neighbor_rssi=list(report.neighbor_rssi))
 
     def _rebind_clock(self) -> None:
         """Push the run's clock into everything that cached a reference.

@@ -27,7 +27,8 @@ int report_state(const struct agent *a)
         return 0;
     }
 
-    uint8_t p[8 + 4 + 4 + 4 + 4 + 1 + (AGENT_MAX_NEIGHBORS * 5)];
+    uint8_t p[8 + 4 + 4 + 4 + 4 + 1
+              + (AGENT_MAX_NEIGHBORS * STATE_NEIGHBOUR_BYTES)];
     size_t n = 0;
 
     /* vars.time_us is the run start, in MICROSECONDS.*/
@@ -48,6 +49,8 @@ int report_state(const struct agent *a)
 
     for (uint8_t i = 0; i < a->params.n_neighbors; i++) {
         proto_st_u32(&p[n], (uint32_t)a->vars.neighbor_vstates[i]);   n += 4;
+        proto_st_u16(&p[n], a->vars.neighbor_seq[i]);                 n += 2;
+        p[n++] = (uint8_t)a->vars.neighbor_rssi[i];      /* int8 on the wire */
         uint8_t flags = 0;
         if (a->params.neighbors_enabled[i]) {
             flags |= STATE_FLAG_ENABLED;

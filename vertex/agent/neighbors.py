@@ -25,6 +25,7 @@ class NeighborRecord:
     tx_time_us: int
     rx_time_us: int
     sender_enabled: bool
+    rssi: int | None = None
     updates: int = 0
 
     def age_us(self, now_us: int) -> int:
@@ -75,6 +76,7 @@ class NeighborTable:
         self._records[pkt.node_id] = NeighborRecord(
             vstate=pkt.vstate, seq=pkt.seq, tx_time_us=pkt.tx_time_us,
             rx_time_us=reception.rx_time_us, sender_enabled=pkt.enabled,
+            rssi=reception.rssi,
             updates=(prev.updates + 1) if prev else 1,
         )
         return True
@@ -106,6 +108,24 @@ class NeighborTable:
         for nid in self.neighbor_ids:
             rec = self._records.get(nid)
             out.append(bool(rec is not None and rec.age_us(now_us) <= self.max_age_us))
+        return out
+
+    def last_seq(self) -> list[int]:
+        """Latest sequence number per neighbour, 0 if never heard.
+
+        Logged per row so per-window delivery is derivable offline at any window
+        size -- the same reason the nRF's STATE frame now carries it. Zero means
+        "unknown", not "packet 0": a v0 sender carries no sequence number.
+        """
+        return [(self._records[nid].seq if nid in self._records else 0)
+                for nid in self.neighbor_ids]
+
+    def last_rssi(self) -> list[int]:
+        """Latest RSSI per neighbour in dBm, 0 if unknown or not applicable."""
+        out = []
+        for nid in self.neighbor_ids:
+            rec = self._records.get(nid)
+            out.append(rec.rssi if rec is not None and rec.rssi is not None else 0)
         return out
 
     def arrivals(self) -> list[bool]:

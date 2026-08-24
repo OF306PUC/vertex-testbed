@@ -523,6 +523,106 @@ parameter and should move into the manifest).
   balance, spectral gap λ₂ — reported *before* the run, next to the convergence
   rate it predicts.
 - **C7. Zeroconf/mDNS discovery** instead of hardcoded IPs.
+- **C8. Unicast-per-neighbour as a selectable UDP mode.** *Proposed, not decided.*
+  See C2.2 below — broadcast's airtime advantage is real, but it costs 153.6 ms of
+  DTIM latency on infrastructure WLAN, measured. Making the mode selectable turns a
+  fixed disadvantage into an experimental variable.
+
+---
+
+### C2.2 The latency cost of broadcast — measured, and a proposed option
+
+C2.1 chose subnet broadcast and its airtime argument stands: one frame reaching all
+neighbours is **O(1) per node instead of O(degree)**. What it could not know is the
+price.
+
+**Measured on `oficina_v2` (BSSID `04:d9:f5:b2:ba:80`), 2026-08-21.** UDP one-way
+delay: median 171-175 ms, minimum 16-21 ms, zero duplication, on stations whose own
+`power_save` is **off**. The AP advertises a 100 TU beacon (102.4 ms) and
+**DTIM period 3**, so its broadcast buffer is 307.2 ms and a frame arriving at a
+uniform point in that cycle waits `U(0, 307.2)` — median 153.6 ms. Therefore
+`median - min` should equal 153.6 ms on every link, and it does:
+
+```
+     link     min   median  median-min   vs W/2
+   12->11   20.80   175.36      154.56    +0.96
+   22->11   20.70   173.13      152.43    -1.17
+   11->12   16.50   171.39      154.89    +1.29
+   21->12   17.71   171.66      153.95    +0.35
+```
+
+Four links within 1.3 ms — 0.8% — of a figure derived from nothing but the AP's
+beacon interval and DTIM period. **Broadcast and multicast through an AP are
+buffered to the next DTIM beacon whenever any associated station is dozing**,
+including stations that are not ours: turning our own `power_save` off changed
+nothing.
+
+Three consequences worth stating plainly.
+
+**It is structural, not congestion.** It is present at 2.6% duty cycle with no
+contention to speak of. Any claim that the Wi-Fi path degrades under heavier
+traffic must be made *on top of* a 153.6 ms offset that has nothing to do with
+traffic — and if an earlier analysis attributed this to congestion, it was
+attributing a DTIM cycle.
+
+**It inverts the assumed transport ordering.** With a 200 ms publish period, Wi-Fi
+neighbour data is nearly a full period stale while BLE is about half that:
+
+| | delivery | median delay | min delay |
+|---|---|---|---|
+| BLE | 89-90% | 104-108 ms | 5-6 ms |
+| UDP broadcast | 98-99% | 171-175 ms | 16-21 ms |
+
+BLE is ~9 points worse on delivery and ~65 ms *better* on latency. Neither
+dominates, and each figure has a mechanism: BLE's latency is the advertising
+interval, UDP's is the DTIM cycle.
+
+**It explains why degree does not vary traffic under broadcast**, which C2.1 point 4
+already implied without drawing the conclusion. Broadcast airtime is
+degree-independent, so a ring with degree 4 puts exactly as much traffic on the
+medium as one with degree 2 — a degree comparison measures connectivity and
+receive-side load, not communication load.
+
+#### The proposal
+
+Make the UDP send mode selectable — `broadcast` (today) or `unicast`, one datagram
+per neighbour — as a manifest field beside the radio parameters, recorded in
+`RunMeta` like everything else that changes what a run measures.
+`UdpTransport` already takes `send_to`, so the change is small; the value is not in
+the code but in what becomes measurable.
+
+*Benefit.* Unicast is not DTIM-buffered, so the 153.6 ms term should disappear and
+leave the ~18 ms base hop. That gives the platform a Wi-Fi transport usable for
+latency-sensitive work, and a *controlled* comparison of the two modes on identical
+hardware — which is a result in itself, not merely a fix.
+
+*And it supplies the traffic knob.* Unicast airtime is **O(degree)**. With it, a
+degree-2 versus degree-4 comparison genuinely varies communication load, so the
+question C2.1 answered on airtime grounds and the G1/G2 question collapse into one
+change.
+
+*Cost.* Airtime rises with degree, exactly as C2.1 said — at degree 4 that is 4x
+the frames. On a shared medium serving BLE as well, that is the self-blanking
+mechanism of §3 A3 acting on purpose rather than by accident. Which is the point:
+it becomes a variable.
+
+*Risk.* Unicast needs each neighbour's address, so the transport gains a dependency
+on the manifest's `ip` mapping that broadcast does not have; a stale address becomes
+a silent per-link failure rather than a whole-transport one. And it re-opens the
+scientific-validity note in C2.1 point 4 from the other side: under unicast the
+topology is enforced by *addressing* rather than by a software filter over a
+physical broadcast, which is arguably more faithful and is certainly different.
+Say which one a run used.
+
+*Falsifiable prediction, so the experiment can fail.* Broadcast: median ~171 ms,
+distribution roughly uniform from 18 to 325 ms. Unicast: median ~18 ms. **If unicast
+returns ~170 ms, DTIM is not the mechanism and this section is wrong.**
+
+*Cheaper first step.* Ask the network owner to set DTIM 1, or point the experiment
+LAN at an AP under our control. That would cut the buffer from 307 ms to 102 ms
+without any code, and it tests the mechanism just as well. It does not remove the
+dependency on someone else's AP configuration, which is the deeper reason to want
+the unicast option.
 
 ---
 
@@ -1291,6 +1391,124 @@ on two nRFs and the Python law on four Pi agents driving one coordination proble
 BLE nRF-to-nRF, BLE nRF-to-Pi in both directions, and UDP between hosts; the epoch
 transfer; the STATE relay path; v1 on the air; and the hub configuring, triggering,
 stopping and collecting six agents across two machines.
+
+### Only 8 of 12 links were being measured -- and the missing 4 were the risky ones
+
+`links` in a run's metadata comes from `agent.neighbors.link_stats()`, and a `ble`
+agent has no local `Agent` -- the law and the neighbour table live on the nRF. So
+every link *terminating at a relay* had no delivery statistics at all:
+
+```
+  22->1 BLE  NO      2->1 BLE  NO      1->2 BLE  NO      21->2 BLE  NO
+  8 others   yes
+```
+
+All four are BLE, and all four are the **Pi -> nRF** direction. So every BLE figure
+quoted before this -- 89-90% delivery, 104-108 ms -- was nRF -> Pi only. The other
+direction was unmeasured, and it is the one that had already misbehaved: 0.65 and
+0.72 in the freshness era, then both links collapsing at t=104 s and t=111 s.
+
+A per-link measurement that silently covers 8 of 12 is worse than none, because the
+eight look complete.
+
+**Fixed by logging the sender's `seq` per neighbour per row, schema v6.** Both
+values needed were already captured on both paths and discarded at the last
+boundary: `observer.h` held `seq[]` and `rssi[]` and `report.c` did not send them;
+`hci.py` parsed `rssi` and `Reception` had no field for it.
+
+```
+STATE neighbour record   [vstate:4][flags:1] -> [vstate:4][seq:2][rssi:1][flags:1]
+row columns per neighbour  2 -> 4   (vstate, rx_, seq_, rssi_)
+4 neighbours at 25 Hz      51 -> 63 B frames = 13.7% of the UART, was 10.2%
+```
+
+Logging `seq` rather than a delivery ratio is deliberate: **loss, duplicates,
+reordering and per-window ratios are all derivable offline, at any window size
+chosen after the fact.** `NodeRun.link_delivery()` does it, and it works for every
+link including those terminating at a relay -- which the end-of-run aggregate
+structurally cannot. `rssi` is the discriminator between "the signal got worse"
+(interference) and "packets were dropped elsewhere" (load), which is the distinction
+the review question turns on.
+
+`report.h` now defines `STATE_NEIGHBOUR_BYTES` and the Python struct is checked
+against it, so the two cannot drift silently.
+
+Three things the harness caught while doing this, each of which would have reached
+the bench:
+
+* the fake nRF still packed the 2-field neighbour record, so its report thread died
+  and both relays logged nothing -- surfaced as "rows file decoded to nothing";
+* a relay has no `Transport` by design, so nothing a `ble` node sends reaches the
+  loopback bus and every link *sourced* at one was unmeasurable. The harness now
+  advertises on each relay's behalf, which is what the board does on hardware;
+* stamping `tx_time_us` as a constant in that advertiser made every delay the
+  elapsed time -- caught by the 1 s delay guard added one run earlier, at +1.057 s.
+
+`check_fleet.py` now fails if any declared link lacks a seq-derived delivery figure.
+Verified by disabling the `seq` column: 12 failures.
+
+### 8a-duodecies. Confirmed: the AP's DTIM cycle, to 0.8%
+
+`scripts/ap_info.sh oficina_v2` on both hosts, identically:
+
+```
+BSSID  04:d9:f5:b2:ba:80   freq 2462   signal -28 dBm
+beacon interval  100 TUs = 102.4 ms
+DTIM period      3          ->  307.2 ms worst, 153.6 ms mean
+```
+
+A broadcast frame generated at a uniform point in the DTIM cycle waits `U(0, W)`
+with `W = 307.2 ms`, so its median wait is `W/2 = 153.6 ms` and its minimum tends to
+zero. The measured delay should therefore be that plus a fixed base hop cost, and
+**`median - min` should equal `W/2` on every link**:
+
+```
+     link     min   median  median-min   vs W/2
+   12->11   20.80   175.36      154.56    +0.96
+   22->11   20.70   173.13      152.43    -1.17
+   11->12   16.50   171.39      154.89    +1.29
+   21->12   17.71   171.66      153.95    +0.35
+```
+
+Four independent links, all within 1.3 ms -- **0.8% error** against a prediction
+derived from nothing but the AP's beacon interval and DTIM period. That is the
+mechanism, not a hypothesis about it.
+
+The residue, 16.5-20.8 ms, is the base cost: Pi -> AP -> Pi plus the receiver's
+event-loop scheduling. It is the part unicast would keep.
+
+### The trade-off, now quantified on both axes
+
+|  | delivery | median delay | min delay |
+|---|---|---|---|
+| BLE | 89-90% | 104-108 ms | 5-6 ms |
+| UDP broadcast | 98-99% | 171-175 ms | 16-21 ms |
+
+BLE is ~9 points worse on delivery and ~65 ms **better** on latency. Neither
+dominates, and each number has a mechanism behind it: BLE's latency is the
+advertising interval, UDP's is the AP's DTIM cycle. This is the first result the
+platform has produced that is a *finding* rather than a check.
+
+Note what it does to the reviewer's question. The Wi-Fi path's latency penalty is
+not a coexistence effect at all -- it is a consequence of choosing **subnet
+broadcast on infrastructure WLAN**, and it is present at 2.6% duty with no
+contention to speak of. Any claim about degradation under heavier traffic has to be
+made *on top of* a 153.6 ms structural offset that has nothing to do with traffic.
+
+### The next experiment writes itself, with a falsifiable prediction
+
+Switch `UdpTransport` from subnet broadcast to unicast-per-neighbour:
+
+```
+broadcast: median ~171 ms, distribution roughly uniform from 18 to 325 ms
+unicast  : median ~18 ms   (the DTIM term goes, the base hop stays)
+```
+
+If unicast comes back near 170 ms, DTIM is not the mechanism and this section is
+wrong. If it comes back near 18 ms, the platform has a transport it can run
+latency-sensitive experiments on -- and unicast airtime scales with **degree**,
+which turns G1 vs G2 into a genuine traffic experiment, since broadcast airtime is
+degree-independent.
 
 ### 8a-undecies. It is not power save: UDP broadcast is being held at the AP
 
@@ -2469,6 +2687,10 @@ Unsorted ideas go here; promote into a workstream once shaped.
   reception via shared LNA + joint AGC. → shaped into §3 A2/A3/A7.
 - **Check the router's current WLAN channel.** If 1 or 6 it is colliding with BLE
   adv channel 37 or 38 on every frame — see A3.1. Free fix, unblocked, do first.
+- *(2026-08-21, measured)* **Broadcast costs 153.6 ms of DTIM latency on
+  infrastructure WLAN.** Confirmed to 0.8% against the AP's beacon interval and
+  DTIM period. Unicast-per-neighbour proposed as a selectable mode -> shaped into
+  C2.2 / C8. Also supplies the O(degree) traffic knob that broadcast cannot.
 - *(add yours here)*
 
 ---

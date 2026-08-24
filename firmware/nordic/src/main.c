@@ -214,6 +214,13 @@ static void absorb_neighbors(const neighbor_info_type *info)
     }
     memcpy(agent.vars.neighbor_vstates, info->vstates, sizeof(info->vstates));
     memcpy(agent.params.neighbors_enabled, info->enabled, sizeof(info->enabled));
+    /* The sender's sequence number and the received signal strength. Both were
+     * already captured by the observer and dropped here: seq is what makes
+     * per-link delivery derivable for a link INTO an nRF (4 of 12 links in
+     * n6-fast had no delivery statistics at all), and rssi is what separates
+     * interference from load. */
+    memcpy(agent.vars.neighbor_seq, info->seq, sizeof(info->seq));
+    memcpy(agent.vars.neighbor_rssi, info->rssi, sizeof(info->rssi));
 
     uint8_t seen = 0;
     for (uint8_t i = 0; i < agent.params.n_neighbors; i++) {

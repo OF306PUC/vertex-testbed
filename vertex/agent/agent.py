@@ -198,7 +198,8 @@ class Agent:
             # arrivals(), not freshness(): the log wants "a packet arrived since
             # the last sample", which is what the nRF's `fresh` bit means. The
             # staleness test above still drives the controller.
-            self.on_sample(t_s, out, vstates, self.neighbors.arrivals())
+            self.on_sample(t_s, out, vstates, self.neighbors.arrivals(),
+                           self.neighbors.last_seq(), self.neighbors.last_rssi())
         return out
 
     def _publish_step(self, now_s: float) -> None:

@@ -53,6 +53,7 @@ from vertex.serial.proto import STATE_HEADER, STATE_NEIGHBOUR
 from vertex.clock import WallClock
 from vertex.topology import check, load_manifest_file
 from vertex.transports import LoopbackBus, LoopbackTransport
+from vertex.wire import StatePacket
 
 WORK = Path("/tmp/vertex-fleet")
 DURATION = 2.0
@@ -132,8 +133,12 @@ class FakeNrf:
                                   22_300_000 - self._k * 900,
                                   22_299_100 - self._k * 900,
                                   self._k * 2, self._k, len(self.neighbours))
-            for _ in self.neighbours:
-                p += STATE_NEIGHBOUR.pack(21_000_000, 0x03)
+            for j, _ in enumerate(self.neighbours):
+                # seq advances and rssi is plausible, so the new columns carry real
+                # variation rather than zeros -- otherwise `link_delivery` would be
+                # exercised against a constant and prove nothing.
+                p += STATE_NEIGHBOUR.pack(21_000_000, (self._k + j) % 65536,
+                                          -50 - j, 0x03)
             with self._lock:
                 self.rx += build_frame(FrameType.STATE, p)
             self._k += 1
@@ -197,6 +202,31 @@ async def main(manifest_path: str) -> int:
     for nid, a in runner.assignments.items():
         runner.assignments[nid] = a.model_copy(
             update={"dt_s": DT_S, "publish_period_s": DT_S})
+
+    # A relay has no Transport by design -- the nRF owns the radio -- so nothing
+    # a `ble` node "sends" reaches the bus, and every link SOURCED at one is
+    # unmeasurable. That is a harness gap, not a product one, and it hides exactly
+    # the links this change exists to measure. So the harness advertises on each
+    # relay's behalf, which is what the board does on hardware.
+    async def relay_advertiser(node_id: int, period_s: float) -> None:
+        t = LoopbackTransport(bus, node_id)
+        await t.start(lambda r: None)
+        seq = 0
+        try:
+            while True:
+                await asyncio.sleep(period_s)
+                seq = (seq + 1) % 65536
+                await t.publish(StatePacket(
+                    node_id=node_id, vstate=22_300_000, seq=seq,
+                    # From the bus's clock, which the harness rebinds to the run
+                    # epoch. A constant here makes every "delay" the elapsed time.
+                    tx_time_us=max(0, bus.clock.now_us())))
+        except asyncio.CancelledError:
+            await t.stop()
+            raise
+
+    advertisers = [asyncio.create_task(relay_advertiser(n.id, DT_S))
+                   for n in manifest.nodes if AgentType(n.type) is AgentType.BLE]
 
     # Let the agents idle before the run. Without this every clock is created at
     # about the same instant, so a timeline anchored at launch and one anchored at
@@ -358,6 +388,25 @@ async def main(manifest_path: str) -> int:
                 fails.append(f"node {nid} link {src}: median delay {d/1e6:+.3f}s -- "
                              f"that is a clock offset, not a delay")
 
+    # 7. every declared link must have a seq-derived delivery figure. Before `seq`
+    #    reached the rows, the four links terminating at a relay had none -- and
+    #    they were the BLE Pi->nRF direction, the one that had already collapsed
+    #    once. A per-link measurement that silently covers 8 of 12 links is worse
+    #    than none, because the eight look complete.
+    from vertex.analysis import load_run as _load_run
+    try:
+        loaded = _load_run(report.out_dir)
+    except Exception as exc:
+        fails.append(f"cannot load the collected run: {exc}")
+        loaded = None
+    if loaded is not None:
+        for nid in loaded.ids:
+            node = loaded.nodes[nid]
+            for src in node.neighbours:
+                if not node.link_delivery(src):
+                    fails.append(f"link {src}->{nid} has no seq-derived delivery "
+                                 f"figure; is seq_{src} being logged?")
+
     counts = {str(t): 0 for t in AgentType}
     for nid, node in manifest.by_id.items():
         counts[str(node.type)] += report.nodes[nid].samples
@@ -365,6 +414,9 @@ async def main(manifest_path: str) -> int:
 
     # Clients first: an agent's shutdown has to close its open connections, and
     # this ordering keeps the harness from depending on that having been fixed.
+    for a in advertisers:
+        a.cancel()
+    await asyncio.gather(*advertisers, return_exceptions=True)
     await runner.close()
     for nid, svc in services.items():
         await svc.shutdown()

@@ -349,7 +349,13 @@ def decode_adv_report(payload: bytes) -> AdvReport:
 #:   [t_us:8][state:4][vstate:4][vartheta:4][counter:4][n:1]
 #:   then per neighbour: [vstate:4][flags:1]   flags bit0=enabled bit1=fresh
 STATE_HEADER = struct.Struct("<QiiiiB")
-STATE_NEIGHBOUR = struct.Struct("<iB")
+#: Per-neighbour record: vstate, the SENDER's seq, rssi in dBm, flags.
+#: `seq` is what makes per-link delivery derivable for a link into an nRF -- those
+#: four links in n6-fast carried no delivery statistics while every link into a Pi
+#: agent did. `rssi` separates interference from load. Both were already captured
+#: by the firmware's observer and dropped at the STATE boundary.
+#: Mirrors STATE_NEIGHBOUR_BYTES in firmware/nordic/src/report.h.
+STATE_NEIGHBOUR = struct.Struct("<iHbB")
 
 STATE_FLAG_ENABLED = 0x01
 STATE_FLAG_FRESH = 0x02
@@ -368,6 +374,11 @@ class StateReport:
     neighbor_vstates: tuple[int, ...]
     neighbor_enabled: tuple[bool, ...]
     neighbor_fresh: tuple[bool, ...]
+    #: The sender's sequence number per neighbour. Zero from a v0 sender, which
+    #: carries none -- so zero means "unknown", not "packet 0".
+    neighbor_seq: tuple[int, ...] = ()
+    #: Last received signal strength per neighbour, dBm. 0 when never heard.
+    neighbor_rssi: tuple[int, ...] = ()
 
     @property
     def t_s(self) -> float:
@@ -381,7 +392,9 @@ def encode_state(r: StateReport) -> bytes:
     for i in range(n):
         flags = ((STATE_FLAG_ENABLED if r.neighbor_enabled[i] else 0)
                  | (STATE_FLAG_FRESH if r.neighbor_fresh[i] else 0))
-        out += STATE_NEIGHBOUR.pack(r.neighbor_vstates[i], flags)
+        seq = r.neighbor_seq[i] if i < len(r.neighbor_seq) else 0
+        rssi = r.neighbor_rssi[i] if i < len(r.neighbor_rssi) else 0
+        out += STATE_NEIGHBOUR.pack(r.neighbor_vstates[i], seq, rssi, flags)
     return out
 
 
@@ -399,16 +412,19 @@ def decode_state(payload: bytes) -> StateReport:
     if n > MAX_NEIGHBORS:
         raise ProtoError(f"STATE declares {n} neighbours, limit is {MAX_NEIGHBORS}")
 
-    vstates, enabled, fresh = [], [], []
+    vstates, enabled, fresh, seqs, rssis = [], [], [], [], []
     for i in range(n):
-        v, flags = STATE_NEIGHBOUR.unpack_from(payload, STATE_HEADER.size
-                                               + i * STATE_NEIGHBOUR.size)
+        v, seq, rssi, flags = STATE_NEIGHBOUR.unpack_from(
+            payload, STATE_HEADER.size + i * STATE_NEIGHBOUR.size)
         vstates.append(v)
+        seqs.append(seq)
+        rssis.append(rssi)
         enabled.append(bool(flags & STATE_FLAG_ENABLED))
         fresh.append(bool(flags & STATE_FLAG_FRESH))
 
     return StateReport(t_us, state, vstate, vartheta, counter,
-                       tuple(vstates), tuple(enabled), tuple(fresh))
+                       tuple(vstates), tuple(enabled), tuple(fresh),
+                       tuple(seqs), tuple(rssis))
 
 
 def decode_txat(payload: bytes) -> tuple[int, int]:

@@ -27,6 +27,11 @@ class Reception:
     """
     packet: StatePacket
     rx_time_us: int
+    #: Received signal strength in dBm, or None on a medium that has none. The
+    #: radio reports it per advertisement and this was discarding it, so a Pi agent
+    #: had no RSSI to log while the nRF now reports it -- and RSSI is what separates
+    #: "the signal got worse" from "packets were dropped elsewhere".
+    rssi: int | None = None
 
 
 #: Called by a transport for each received packet. Must be cheap and must not raise.
