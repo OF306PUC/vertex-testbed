@@ -178,10 +178,28 @@ Nothing host-side blocks a first run. Remaining, in order:
 `cannot take hci0 on the user channel ([Errno 16] Device or resource busy)` means
 the adapter is up under BlueZ, or a previous process still holds the user channel.
 
+**`hciconfig hci0 down` will not fix it, and cannot.** A user-channel socket owns
+the device exclusively, so the kernel refuses `hciconfig` while it is held — that
+*is* the EBUSY. The holder has to exit first. Ask who it is:
+
 ```bash
-sudo hciconfig hci0 down          # on each affected Pi
-bash scripts/agents.sh restart    # agents hold the socket for their lifetime
+bash scripts/agents.sh hci        # adapter state + who is holding it
 ```
+
+Then, in this order:
+
+```bash
+bash scripts/agents.sh stop       # waits for exit, escalates to KILL if needed
+sudo hciconfig hci0 down          # only now, and only if still needed
+bash scripts/agents.sh start
+```
+
+If `agents.sh` reports nothing running but EBUSY persists, the holder is an
+untracked orphan — `pgrep -af 'vertex\.agent'`, then `sudo pkill -f 'vertex\.agent'`.
+That used to be reachable through `stop` itself: it removed the pidfile without
+waiting for the process to die, so anything slow to exit stopped being tracked
+while still holding `hci0`. Fixed 2026-08-24; `stop` now confirms exit before
+dropping the pidfile, and `restart` no longer races a flat one-second sleep.
 
 Since 2026-08-24 each agent process opens **one** HCI socket and keeps it, so this
 should no longer accumulate across a sweep. If it recurs, check for a second agent

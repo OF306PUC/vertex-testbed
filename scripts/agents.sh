@@ -346,7 +346,50 @@ start() {
     status
 }
 
+# Wait for a pid to actually leave, escalating if it will not. Returns 1 if it
+# is still there afterwards.
+#
+# The old version sent TERM and deleted the pidfile in the same breath. A process
+# slower to die than that became an ORPHAN: still holding hci0 on the user
+# channel, but no longer tracked, so neither `stop` nor `status` could see it and
+# `hciconfig hci0 down` failed with EBUSY -- the user channel is exclusive, so the
+# holder must go first and there was no longer any record of who the holder was.
+await_exit() {
+    local pid=$1 deadline=$((SECONDS + ${2:-10}))
+    while kill -0 "$pid" 2>/dev/null || sudo kill -0 "$pid" 2>/dev/null; do
+        if [ $SECONDS -ge $deadline ]; then
+            echo "    still alive after ${2:-10}s, sending KILL"
+            kill -9 "$pid" 2>/dev/null || sudo kill -9 "$pid" 2>/dev/null
+            sleep 1
+            kill -0 "$pid" 2>/dev/null || sudo kill -0 "$pid" 2>/dev/null || return 0
+            return 1
+        fi
+        sleep 0.2
+    done
+    return 0
+}
+
+# Who holds hci0, and can it be taken?
+#
+# `hciconfig hci0 down` failing with EBUSY does NOT mean the adapter is wedged: a
+# user-channel socket owns the device exclusively, and the kernel refuses
+# hciconfig while it is held. The holder must exit first. This says who that is.
+hci_state() {
+    echo "  adapter:"
+    hciconfig hci0 2>/dev/null | sed 's/^/    /' || echo "    hciconfig: no hci0"
+    echo "  vertex agents running:"
+    if pgrep -af 'vertex\.agent' 2>/dev/null | sed 's/^/    /' | grep .; then
+        echo "  -> one of these holds hci0. Stop them before touching hciconfig:"
+        echo "       bash scripts/agents.sh stop"
+    else
+        echo "    none"
+        echo "  -> nothing of ours holds it. If EBUSY persists, it is BlueZ:"
+        echo "       sudo systemctl stop bluetooth   # or hciconfig hci0 down"
+    fi
+}
+
 stop() {
+    local stuck=0
     for t in $TYPES; do
         local pf pid; pf=$(pidfile "$t")
         if alive "$t"; then
@@ -356,9 +399,31 @@ stop() {
             kill -TERM "$pid" 2>/dev/null ||
                 sudo kill -TERM "$pid" 2>/dev/null
             echo "  stopping $t (pid $pid)"
+            # Only drop the pidfile once it is really gone, so a survivor stays
+            # visible to `status` instead of becoming an untracked hci0 holder.
+            if await_exit "$pid" 10; then
+                rm -f "$pf"
+            else
+                echo "    WARNING: $t (pid $pid) will not die; pidfile kept"
+                stuck=1
+            fi
+        else
+            rm -f "$pf"
         fi
-        rm -f "$pf"
     done
+    # The bridge holds hci0 exclusively. Starting again before the kernel has
+    # released it is the EBUSY seen mid-sweep, so confirm rather than sleep.
+    if [ $stuck -eq 0 ] && pgrep -f 'vertex\.agent' >/dev/null 2>&1; then
+        echo "  waiting for untracked vertex.agent processes to exit"
+        local deadline=$((SECONDS + 10))
+        while pgrep -f 'vertex\.agent' >/dev/null 2>&1; do
+            [ $SECONDS -ge $deadline ] && {
+                echo "    WARNING: still running: $(pgrep -af 'vertex\.agent' | tr '\n' ' ')"
+                stuck=1; break; }
+            sleep 0.2
+        done
+    fi
+    return $stuck
 }
 
 status() {
@@ -380,8 +445,9 @@ case "${1:-status}" in
     preflight) preflight ;;
     start)     start ;;
     stop)      stop ;;
-    restart)   stop; sleep 1; start ;;
+    restart)   stop || echo '  (continuing despite a stuck agent)'; start ;;
     status)    status ;;
     logs)      tail -f "$(logfile "${2:?which agent: ble|wifi|bridge}")" ;;
-    *) echo "usage: $0 {preflight|start|stop|restart|status|logs <type>}" >&2; exit 2 ;;
+    hci)       hci_state ;;
+    *) echo "usage: $0 {preflight|start|stop|restart|status|hci|logs <type>}" >&2; exit 2 ;;
 esac

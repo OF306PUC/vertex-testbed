@@ -1206,6 +1206,16 @@ produce exactly one open. It is a counting test rather than a behavioural one
 because reproducing the live failure needs ~20 real opens -- nothing short of a
 full sweep triggers it, which is precisely why it reached hardware.
 
+**Third bug, in `scripts/agents.sh`.** Recovery was blocked by the stop path:
+`stop()` sent TERM and deleted the pidfile in the same breath, so a process slower
+to exit than that became an orphan — still holding `hci0` on the user channel, no
+longer tracked by `status` or reachable by `stop`. `hciconfig hci0 down` then
+returned EBUSY too, because a user-channel socket owns the device exclusively and
+the kernel refuses hciconfig while it is held. Two failure modes pointing at the
+same adapter with no indication of who held it. `stop()` now waits for exit and
+escalates to KILL, keeps the pidfile if the process survives, and `agents.sh hci`
+reports the holder.
+
 **Second bug, in `scripts/sweep.sh`.** `set -o pipefail` propagated p080's failure
 through the `tee`, and `set -e` then killed the loop, so p040 never ran at all. One
 failing point should cost one point. Now isolated, with the failed points named in
