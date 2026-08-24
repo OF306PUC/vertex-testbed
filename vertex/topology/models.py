@@ -129,10 +129,20 @@ class RadioSpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    #: 100 ms, not the 20 ms of Bluetooth 5.0. Bluetooth 4.x required
+    #: Advertising_Interval_Min >= 0x00A0 for ADV_NONCONN_IND and ADV_SCAN_IND;
+    #: 5.0 dropped it, but the CYW43455 enforces the 4.x rule and rejects
+    #: anything faster with "invalid HCI command parameters" on opcode 0x2006.
+    #: Measured, not assumed -- `scripts/adv_floor.py` reports it per adv type.
+    #:
+    #: This is a hard ceiling on the platform: a bridge cannot publish faster
+    #: than 10 Hz without capping its own delivery (see PLATFORM.md 6.3).
+    #: Rejecting here costs a validation error; not rejecting cost 10 runs.
     adv_interval_ms: float = Field(
-        default=100.0, ge=20.0, le=10240.0,
-        description="Advertising interval. The spec floor for non-connectable "
-                    "undirected advertising is 20 ms.",
+        default=100.0, ge=100.0, le=10240.0,
+        description="Advertising interval. The CYW43455 enforces the Bluetooth "
+                    "4.x floor of 100 ms for non-connectable undirected "
+                    "advertising, not the 20 ms of 5.0.",
     )
     scan_interval_ms: float = Field(default=100.0, ge=2.5, le=10240.0)
     scan_window_ms: float = Field(

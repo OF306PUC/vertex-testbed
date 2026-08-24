@@ -269,21 +269,30 @@ def check(manifest: ExperimentManifest, *, require_strong: bool | None = None) -
     # The advertising interval bounds delivery from above. Advertising rewrites
     # the payload at a fixed cadence, so a neighbour observes at most one distinct
     # value per interval: publishing faster overwrites values before they are ever
-    # radiated. That is undersampling at the transmitter, and it is
-    # indistinguishable from packet loss downstream -- an unflagged manifest here
-    # produces a delivery ratio that looks like a property of the medium and is
-    # not. Warn rather than reject: a capped run is legitimate if the ceiling is
-    # reported. See docs/PLATFORM.md A3.4.
+    # radiated. That is undersampling at the transmitter, indistinguishable from
+    # packet loss downstream. Warn rather than reject: a capped run is legitimate
+    # if the ceiling is reported. See docs/PLATFORM.md 6.3.
+    #
+    # Only for nodes that actually advertise -- a `wifi` node has no radio here,
+    # and warning about its advertising interval is noise that trains the reader
+    # to skip the whole block.
+    ADV_FLOOR_MS = 100.0        # CYW43455 rejects ADV_NONCONN_IND below this
     adv_s = manifest.radio.adv_interval_ms / 1000.0
     for n in manifest.nodes:
+        if n.type == "wifi":
+            continue
         if n.publish_period_s < adv_s:
             ceiling = n.publish_period_s / adv_s
+            want_ms = n.publish_period_s * 1000
+            fix = (f"set radio.adv_interval_ms to {want_ms:g}"
+                   if want_ms >= ADV_FLOOR_MS else
+                   f"{want_ms:g} ms would be needed to lift it, which is below "
+                   f"the {ADV_FLOOR_MS:g} ms controller floor, so this ceiling "
+                   f"cannot be removed -- report it alongside the delivery ratio")
             rep.warnings.append(
                 f"node {n.id}: publish period {n.publish_period_s} s is shorter "
                 f"than the advertising interval {manifest.radio.adv_interval_ms} "
                 f"ms, so BLE delivery for this node is capped at {ceiling:.3f} "
-                f"however good the link is. Set radio.adv_interval_ms to "
-                f"{n.publish_period_s * 1000:g} (tools.make_manifests.radio_for) "
-                f"or report the ceiling alongside the delivery ratio"
+                f"however good the link is; {fix}"
             )
     return rep

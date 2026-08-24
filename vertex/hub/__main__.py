@@ -105,9 +105,15 @@ async def main_async(args: argparse.Namespace) -> int:
             print(f"       BLE delivery would be capped at {ceiling:.3f} regardless "
                   f"of link quality, and the sweep would measure that cap",
                   file=sys.stderr)
-            print(f"       use a manifest whose radio block matches this rate "
-                  f"(tools/make_manifests.py radio_for), or --force to accept and "
-                  f"report the ceiling", file=sys.stderr)
+            if args.publish_period * 1000 >= 100.0:
+                print(f"       use a manifest whose radio block matches this rate "
+                      f"(tools/make_manifests.py radio_for), or --force to accept "
+                      f"and report the ceiling", file=sys.stderr)
+            else:
+                print(f"       {args.publish_period*1000:g} ms would be needed to "
+                      f"lift the ceiling, below the 100 ms controller floor: it "
+                      f"cannot be lifted. --force to accept and report it.",
+                      file=sys.stderr)
             return 2
         # The assignment is dumped into RunMeta.controller, so the override travels
         # with the data and a swept run is self-describing.

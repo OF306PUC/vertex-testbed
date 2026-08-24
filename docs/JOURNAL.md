@@ -1223,6 +1223,49 @@ the summary.
 
 ---
 
+## The advertising floor: 100 ms, not 20 (2026-08-24)
+
+Re-ran p080 and p040 after the HCI socket fix. Different failure, both bridges,
+all 10 runs:
+
+```
+FAIL 21 bridge -- start refused
+     HciError: opcode 0x2006: invalid HCI command parameters
+```
+
+`0x2006` is `LE_Set_Advertising_Parameters`. The only thing that changed between
+p200 (worked) and p080 (failed) is the interval: 80 ms = 128 units, 40 ms = 64.
+
+**The CYW43455 enforces the Bluetooth 4.x floor.** 4.x required
+`Advertising_Interval_Min >= 0x00A0` (100 ms) for `ADV_NONCONN_IND` and
+`ADV_SCAN_IND`; 5.0 removed it. `RadioSpec` had `ge=20.0` with a comment citing the
+5.0 rule — the host was permissive and the controller was not, so a manifest that
+validated cleanly failed at `start` on every repeat.
+
+`scripts/adv_floor.py` binary-searches the real floor per advertising type, so the
+next controller is measured rather than assumed.
+
+**Consequences.**
+
+* `RadioSpec.adv_interval_ms` floor raised to 100 ms — a validation error now,
+  which costs one message instead of ten runs.
+* `radio_for()` **clamps** instead of raising, so the same interval still reaches
+  both agent classes and both sit on the same ceiling. Clamping one side only
+  would recreate the JS platform's defect.
+* p080 and p040 are capped at 0.80 and 0.40 and can never be otherwise on this
+  hardware. They remain worth running — normalised by the ceiling, `obs/ceiling`
+  was consistent to 0.008 across the confounded sweep — but they measure the
+  medium *and* the cap, and must be reported that way.
+* The sweep's honest range is therefore 2.5–10 Hz uncapped, or 2.5–25 Hz with two
+  points normalised. Not the clean airtime sweep intended.
+
+Fourth bug from one sweep, and the second in a validator I wrote: the guard I added
+to prevent the confound advised setting the interval to a value the radio refuses.
+It now names the floor and says the ceiling cannot be lifted. It also fired on
+`wifi` nodes, which have no radio.
+
+---
+
 ---
 
 ## Appendix: superseded plans and closed items

@@ -657,6 +657,33 @@ The two capped points normalise to the same number. The apparent collapse from
 0.997 to 0.331 is the ceiling, not the medium. UDP over the same sweep is flat
 (0.987 → 0.978), because every publish is its own datagram.
 
+#### The ceiling cannot always be lifted: the controller floor
+
+The obvious fix — match `T_adv` to `T_pub` — has a hard limit. **The CYW43455
+rejects `ADV_NONCONN_IND` below 100 ms**, returning *invalid HCI command
+parameters* on opcode `0x2006`. Bluetooth 4.x required
+`Advertising_Interval_Min >= 0x00A0` for non-connectable and scannable undirected
+advertising; 5.0 dropped the restriction; this controller kept it. Measured with
+`scripts/adv_floor.py` after it cost 10 runs of a sweep.
+
+So **no bridge agent can publish faster than 10 Hz without capping its own
+delivery**, whatever the manifest asks for. Above that rate the ceiling is a
+property of the hardware and the only honest response is to report it:
+
+| publish | adv (clamped) | ceiling |
+|---|---|---|
+| 2.5 Hz | 400 ms | 1.00 |
+| 5.0 Hz | 200 ms | 1.00 |
+| 12.5 Hz | 100 ms | **0.80** |
+| 25.0 Hz | 100 ms | **0.40** |
+
+`radio_for()` clamps rather than raising, and the reason is symmetry: the same
+value reaches the nRF and the Pi, so both agent classes sit on the *same* ceiling.
+Letting the nRF advertise at its own floor while the Pi is pinned at 100 ms would
+give the two classes different ceilings — which is exactly the defect §5 identifies
+in the JS platform. A platform limit shared by both classes is a measurement
+constraint; one that falls on a single class is a confound.
+
 **Consequence: no delivery ratio from this platform is interpretable without
 `T_pub / T_adv` stated alongside it.** The sweep that produced this table was
 therefore confounded and is being re-run with the interval pinned to the publish

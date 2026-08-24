@@ -119,25 +119,40 @@ CONTROLLER_FAST = {
 #: measures the advertising interval. Use this helper instead of writing the
 #: block by hand -- it keeps the two values in step, which is precisely what
 #: drifted apart in the original experiments and drew the reviewer's question.
-def radio_for(publish_period_s: float, *, scan_ratio: float = 1.0) -> dict:
-    """RadioSpec that holds the delivery ceiling at 1.0 for this publish rate.
+#: The CYW43455 rejects ADV_NONCONN_IND below this with "invalid HCI command
+#: parameters" (opcode 0x2006). Bluetooth 4.x required it; 5.0 dropped it; this
+#: controller kept it. Measured with `scripts/adv_floor.py`, after it cost 10 runs.
+ADV_FLOOR_MS = 100.0
 
-    `scan_ratio` < 1 shortens the listening window within the interval, which
-    introduces a SECOND ceiling on the receive side; the default keeps the
-    receiver listening continuously.
+
+def radio_for(publish_period_s: float, *, scan_ratio: float = 1.0) -> dict:
+    """RadioSpec matched to a publish rate, clamped at the controller floor.
+
+    Above 10 Hz the ceiling CANNOT be held at 1.0 -- the radio will not advertise
+    that fast. Clamping rather than raising is deliberate, and the reason is
+    symmetry: the same value goes to the nRF and to the Pi, so both agent classes
+    sit on the SAME ceiling. Letting the nRF run at its own floor while the Pi
+    is pinned at 100 ms would give the two classes different ceilings, which is
+    precisely the defect the reviewer identified in the JS platform.
+
+    The caller is expected to report the resulting ceiling, which
+    `ceiling_for()` returns.
     """
-    adv_ms = publish_period_s * 1000.0
-    if not (20.0 <= adv_ms <= 10240.0):
-        raise ValueError(
-            f"publish_period_s={publish_period_s} needs adv_interval_ms={adv_ms}, "
-            f"outside the 20..10240 ms the spec allows for non-connectable "
-            f"undirected advertising. The ceiling cannot be held at 1.0 here; "
-            f"pick a slower publish rate or accept and REPORT the ceiling.")
+    adv_ms = max(ADV_FLOOR_MS, publish_period_s * 1000.0)
+    if adv_ms > 10240.0:
+        raise ValueError(f"publish_period_s={publish_period_s} needs "
+                         f"adv_interval_ms={adv_ms}, above the 10240 ms maximum")
     return {
         "adv_interval_ms": adv_ms,
         "scan_interval_ms": adv_ms,
         "scan_window_ms": round(adv_ms * scan_ratio, 4),
     }
+
+
+def ceiling_for(publish_period_s: float) -> float:
+    """Highest delivery ratio attainable at this publish rate, given the floor."""
+    return min(1.0, publish_period_s * 1000.0 / max(ADV_FLOOR_MS,
+                                                    publish_period_s * 1000.0))
 
 
 def hosts_for(n_per_band: int = 10, publish_period_s: float = 1.0,
@@ -400,14 +415,18 @@ def manifests() -> dict[str, dict]:
             node["neighbors"] = sw_edges[node["id"]]
             node["publish_period_s"] = pub
         duty = 6.0 * (1.0 / pub) * 864e-6 * 100.0
+        ceil = ceiling_for(pub)
+        cap = ("delivery ceiling 1.0" if ceil >= 1.0 else
+               f"delivery CAPPED at {ceil:.2f} -- the radio will not advertise "
+               f"faster than {ADV_FLOOR_MS:g} ms, so this point measures the "
+               f"ceiling as well as the medium and must be normalised by it")
         out[f"sweep-{tag}"] = {
             "name": f"sweep-{tag}",
             "description": (
                 f"Publish-rate sweep at {1/pub:g} Hz ({pub:g} s). Advertising "
-                f"interval pinned to the publish period, so the delivery ceiling "
-                f"is 1.0 and the run measures the medium rather than the "
-                f"transmitter's sampling rate. ~{duty:.2f}% BLE duty over 6 "
-                f"agents. Same seed and topology as the other three points."
+                f"interval matched to the publish period where the controller "
+                f"allows it: {cap}. ~{duty:.2f}% BLE duty over 6 agents. Same "
+                f"seed and topology as the other three points."
             ),
             "seed": 20260818,
             "controller": CONTROLLER_FAST,
