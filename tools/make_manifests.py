@@ -125,23 +125,35 @@ CONTROLLER_FAST = {
 ADV_FLOOR_MS = 100.0
 
 
-def radio_for(publish_period_s: float, *, scan_ratio: float = 1.0) -> dict:
-    """RadioSpec matched to a publish rate, clamped at the controller floor.
+def radio_for(publish_period_s: float, *, adv_interval_ms: float | None = None,
+              scan_ratio: float = 1.0) -> dict:
+    """RadioSpec for a publish rate. Defaults to advertising AS FAST AS ALLOWED.
 
-    Above 10 Hz the ceiling CANNOT be held at 1.0 -- the radio will not advertise
-    that fast. Clamping rather than raising is deliberate, and the reason is
-    symmetry: the same value goes to the nRF and to the Pi, so both agent classes
-    sit on the SAME ceiling. Letting the nRF run at its own floor while the Pi
-    is pinned at 100 ms would give the two classes different ceilings, which is
-    precisely the defect the reviewer identified in the JS platform.
+    The obvious-looking choice, `adv = publish`, is wrong, and the sweep measured
+    how wrong. The delivery ceiling is `min(1, T_pub/T_adv)`, which is 1.0 for
+    *any* `T_adv <= T_pub` -- so matching them buys nothing the floor does not
+    already buy, and it throws away redundancy. The number of advertising events
+    carrying one published value is `k = T_pub / T_adv`, and at `adv = publish`
+    that is 1: a single lost advertisement is a lost value.
 
-    The caller is expected to report the resulting ceiling, which
-    `ceiling_for()` returns.
+    Measured at 5 Hz publish, both configurations at ceiling 1.0:
+
+        adv 200 ms (k=1):  nRF->nRF 0.883   Pi->nRF 0.868   nRF->Pi 0.684
+        adv 100 ms (k=2):  nRF->nRF 0.964   Pi->nRF 0.934   nRF->Pi 0.832
+
+    +0.07 to +0.15 for nothing but advertising twice as often. So the default is
+    the floor, always.
+
+    Pass `adv_interval_ms` explicitly only to vary AIRTIME deliberately -- that is
+    what the sweep manifests do, and they pay k=1 for it. To vary airtime without
+    that cost, vary the number of advertisers instead (PLATFORM.md 8.3).
     """
-    adv_ms = max(ADV_FLOOR_MS, publish_period_s * 1000.0)
+    adv_ms = ADV_FLOOR_MS if adv_interval_ms is None else float(adv_interval_ms)
+    if adv_ms < ADV_FLOOR_MS:
+        raise ValueError(f"adv_interval_ms={adv_ms} is below the {ADV_FLOOR_MS:g} ms "
+                         f"controller floor; see scripts/adv_floor.py")
     if adv_ms > 10240.0:
-        raise ValueError(f"publish_period_s={publish_period_s} needs "
-                         f"adv_interval_ms={adv_ms}, above the 10240 ms maximum")
+        raise ValueError(f"adv_interval_ms={adv_ms} exceeds the 10240 ms maximum")
     return {
         "adv_interval_ms": adv_ms,
         "scan_interval_ms": adv_ms,
@@ -153,6 +165,77 @@ def ceiling_for(publish_period_s: float) -> float:
     """Highest delivery ratio attainable at this publish rate, given the floor."""
     return min(1.0, publish_period_s * 1000.0 / max(ADV_FLOOR_MS,
                                                     publish_period_s * 1000.0))
+
+
+#: 50 Hz dynamics, 10 Hz publish. The configuration the sweep points to.
+#:
+#: 10 Hz publish is the fastest rate that is not undersampled: the advertising
+#: floor is 100 ms (PLATFORM.md 6.3), so 10 Hz is exactly the highest publish rate
+#: with a ceiling of 1.0. Faster publishing cannot be carried -- p080 and p040
+#: both delivered ~8.7 values/s, the same as this, while paying a 0.80 and 0.40
+#: ceiling for it. Publishing at 10 Hz gets the same information rate with no
+#: undersampling and a healthy staleness margin (window 300 ms vs a 114 ms arrival
+#: gap, 2.6x -- so PLATFORM.md 8.4 does not bite here).
+#:
+#: The gain from dt=0.02 is on the LOCAL side, not the network side: the 11 Hz
+#: disturbance gets 4.55 samples per cycle instead of 2.27, which was marginal
+#: against a 12.5 Hz Nyquist limit. The network is already saturated either way.
+#:
+#: Every rate-dependent parameter is rescaled from CONTROLLER_FAST by f = dt_new/
+#: dt_old = 0.5, per the rules in that block:
+#:   alpha, eta    x0.5     -- per-STEP gains, so per-second = alpha/dt must hold
+#:   delta         unchanged -- a threshold in state units, not a rate
+#:   beta, sine    unchanged -- dt-invariant, the step adds disturbance*dt
+#:   noise         xsqrt(2)  -- independent draws accumulate as amp*sqrt(dt)
+#:   period_samples x2       -- still 120 s, or the disturbance repeats mid-run
+#:
+#: The sine is 2 Hz, NOT n6-fast's 11 Hz, and the reason is that there are two
+#: sampling rates here rather than one:
+#:
+#:   dt      = 50 Hz  -> what the local integrator sees   (Nyquist 25 Hz)
+#:   publish = 10 Hz  -> what NEIGHBOURS see              (Nyquist  5 Hz)
+#:
+#: 11 Hz clears the first and fails the second: sampled at the 10 Hz publish rate
+#: it folds to 1 Hz, so every neighbour reads a 1 Hz artefact that no agent is
+#: actually producing. n6-fast did not have this problem because its sine was
+#: chosen against dt alone and its publish rate happened to be 5 Hz.
+#:
+#: 2 Hz clears both -- 25 samples/cycle locally, 5 on the exchanged stream -- and
+#: still avoids the lockstep pathology: 0.04 cycles/step x 5 steps = 0.2 cycles
+#: per publish period, not a whole number, so it cannot sum to zero.
+#:
+#: Choosing a disturbance frequency requires checking it against the SLOWER of the
+#: two rates. The publish rate is the one that reaches the control law.
+CONTROLLER_50HZ = {
+    "name": "finite_time_adaptive",
+    "dt_s": 0.02,                       # 50 Hz
+    "eta": 1e-6,                        # 2e-6 * 0.5
+    "alpha": 0.01,                       # 0.02  * 0.5
+    "delta": 0.01,
+    "disturbance": {
+        "enabled": True,
+        "noise_amplitude": 7.9057e-3,   # 5.5902e-3 * sqrt(2)
+        "noise_offset": 0.5,
+        "beta": 5e-4,
+        "sine_amplitude": 3.75e-3,
+        "sine_frequency_hz": 2.0,       # see the note above: 11 Hz folds to 1 Hz
+        "period_samples": 6000,         # 6000 * 0.02 s = 120 s
+    },
+}
+
+
+#: The two-host family runs on hosts 2 and 3 of the declared list, not 1 and 2.
+#:
+#: Not tidiness -- reproducibility. Every n6 run collected so far (n6-fast x10,
+#: n650 x10, the four sweep points x10) has node 1 on the second declared host and
+#: node 2 on the third. Section 6.4 showed the receiver asymmetry is a property of
+#: a specific board's front-end, so re-running n6 on a different pair is a
+#: different experiment, not a replication.
+#:
+#: Nine agents use all three in order, so `n9-*` has node k of each band on host k
+#: and needs no exception.
+def n6_pair() -> list[str]:
+    return HOSTS[1:3] if len(HOSTS) >= 3 else HOSTS[:2]
 
 
 def hosts_for(n_per_band: int = 10, publish_period_s: float = 1.0,
@@ -225,6 +308,13 @@ def manifests() -> dict[str, dict]:
     should still get its two-host manifests written.
     """
     out: dict[str, dict] = {}
+    if len(HOSTS) < 2:
+        # Every edge in every manifest must cross hosts -- an intra-host link
+        # never reaches the radio -- so one host can build nothing at all.
+        print(f"skip     everything             needs >=2 hosts, "
+              f"{len(HOSTS)} declared")
+        return out
+
 
     # ── n4: two hosts, no nRF. The step before n6. ──────────────────────────
     # Only `wifi` and `bridge`, so **no nRF is needed at all** -- no serial link,
@@ -240,7 +330,7 @@ def manifests() -> dict[str, dict]:
     # 4-cycle: 11(wifi,h0) - 12(wifi,h1) - 21(bri,h0) - 22(bri,h1) - back to 11.
     # Every edge crosses hosts; no ble/wifi pair exists to worry about.
     N4_ORDER = [11, 12, 21, 22]
-    n4 = [n for n in hosts_for(2, hosts=HOSTS[:2]) if n["type"] != "ble"]
+    n4 = [n for n in hosts_for(2, hosts=n6_pair()) if n["type"] != "ble"]
     n4_edges = ring(ids=N4_ORDER)
     for node in n4:
         node["neighbors"] = n4_edges[node["id"]]
@@ -276,7 +366,7 @@ def manifests() -> dict[str, dict]:
     # values, no coincidence with the 5-step publish period, and a non-zero net
     # contribution per window. It is the fastest frequency this step rate carries
     # cleanly -- 2.27 samples per cycle, inside the 12.5 Hz Nyquist limit.
-    n6f = hosts_for(2, hosts=HOSTS[:2])
+    n6f = hosts_for(2, hosts=n6_pair())
     n6f_edges = ring(ids=[1, 2, 21, 12, 11, 22])
     for node in n6f:
         node["neighbors"] = n6f_edges[node["id"]]
@@ -296,6 +386,34 @@ def manifests() -> dict[str, dict]:
         "nodes": n6f,
     }
 
+    # ── n6-50hz: 50 Hz dynamics, 10 Hz publish ──────────────────────────────
+    # Same forced ring as n6-fast, same seed, so it is directly comparable.
+    # Advertising at the floor via radio_for's default, which is also exactly the
+    # publish period here -- the one rate where "match the publish period" and
+    # "advertise as fast as allowed" coincide.
+    n650 = hosts_for(2, hosts=n6_pair())
+    n650_edges = ring(ids=[1, 2, 21, 12, 11, 22])
+    for node in n650:
+        node["neighbors"] = n650_edges[node["id"]]
+        node["publish_period_s"] = 0.1
+    out["n6-50hz"] = {
+        "name": "n6-50hz",
+        "description": (
+            "6 agents, 50 Hz dynamics, 10 Hz publish. 10 Hz is the fastest "
+            "publish rate the 100 ms advertising floor can carry without "
+            "undersampling, so this is the predicted optimum: the same ~8.7 "
+            "delivered values/s as the 12.5 and 25 Hz sweep points, but at a "
+            "ceiling of 1.0 and with a 2.6x staleness margin. dt=0.02 resolves "
+            "the 2 Hz disturbance at 25 samples/cycle locally and 5 on the "
+            "exchanged stream, so it is unaliased at both rates. Gains "
+            "rescaled from n6-fast by dt ratio 0.5; same seed and topology."
+        ),
+        "seed": 20260818,
+        "controller": CONTROLLER_50HZ,
+        "radio": radio_for(0.1),
+        "nodes": n650,
+    }
+
     # ── n6: two hosts, six agents. The step before n9. ──────────────────────
     # At this size the topology is FORCED, not chosen. Every edge must cross hosts
     # (an intra-host link never reaches the radio) and must not join `ble` to
@@ -312,7 +430,7 @@ def manifests() -> dict[str, dict]:
     # The seventh legal edge, 21-22, is the only densification available; adding it
     # takes the bridges to degree 3.
     N6_ORDER = [1, 2, 21, 12, 11, 22]
-    n6 = hosts_for(2, hosts=HOSTS[:2])
+    n6 = hosts_for(2, hosts=n6_pair())
     n6_edges = ring(ids=N6_ORDER)
     for node in n6:
         node["neighbors"] = n6_edges[node["id"]]
@@ -381,23 +499,78 @@ def manifests() -> dict[str, dict]:
             "nodes": n9,
         }
 
-        clustered = hosts_for()
-        for n in clustered:
-            n["neighbors"] = CLUSTER_EDGES[n["id"]]
-            if n["id"] in CLUSTER_DISABLED:
-                n["enabled"] = False
-        out["n30-clusters"] = {
-            "name": "n30-clusters",
+        # ── n9-50hz: the validated rate configuration at 9 agents ───────────
+        # Same controller as n6-50hz, so the two are directly comparable, and the
+        # same forced ordering. Degree 2, inside the firmware's 4-neighbour limit.
+        #
+        # This doubles as the airtime experiment of section 8.3: advertisers go
+        # from 4 to 6, so BLE duty goes 3.46% -> 5.18% at 1.5x with every
+        # per-node parameter held. Note which comparisons are clean:
+        #
+        #   DELIVERY is a per-link property and IS comparable, so a drop from
+        #   n6-50hz's 0.877 / 0.857 / 0.663 would be an airtime effect.
+        #
+        #   CONVERGENCE is NOT: lambda_2 falls 1.0 -> 0.4679, so ~2.1x slower
+        #   (about 28 s) is expected from the graph alone. Comparing raw
+        #   convergence would mix airtime with topology.
+        n950 = hosts_for(3, hosts=FIRST_RUN_HOSTS)
+        n950_edges = ring(ids=N9_ORDER)
+        for node in n950:
+            node["neighbors"] = n950_edges[node["id"]]
+            node["publish_period_s"] = 0.1
+        out["n9-50hz"] = {
+            "name": "n9-50hz",
             "description": (
-                "30 agents in clustered groups per transport, joined through bridge "
-                "agents. Agents 21 and 30 are the BLE/Wi-Fi cut-points and start "
-                "disabled, so the clusters coordinate only through the remaining "
-                "bridges. Edges are declared because this graph is not regular."
+                "9 agents on 3 hosts at n6-50hz's rates: 50 Hz dynamics, 10 Hz "
+                "publish, 2 Hz sine, advertising at the 100 ms floor. Directly "
+                "comparable to n6-50hz on per-link DELIVERY, which makes it the "
+                "airtime test -- 6 advertisers instead of 4, so 5.18% BLE duty "
+                "against 3.46%, every other parameter held. NOT comparable on "
+                "convergence: lambda_2 is 0.4679 against 1.0, so roughly 2.1x "
+                "slower is expected from topology alone."
             ),
             "seed": 20260818,
-            "controller": CONTROLLER,
-            "nodes": clustered,
+            "controller": CONTROLLER_50HZ,
+            "radio": radio_for(0.1),
+            "nodes": n950,
         }
+
+        # ── n9-k2 / n9-k2-dupfilter: does duplicate filtering eat the retry? ──
+        # 10 Hz advertising against a 5 Hz publish gives k = 2: every value goes
+        # out twice, with identical bytes and identical address. That is a
+        # duplicate by any definition, so a filtering receiver may drop exactly
+        # the retry that redundancy depends on.
+        #
+        # The nRF scanner filters in firmware and cannot be changed without a
+        # reflash; the Pi scanner is configurable, so the Pi is the side that
+        # gets A/B'd. The pair below differ ONLY in radio.filter_duplicates.
+        #
+        # Prediction: if filtering suppresses retries, nRF->Pi delivery under the
+        # filtered variant falls back toward its k=1 value (0.684 measured at 6
+        # agents). If it does not move, the shortfall seen in PLATFORM.md 6.6 is
+        # correlated loss and this asymmetry is harmless.
+        for tag, dup in (("n9-k2", False), ("n9-k2-dupfilter", True)):
+            nk = hosts_for(3, hosts=FIRST_RUN_HOSTS)
+            nk_edges = ring(ids=N9_ORDER)
+            for node in nk:
+                node["neighbors"] = nk_edges[node["id"]]
+                node["publish_period_s"] = 0.2      # 5 Hz against 10 Hz adv -> k=2
+            out[tag] = {
+                "name": tag,
+                "description": (
+                    f"9 agents, 50 Hz dynamics, 5 Hz publish, advertising at the "
+                    f"100 ms floor: k = 2, so every value is transmitted twice. "
+                    f"Pi-side duplicate filtering {'ON' if dup else 'OFF'}. Paired "
+                    f"with {'n9-k2' if dup else 'n9-k2-dupfilter'}; the two differ "
+                    f"in that field alone, so the difference between them is the "
+                    f"cost of filtering a retry."
+                ),
+                "seed": 20260818,
+                "controller": CONTROLLER_50HZ,
+                "radio": {**radio_for(0.1), "filter_duplicates": dup},
+                "nodes": nk,
+            }
+
 
     # ── publish-rate sweep: four points, ceiling pinned at 1.0 ──────────────
     # The point of the sweep is airtime, so the advertising interval MUST track
@@ -409,12 +582,16 @@ def manifests() -> dict[str, dict]:
     # initial conditions are shared and only the rate differs.
     for tag, pub in (("p400", 0.400), ("p200", 0.200),
                      ("p080", 0.080), ("p040", 0.040)):
-        sw = hosts_for(2, hosts=HOSTS[:2])
+        sw = hosts_for(2, hosts=n6_pair())
         sw_edges = ring(ids=[1, 2, 21, 12, 11, 22])
         for node in sw:
             node["neighbors"] = sw_edges[node["id"]]
             node["publish_period_s"] = pub
-        duty = 6.0 * (1.0 / pub) * 864e-6 * 100.0
+        # Advertisers only. `wifi` agents have no radio, so counting all six
+        # overstated BLE duty by 1.5x in every generated description.
+        n_adv = sum(1 for nd in sw if nd["type"] in ("ble", "bridge"))
+        adv_hz = 1000.0 / max(ADV_FLOOR_MS, pub * 1000.0)
+        duty = n_adv * adv_hz * 864e-6 * 100.0
         ceil = ceiling_for(pub)
         cap = ("delivery ceiling 1.0" if ceil >= 1.0 else
                f"delivery CAPPED at {ceil:.2f} -- the radio will not advertise "
@@ -425,12 +602,17 @@ def manifests() -> dict[str, dict]:
             "description": (
                 f"Publish-rate sweep at {1/pub:g} Hz ({pub:g} s). Advertising "
                 f"interval matched to the publish period where the controller "
-                f"allows it: {cap}. ~{duty:.2f}% BLE duty over 6 agents. Same "
+                f"allows it: {cap}. ~{duty:.2f}% BLE duty over {n_adv} advertisers "
+                f"({adv_hz:g} Hz each). Same "
                 f"seed and topology as the other three points."
             ),
             "seed": 20260818,
             "controller": CONTROLLER_FAST,
-            "radio": radio_for(pub),
+            # Explicit, not the default: this sweep varies airtime by varying
+            # the advertising interval, which costs k=1 redundancy at the two
+            # slow points. That is the trade the sweep was for. New manifests
+            # should take radio_for's default (the floor) instead.
+            "radio": radio_for(pub, adv_interval_ms=max(ADV_FLOOR_MS, pub * 1000)),
             "nodes": sw,
         }
 
@@ -439,6 +621,24 @@ def manifests() -> dict[str, dict]:
         print(f"skip     n30-*                    need 10 hosts, "
               f"{len(HOSTS)} declared")
         return out          # last block in the function, so this one is safe
+
+    clustered = hosts_for()
+    for n in clustered:
+        n["neighbors"] = CLUSTER_EDGES[n["id"]]
+        if n["id"] in CLUSTER_DISABLED:
+            n["enabled"] = False
+    out["n30-clusters"] = {
+        "name": "n30-clusters",
+        "description": (
+            "30 agents in clustered groups per transport, joined through bridge "
+            "agents. Agents 21 and 30 are the BLE/Wi-Fi cut-points and start "
+            "disabled, so the clusters coordinate only through the remaining "
+            "bridges. Edges are declared because this graph is not regular."
+        ),
+        "seed": 20260818,
+        "controller": CONTROLLER,
+        "nodes": clustered,
+    }
 
     # Regular topologies over BAND_ORDER rather than 1..30.
     #
@@ -473,6 +673,7 @@ def manifests() -> dict[str, dict]:
             "structure": {"generator": gen, "params": params},
             "nodes": hosts_for(),
         }
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:

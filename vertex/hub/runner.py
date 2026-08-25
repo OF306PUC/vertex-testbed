@@ -176,6 +176,19 @@ class ExperimentRunner:
         except ControlError as exc:
             out.errors.append(f"start: {exc}")
 
+    async def _clear_stale(self, node_id: int) -> None:
+        """Best-effort `stop`, recording nothing.
+
+        Deliberately not `_stop_one`: that writes `stopped`, `samples` and any
+        error into the run's outcome, and a pre-run clean has no business
+        appearing there. Failures are ignored -- if the agent is unreachable,
+        `configure` will say so a moment later with a better message.
+        """
+        try:
+            await self._client(node_id).stop()
+        except Exception:
+            pass
+
     async def _stop_one(self, node_id: int, out: NodeOutcome) -> None:
         try:
             data = await self._client(node_id).stop()
@@ -227,6 +240,15 @@ class ExperimentRunner:
             host, port = self.endpoint(nid)
             report.nodes[nid] = NodeOutcome(
                 node_id=nid, node_type=str(node.type), address=f"{host}:{port}")
+
+        # 0. Clear any stale run state first. An agent left `running` by an
+        #    interrupted sweep refuses `start` with "already running <old name>",
+        #    and because the refusal is per node it silently halves the fleet:
+        #    measured as sweep2-p080-r0, where the three agents on one host were
+        #    still holding a previous series' run and only 3/6 nodes started.
+        #    `stop` on an idle agent is a no-op, so this is free.
+        await asyncio.gather(*(self._clear_stale(i) for i in ids),
+                             return_exceptions=True)
 
         # 1. configure -- a barrier. A partially configured fleet is a different
         #    experiment, not a shorter one.

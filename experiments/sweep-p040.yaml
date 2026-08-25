@@ -2,8 +2,8 @@
 name: sweep-p040
 description: 'Publish-rate sweep at 25 Hz (0.04 s). Advertising interval matched to the publish period
   where the controller allows it: delivery CAPPED at 0.40 -- the radio will not advertise faster than
-  100 ms, so this point measures the ceiling as well as the medium and must be normalised by it. ~12.96%
-  BLE duty over 6 agents. Same seed and topology as the other three points.'
+  100 ms, so this point measures the ceiling as well as the medium and must be normalised by it. ~3.46%
+  BLE duty over 4 advertisers (10 Hz each). Same seed and topology as the other three points.'
 seed: 20260818
 controller:
   name: finite_time_adaptive
