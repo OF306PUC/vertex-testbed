@@ -33,7 +33,8 @@ from ..radio import (AD_FLAGS, AD_MANUFACTURER, MAX_AD_LEN, build_ad, element,
 from ..radio.hci import (EVT_COMMAND_COMPLETE, EVT_COMMAND_STATUS, EVT_LE_META,
                          ADV_NONCONN_IND, CHANNELS_ALL, HciError, HciSocket,
                          HciStatus, cmd_le_set_adv_data, cmd_le_set_adv_enable,
-                         cmd_le_set_adv_parameters, cmd_le_set_scan_enable,
+                         cmd_le_read_adv_tx_power, cmd_le_set_adv_parameters,
+                         cmd_le_set_scan_enable,
                          cmd_le_set_scan_parameters, cmd_reset, ms_to_units,
                          parse_adv_reports, parse_command_complete,
                          parse_command_status, parse_event)
@@ -109,6 +110,7 @@ class BleTransport(Transport):
         scan_window_ms: float = 100.0,
         channel_map: int = CHANNELS_ALL,
         passive_scan: bool = True,
+        filter_duplicates: bool = False,
         company_id: int = COMPANY_ID,
         command_timeout: float = 0.25,
         sock=None,
@@ -121,9 +123,13 @@ class BleTransport(Transport):
         self.scan_window_ms = scan_window_ms
         self.channel_map = channel_map
         self.passive_scan = passive_scan
+        self.filter_duplicates = filter_duplicates
         self.company_id = company_id
         self.command_timeout = command_timeout
         self.stats = BleStats()
+        #: dBm the controller reports for advertising, filled in at start().
+        #: None until then, and None if the controller refuses the read.
+        self.adv_tx_power_dbm: int | None = None
 
         self._sock = sock
         self._owns_sock = False
@@ -149,6 +155,9 @@ class BleTransport(Transport):
             "scan_duty_cycle": self.scan_window_ms / self.scan_interval_ms,
             "channel_map": self.channel_map,
             "scan_type": "passive" if self.passive_scan else "active",
+            "adv_tx_power_dbm": self.adv_tx_power_dbm,
+            "filter_duplicates": self.filter_duplicates,
+
             "company_id": self.company_id,
         }
 
@@ -166,6 +175,17 @@ class BleTransport(Transport):
             self._owns_sock = True
             # Only on a socket we opened: an injected one may already be configured.
             self._sock.command(cmd_reset())
+
+        # Record what this controller actually radiates. Cannot be set for legacy
+        # advertising through standard HCI, so measuring it is the only way the
+        # nRF/Pi power asymmetry reaches the run metadata at all.
+        try:
+            rp = self._sock.command(cmd_le_read_adv_tx_power())
+            if rp.params:
+                v = rp.params[0]
+                self.adv_tx_power_dbm = v - 256 if v > 127 else v
+        except Exception:
+            self.adv_tx_power_dbm = None
 
         adv_units = ms_to_units(self.adv_interval_ms)
         self._sock.command(cmd_le_set_adv_enable(False),
@@ -199,7 +219,8 @@ class BleTransport(Transport):
 
         # Duplicate filtering OFF. A suppressed duplicate is indistinguishable
         # from a lost packet, which is the number being measured.
-        self._sock.command(cmd_le_set_scan_enable(True, filter_duplicates=False))
+        self._sock.command(cmd_le_set_scan_enable(
+            True, filter_duplicates=self.filter_duplicates))
         self._scanning = True
 
     async def stop(self) -> None:

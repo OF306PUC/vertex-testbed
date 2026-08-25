@@ -157,7 +157,8 @@ class AgentService:
             scan_interval_ms=float(r.get("scan_interval_ms", 100.0)),
             scan_window_ms=float(r.get("scan_window_ms", 100.0)),
             channel_map=int(r.get("channel_map", 0x07)),
-            passive_scan=bool(r.get("passive_scan", True)))
+            passive_scan=bool(r.get("passive_scan", True)),
+            filter_duplicates=bool(r.get("filter_duplicates", False)))
 
     def _broadcast_target(self) -> tuple[str, str]:
         """(address, how it was determined). Never guesses silently.

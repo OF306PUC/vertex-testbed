@@ -156,6 +156,22 @@ class RadioSpec(BaseModel):
                     "MHz. Restricting it is how a run steers clear of the WLAN "
                     "channel in use; 0x07 uses all three.",
     )
+    #: Suppress repeated advertising reports in the controller, below the host.
+    #:
+    #: Designed for device DISCOVERY, where an advertiser repeating every
+    #: interval should be reported once. Here an advertisement is a data packet
+    #: whose payload changes every publish, so the feature is being applied to a
+    #: channel it was not designed for. It matters most when redundancy is in
+    #: use: at k = T_pub/T_adv > 1 the same value is advertised more than once
+    #: with identical bytes, and a filtering receiver may drop exactly the retry
+    #: that redundancy depends on (PLATFORM.md 6.6 measures the retry as worth
+    #: +0.07 to +0.15 delivery).
+    #:
+    #: Default False, which is what every run to date used on the Pi. The nRF
+    #: scanner has it ON in firmware, so the two ends differ; this field exists
+    #: to A/B the Pi side without reflashing.
+    filter_duplicates: bool = False
+
     passive_scan: bool = Field(
         default=True,
         description="Passive scanning never transmits a scan request, so it adds "

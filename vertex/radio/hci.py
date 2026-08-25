@@ -62,6 +62,7 @@ def opcode(ogf: int, ocf: int) -> int:
 class OCF:
     RESET = 0x0003
     LE_SET_ADV_PARAMETERS = 0x0006
+    LE_READ_ADV_TX_POWER = 0x0007
     LE_SET_ADV_DATA = 0x0008
     LE_SET_ADV_ENABLE = 0x000A
     LE_SET_SCAN_PARAMETERS = 0x000B
@@ -70,6 +71,7 @@ class OCF:
 
 OP_RESET = opcode(OGF_HOST_CTL, OCF.RESET)
 OP_LE_SET_ADV_PARAMETERS = opcode(OGF_LE_CTL, OCF.LE_SET_ADV_PARAMETERS)
+OP_LE_READ_ADV_TX_POWER = opcode(OGF_LE_CTL, OCF.LE_READ_ADV_TX_POWER)
 OP_LE_SET_ADV_DATA = opcode(OGF_LE_CTL, OCF.LE_SET_ADV_DATA)
 OP_LE_SET_ADV_ENABLE = opcode(OGF_LE_CTL, OCF.LE_SET_ADV_ENABLE)
 OP_LE_SET_SCAN_PARAMETERS = opcode(OGF_LE_CTL, OCF.LE_SET_SCAN_PARAMETERS)
@@ -135,6 +137,18 @@ def _cmd(op: int, params: bytes = b"") -> bytes:
 
 def cmd_reset() -> bytes:
     return _cmd(OP_RESET)
+
+
+def cmd_le_read_adv_tx_power() -> bytes:
+    """LE Read Advertising Physical Channel Tx Power. No parameters.
+
+    Read, not write: the Bluetooth spec provides no way to *set* transmit power
+    for legacy advertising -- that is a vendor command, and the CYW43455's is not
+    public. The nRF side does set it (Nordic VS command, +8 dBm requested), so the
+    two ends are asymmetric by construction and the only thing available is to
+    measure the difference rather than remove it. Returns dBm as a signed byte.
+    """
+    return _cmd(OP_LE_READ_ADV_TX_POWER)
 
 
 def cmd_le_set_adv_parameters(*, interval_min: int, interval_max: int,
