@@ -1,0 +1,30 @@
+\item The phrase ``larger steady-state error, particularly during the early
+stages'' seems contradictory, since early-stage errors are typically transient
+rather than steady-state. Please clarify whether ``transient error'' was intended
+or if the statement refers to a different metric.
+
+\textbf{Response:} The reviewer is correct: transient error was intended, and the
+sentence has been corrected in the revised manuscript to read ``larger transient
+error during the initial convergence phase''.
+
+We take the opportunity to state why the effect is necessarily transient, which
+the original phrasing obscured. The coupling term of the protocol is a signed
+square root of the disagreement,
+\[
+  g_i \;=\; \alpha \sum_{j \in \mathcal{N}_i}
+            -\operatorname{sign}(z_i - z_j)\sqrt{|z_i - z_j|},
+\]
+so a lost packet withholds a correction whose magnitude is
+$\alpha\sqrt{|z_i - z_j|}$ and therefore scales with the prevailing disagreement.
+With $\alpha = 0.02$, a single lost update costs $6.3\times10^{-2}$ in state units
+when neighbours differ by $10$, but only $2.0\times10^{-3}$ when they differ by
+$10^{-2}$. An identical packet-loss rate consequently produces a large error
+contribution during the initial convergence phase and a vanishing one as the
+agents approach agreement.
+
+This is why the asymmetry between purely BLE links and bridge-to-BLE links is
+visible early and not at steady state: the two link classes differ in loss rate,
+but the cost of a loss decays with the disagreement it would have corrected. The
+steady-state disagreement is instead set by the discretisation of the
+finite-time term, which bounds the residual at $(\alpha d)^2$ for a node of
+degree $d$, independent of the transport.

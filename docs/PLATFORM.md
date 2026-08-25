@@ -465,7 +465,7 @@ nothing.
 
 Three consequences worth stating plainly.
 
-**It is structural, not congestion.** It is present at 2.6% duty cycle with no
+**It is structural, not congestion.** It is present at low duty with no
 contention to speak of. Any claim that the Wi-Fi path degrades under heavier
 traffic must be made *on top of* a 153.6 ms offset that has nothing to do with
 traffic — and if an earlier analysis attributed this to congestion, it was
@@ -733,7 +733,278 @@ every point, while `nRF→Pi` sits below both and the gap widens 0.03 → 0.23. 
 claim that falling delivery under load is "coexistence" needs §8.2's experiment,
 because `nRF→nRF` — no CYW43455 at either end — fell just as far.
 
-### 6.5 Open anomalies
+### 6.5 The completed publish-rate sweep: airtime is not the variable
+
+*(2026-08-25. Four points x 10 repeats x 120 s, 39 of 40 runs usable, identical
+initial conditions throughout. Advertising interval matched to the publish period
+where the controller allowed it, clamped at the 100 ms floor otherwise.)*
+
+| point | publish | adv | BLE duty | ceiling | conv (s) | nRF→nRF | Pi→nRF | nRF→Pi | UDP |
+|---|---|---|---|---|---|---|---|---|---|
+| p400 | 2.5 Hz | 400 ms | 0.86% | 1.00 | 16.50 ± 0.33 | 0.885 | 0.854 | 0.678 | 0.991 |
+| p200 | 5 Hz | 200 ms | 1.73% | 1.00 | 14.98 ± 0.75 | 0.883 | 0.868 | 0.684 | 0.990 |
+| p080 | 12.5 Hz | 100 ms | 3.46% | 0.80 | **13.27 ± 0.14** | 0.703 | 0.678 | 0.518 | 0.973 |
+| p040 | 25 Hz | 100 ms | 3.46% | 0.40 | 15.80 ± 0.52 | 0.347 | 0.344 | 0.256 | 0.972 |
+
+#### Normalised by the ceiling, delivery is flat
+
+| link | p400 | p200 | p080 | p040 | spread |
+|---|---|---|---|---|---|
+| nRF→nRF | 0.885 | 0.883 | 0.879 | 0.868 | **0.017** |
+| Pi→nRF | 0.854 | 0.868 | 0.848 | 0.860 | **0.020** |
+| nRF→Pi | 0.678 | 0.684 | 0.648 | 0.640 | 0.044 |
+
+Across a **4x airtime range**, per-transmission success is constant to within 2%.
+**BLE loss on this testbed is not contention in this range.** It is a fixed
+per-transmission failure probability — 0.12 nRF→nRF, 0.15 Pi→nRF, 0.34 nRF→Pi —
+multiplied by how many chances each value gets.
+
+p080 and p040 make that a controlled result rather than an inference: identical
+airtime (3.46%, both at the floor), different ceilings, and normalised delivery
+agrees to 0.011. The ceiling model holds with airtime held fixed.
+
+#### Matching the advertising interval to the publish period was the wrong advice
+
+Earlier guidance here said to pin `T_adv = T_pub` so the ceiling sits at 1.0. That
+is necessary but badly incomplete: the ceiling is 1.0 for **any** `T_adv <= T_pub`,
+and the number of advertising events carrying one published value is
+`k = T_pub / T_adv`. Matching them sets `k = 1`, the minimum, so a single lost
+advertisement is a lost value.
+
+Measured at 5 Hz publish, both configurations at ceiling 1.0:
+
+| | nRF→nRF | Pi→nRF | nRF→Pi |
+|---|---|---|---|
+| `adv` 200 ms, k=1 (`sweep-p200`) | 0.883 | 0.868 | 0.684 |
+| `adv` 100 ms, k=2 (`n6-fast`) | 0.964 | 0.934 | 0.832 |
+| gain | +0.081 | +0.066 | **+0.148** |
+
+For nothing but advertising twice as often. Independent losses would predict 0.986
+/ 0.983 / 0.900; the observed values are all lower, so losses are **correlated** —
+a second transmission is worth less than an independent retry, and still worth a
+lot.
+
+**Rule: advertise as fast as the controller allows, always.** `radio_for()` now
+defaults to the 100 ms floor, and an explicit interval is required to vary airtime
+deliberately (the sweep manifests do that, and pay `k = 1` for it).
+
+#### Convergence has an optimum, and it is not the fastest publish rate
+
+16.50 → 14.98 → **13.27** → 15.80 s. Faster publishing helps until it does not.
+
+p080 and p040 deliver the *same* information rate — 8.79 and 8.67 distinct values
+per second, both saturated at `adv_rate x p_success` = 10 x 0.87 = 8.7 — yet
+convergence differs by 2.5 s. The cause is the staleness window:
+`max_neighbor_age_s` defaults to `3 x publish_period`, so it shrinks with the
+publish rate while the achievable arrival gap does not.
+
+| point | window (3 x T_pub) | mean gap between delivered values | window / gap |
+|---|---|---|---|
+| p400 | 1.200 s | 452 ms | 2.65x |
+| p200 | 0.600 s | 226 ms | 2.65x |
+| p080 | 0.240 s | 114 ms | 2.11x |
+| p040 | **0.120 s** | 115 ms | **1.04x** |
+
+At p040 the window is barely one arrival gap, so a large share of values are
+already stale when they are used, and the controller discards data it did
+receive. It starves itself.
+
+**This is a coupling bug, not a radio result.** The staleness window is sized to
+what the agent *intends* to publish; it must be sized to what the medium can
+*carry*, which is bounded by the advertising rate. A floor of
+`3 x max(T_pub, T_adv)` would fix it. Not changed yet: it alters effective
+coupling and therefore invalidates comparison with everything collected so far —
+see §8.4.
+
+### 6.6 `n6-50hz` confirms the model, and BLE latency turns out to be `T_adv/2`
+
+*(2026-08-25. 50 Hz dynamics, 10 Hz publish, 2 Hz sine, 10 repeats, 10/10 usable.)*
+
+Predicted from §6.5 before running: convergence at or slightly better than p080's
+13.27 s, and delivery near 0.88 / 0.85 / 0.66 because `k = 1` at this
+configuration. Measured:
+
+| | predicted | measured |
+|---|---|---|
+| convergence | ≤ 13.27 s | **13.24 ± 0.21 s** |
+| nRF→nRF | ~0.88 | **0.877 ± 0.010** |
+| Pi→nRF | ~0.85 | **0.857 ± 0.014** |
+| nRF→Pi | ~0.66 | **0.663 ± 0.020** |
+| UDP | — | 0.984 ± 0.006 at 177 ± 3 ms |
+
+Delivery predicted to within 0.007 on all three BLE classes. The per-transmission
+success model of §6.5 — a fixed failure probability times the number of chances —
+is now a predictive model, not a fit.
+
+Convergence equals p080's while carrying a **ceiling of 1.0 instead of 0.80**, which
+was the point of the configuration: the same information rate with no undersampling
+and a 2.6x staleness margin.
+
+#### BLE one-way delay is `T_adv/2` plus 6 ms, and at `k < 1` it is selection-biased
+
+`nRF→Pi` delay fell from `n6-fast`'s 107 ms to 56 ms. Not an improvement in the
+radio — a different point on a simple law. A published value waits for the next
+advertising event, so:
+
+* `k >= 1`: the wait is uniform on `[0, T_adv]` → mean `T_adv/2`.
+* `k < 1`: only some values are ever advertised, and they are precisely the ones
+  published shortly *before* an event → mean `T_adv * k / 2`.
+
+| config | `T_adv` | k | predicted | measured | residual |
+|---|---|---|---|---|---|
+| sweep-p400 | 400 | 1.00 | 200 ms | 205 ms | +5 |
+| sweep-p200 | 200 | 1.00 | 100 ms | 106 ms | +6 |
+| n6-50hz | 100 | 1.00 | 50 ms | 56 ms | +6 |
+| sweep-p080 | 100 | 0.80 | 40 ms | 46 ms | +6 |
+| sweep-p040 | 100 | 0.40 | 20 ms | 26 ms | +6 |
+
+A constant +6 ms offset across a 10x range of predicted delay — fixed processing
+cost, not model error.
+
+**So p040's 26 ms is survivorship bias, not low latency.** At `k < 1` the delivered
+values are exactly the ones that waited least; the 74% that waited longer were
+overwritten and never measured. Any table quoting delay for a `k < 1` configuration
+must say so, or it reports the fastest quarter of the traffic as if it were all of
+it. `n6-fast`'s 107 ms is the opposite bias: at `k = 2` some values arrive only on
+the retry, which pushes the mean above `T_adv/2`.
+
+This also gives the platform a genuine **latency/reliability knob**: `k` trades them
+against each other. `k = 1` at the 100 ms floor is the minimum-latency configuration
+that is not undersampled (56 ms, delivery 0.66 on the weak link); `k = 2` buys
++0.17 delivery for +51 ms.
+
+### 6.7 Nine agents: a real airtime effect, mostly hidden behind a worse node
+
+*(2026-08-25. 9 agents on 3 hosts, `n9-50hz`, 10 repeats, 10/10 complete, one
+excluded from statistics — see below.)*
+
+Two predictions were recorded before the run. One held, one was wrong.
+
+| | predicted | measured |
+|---|---|---|
+| convergence | ~28 s (lambda_2 scaling) | **24.07 ± 0.26 s** |
+| per-link delivery | unchanged from `n6-50hz` | **fell** |
+
+Convergence scaled by 1.82x against the 2.14x that lambda_2 implies. Expected: the
+lambda_2 ratio governs the asymptotic *linear* rate, and this law's coupling is a
+signed square root, so it is not the right scaling — useful as a sanity bound, not
+as a prediction.
+
+#### The airtime effect is real, and smaller than the aggregate suggests
+
+Aggregate delivery fell on every BLE class (`nRF→nRF` 0.877 → 0.797,
+`nRF→Pi` 0.663 → 0.606). Reading that as a 1.5x-airtime effect would be wrong:
+`n6-*` is pinned to pi2+pi4 while `n9-*` uses all three hosts in order, so the two
+experiments do not share their physical links, and **pi1 is a materially worse
+node**. Within `n9-50hz` alone, comparing host pairs:
+
+| class | pi2-pi4 | pi1-pi2 | pi1 penalty |
+|---|---|---|---|
+| nRF→Pi | 0.636 | 0.574 | 0.062 |
+| Pi→nRF | 0.812 | 0.688 | 0.124 |
+
+The `pi2-pi4` pair exists in both experiments, so it is the only like-for-like
+comparison — same boards, same geometry, same `k = 1`, only advertiser count
+differing:
+
+| class | n6 (4 adv, 3.46%) | n9 (6 adv, 5.18%) | delta | Welch t |
+|---|---|---|---|---|
+| nRF→Pi | 0.663 ± 0.020 | 0.636 ± 0.019 | **−0.028** | **3.62** |
+| Pi→nRF | 0.857 ± 0.014 | 0.812 ± 0.078 | −0.045 | 1.80 |
+
+So: **the first genuine contention effect this platform has measured** — but
+−0.028, not the −0.057 the aggregate implies. Roughly half the apparent drop is a
+property of one Raspberry Pi.
+
+This qualifies §6.5 rather than overturning it. That section found delivery flat
+across a 4x airtime range, but produced that range by varying the advertising
+interval, which moves `k` at the same time; normalising by the ceiling removed
+both. Here `k` is fixed and only the advertiser count changes, and a 1.5x rise in
+duty costs about 4% of delivery on the weakest link class. The correct statement is
+now "airtime is a weak variable below ~5% duty", not "airtime is not the variable".
+
+**Do not compare `n6-*` and `n9-*` aggregates without conditioning on host pair.**
+The host-ordering convention (§7.4) puts node 1 on pi2 in the two-host manifests and
+on pi1 in the three-host ones by design, so class means are not comparable across
+them.
+
+#### Fourth single-link collapse
+
+`n950-r1`: link `21→2` at 0.103 against ~0.57 for its peers, convergence 40.20 s
+against 24.07 ± 0.26. Excluded above. Occurrences to date: `n6-fast` r6 and r9,
+`sweep-p200` r1, `n950` r1 — four in about ninety runs, ~4%. Two of the four are
+the **second** run of a series, which is a thin pattern but the only one there is.
+Still undiagnosed (§6.8), and it now inflates `Pi→nRF`'s sd to 0.088 against 0.018
+for its neighbours.
+
+### 6.8 Two conditions on `alpha`, and only one of them was being applied
+
+`alpha` and `eta` appear in the update with **no `dt` factor**:
+
+```python
+gi        = alpha * consensus_term          # no dt
+state    += gi - vartheta * sign(sigma)     # no dt
+vartheta += eta * dvtheta                   # no dt
+nu        = disturbance(t) * dt              # dt IS here
+```
+
+So they are per-*step* gains, and the per-second rates are `alpha/dt` and `eta/dt`.
+
+**Condition 1 — dt invariance.** To keep the same continuous-time system when `dt`
+changes, every gain lacking a `dt` must scale linearly with it:
+
+    alpha / dt = const        eta / dt = const
+
+That is the rescaling applied to `CONTROLLER_50HZ`: `dt` 0.04 → 0.02 halves both,
+holding `alpha/dt` at 0.5 /s and `eta/dt` at 5e-5 /s. `delta` is a threshold in
+state units and does not scale; `beta` and `sine_amplitude` are dt-invariant
+because the disturbance already carries its own `dt`; `noise_amplitude` scales as
+`1/sqrt(dt)` because independent per-step draws accumulate as `amp*sqrt(dt)`.
+
+**Condition 2 — the discretisation floor.** This one was NOT being applied, and it
+bounds how large `alpha` may be. The coupling is a signed square root, not a
+Laplacian:
+
+    total = sum_j  -sign(z_i - z_j) * sqrt(|z_i - z_j|)
+
+so the gain *relative to the error* grows without bound as the error goes to zero.
+A fixed step therefore overshoots below some error. For a node of degree `d`, the
+step reduces `|e|` only while
+
+    alpha * d < sqrt(|e|)      i.e.      |e| > (alpha * d)^2
+
+Below that the iteration chatters in a band of width `(alpha*d)^2`. **The consensus
+error floor is not zero, it is quadratic in `alpha`.** Verified numerically: at
+degree 1 the residual settles at exactly `alpha^2` (ratio 1.00 across
+`alpha` = 0.1, 0.02, 0.01).
+
+Against the collected data, degree 2:
+
+| configuration | alpha | floor `(alpha*d)^2` | measured spread after 100 s |
+|---|---|---|---|
+| `n6-fast`, sweep | 0.02 | 1.6e-3 | 1.10e-3 |
+| `sweep-p200` | 0.02 | 1.6e-3 | 1.16e-3 |
+| `n6-50hz` | 0.01 | **4.0e-4** | not yet run |
+
+Measured values sit just under the bound, as they should — the floor is the
+worst-case pair, the measurement is the mean over the ring.
+
+Two consequences.
+
+**The 0.01 convergence threshold is only 6x above the floor** for everything
+collected so far. It is a valid threshold, but it is not far from the noise: a
+tightened threshold of 1e-3 would sit *below* `n6-fast`'s floor and would never be
+reached, which would read as "does not converge" rather than "the gain is too
+coarse to resolve it".
+
+**`alpha` cannot be raised for faster convergence without paying quadratically.**
+Doubling `alpha` doubles the per-second coupling and quadruples the residual floor.
+That is the trade the finite-time law makes under fixed-step integration, and it is
+worth stating because the obvious tuning move — raise `alpha` until convergence is
+fast enough — degrades the thing being measured. The `n6-50hz` rescaling improves
+the floor 4x as a side effect of halving `alpha` for dt invariance.
+
+### 6.9 Open anomalies
 
 **A single link collapses, about once in fifteen runs.** Three occurrences:
 `n6-fast-0` r6 (0.848) and r9 (0.733), and `sweep-p200` r1, where one link fell to
@@ -877,10 +1148,16 @@ the pair in step:
 
 ```python
 from tools.make_manifests import radio_for
-"radio": radio_for(0.04)      # -> adv/scan 40 ms, ceiling 1.0 at 25 Hz
+"radio": radio_for(0.04)      # -> adv/scan at the 100 ms floor: ceiling 0.40,
+                              #    and k as high as the controller permits
 ```
 
-`radio_for` raises outside 20..10240 ms rather than silently clipping: below the
+**Do not match `T_adv` to `T_pub`.** The ceiling is 1.0 for any `T_adv <= T_pub`,
+so matching buys nothing and sets redundancy `k = T_pub/T_adv` to its minimum of 1.
+§6.5 measures the cost: +0.07 to +0.15 delivery for advertising twice as often at
+the same publish rate. `radio_for()` defaults to the floor for this reason.
+
+`radio_for` raises outside the controller floor rather than silently clipping: below the
 20 ms spec floor for non-connectable undirected advertising the ceiling *cannot* be
 held at 1.0, and that is a fact about the experiment, not a parameter to round.
 
@@ -1119,9 +1396,10 @@ That is a *directional* prediction, and it is worth more than "performance degra
 under heavier traffic": a monotonic decline in aggregate delivery cannot separate
 congestion from coexistence, whereas a decline in one direction only, on the link
 whose receiver shares a front-end, with a widening RSSI spread, distinguishes them
-by construction. The platform's own Wi-Fi transport is already a load source — at
-0.52% duty the asymmetry is 12 points — so `iperf3` is only the controlled version
-of something already happening.
+by construction. The platform's own traffic is already a load source — the
+asymmetry is 12 points at the n6-fast baseline, which carries 3.46% BLE duty (4
+advertisers at the 100 ms floor) alongside its UDP — so `iperf3` is only the
+controlled version of something already happening.
 
 It also reframes the degree comparison. Degree does not change broadcast airtime
 (§4 C2.2), so G1 vs G2 cannot vary traffic on the medium — but it does change how many
@@ -1129,9 +1407,114 @@ It also reframes the degree comparison. Degree does not change broadcast airtime
 is where the damage happens. An effect there would be receive-side load, not
 airtime. Reporting it as airtime would repeat the §6.2 error.
 
-### 8.3 Also queued
+### 8.3 Varying airtime when the rate is floored
 
-* Re-run the publish-rate sweep with the ceiling pinned (`scripts/sweep.sh`).
+**The publish-rate sweep cannot vary BLE airtime past 10 Hz.** Airtime is set by
+the *advertising* rate, not the publish rate, and the advertising rate is floored
+at 100 ms (§6.3). Above 10 Hz publish, extra publishes are absorbed by the
+transmitter and radiate nothing:
+
+| point | publish | adv | advertisers | BLE duty | ceiling |
+|---|---|---|---|---|---|
+| p400 | 2.5 Hz | 400 ms | 4 | 0.86% | 1.00 |
+| p200 | 5 Hz | 200 ms | 4 | 1.73% | 1.00 |
+| p080 | 12.5 Hz | 100 ms | 4 | **3.46%** | 0.80 |
+| p040 | 25 Hz | 100 ms | 4 | **3.46%** | 0.40 |
+
+So the sweep spans **three** airtime levels, not four, over a 4× range — and p040
+adds no airtime information whatsoever.
+
+It is still worth running, for a different reason. p080 and p040 have *identical
+airtime and different ceilings*, which makes them a controlled test of the ceiling
+model itself: if `obs/ceiling` agrees between them, the model holds with airtime
+held fixed. That is a stronger check than the earlier 0.818/0.826 agreement, which
+had airtime varying underneath it.
+
+#### Routes to a wider airtime range
+
+**1. More advertisers.** Duty is `n_adv x adv_rate x 864 µs`. With the rate pinned
+at its floor, the only free variable is `n_adv` — and it scales with hosts, since
+each Pi contributes one `ble` and one `bridge` advertiser:
+
+| hosts | advertisers | BLE duty |
+|---|---|---|
+| 2 | 4 | 3.46% |
+| 3 | 6 | 5.18% |
+| 4 | 8 | 6.91% |
+| 6 | 12 | 10.37% |
+| 10 | 20 | 17.28% |
+
+This is the clean route: it varies airtime without touching any per-node
+parameter, so every node's ceiling stays at 1.0 and delivery stays directly
+comparable. It needs hardware — the third Pi takes the range to 5.18%.
+
+Note the confound to avoid: adding hosts also adds *agents*, changing the graph.
+Hold degree fixed and grow the ring, or the comparison mixes airtime with topology.
+
+**2. A different advertising type.** The 100 ms floor applies to `ADV_NONCONN_IND`
+and `ADV_SCAN_IND`. `ADV_IND` may permit 20 ms — `scripts/adv_floor.py` reports all
+three. The cost is real: `ADV_IND` is connectable, so scanners may send
+`CONNECT_IND`, and the platform deliberately chose non-connectable to keep
+`SCAN_REQ`/`SCAN_RSP` off the air (§5, A1/A3). Buying a 5× airtime range by
+changing what the medium carries would confound the thing being measured. Only
+worth it if the floor turns out to be the binding constraint on a result.
+
+**3. External load.** `iperf3` varies *Wi-Fi* airtime, not BLE, which is §8.2's
+experiment. Useful for the coexistence question and not a substitute here.
+
+### 8.4 Decision needed: the staleness window ignores the medium
+
+`AgentConfig.resolved_max_age_s()` returns `3 x publish_period`. §6.5 shows that is
+wrong whenever the radio cannot carry the publish rate: at 25 Hz publish the window
+is 120 ms while the achievable arrival gap is 115 ms, so the controller discards a
+large share of what it received and converges 2.5 s *slower* than the 12.5 Hz point
+that delivers the same information rate.
+
+The fix is a floor: `3 x max(publish_period, adv_interval)`, since delivered rate
+is bounded by the advertising rate however fast the agent publishes.
+
+**Not applied yet, deliberately.** It changes effective coupling, so every number
+in §6 becomes non-comparable with anything collected after it. That is a
+re-baseline, and it should be a decision rather than a side effect. Two options:
+
+* **Apply it and re-run the baseline.** Cleanest, costs one `n6-fast` 10-repeat set
+  (~22 min). Everything after is comparable and correct.
+* **Leave it and always report the window.** The current numbers stay valid; the
+  25 Hz point stays understood-but-degraded, and every future fast-publish
+  configuration inherits the same trap.
+
+Recommendation: apply it. The current default silently penalises exactly the
+configurations the platform exists to explore, and the sweep has already shown the
+penalty is 2.5 s of convergence — larger than most effects being measured.
+
+### 8.5 Next: nine agents, which is also the airtime experiment
+
+`n9-50hz` is generated and validated — 9 agents on 3 hosts at `n6-50hz`'s rates,
+lambda_2 = 0.4679, degree 2, zero intra-host edges, zero ble/wifi edges, zero
+warnings. It is the §8.3 airtime route in disguise: advertisers go from 4 to 6, so
+BLE duty rises **3.46% → 5.18%** with every per-node parameter held.
+
+Which comparisons against `n6-50hz` are legitimate:
+
+* **Per-link delivery — clean.** Delivery is a link property, not a graph property.
+  A fall from 0.877 / 0.857 / 0.663 at 1.5x airtime would be a genuine contention
+  effect, and would be the first one this platform has seen: §6.5 found none across
+  a 4x range, but that range was produced by varying the advertising interval,
+  which changes `k` at the same time. This varies airtime with `k` fixed at 1.
+* **Convergence — confounded.** lambda_2 falls from 1.0 to 0.4679, so ~2.1x slower
+  (about 28 s) is expected from the topology alone. Raw convergence numbers across
+  the two mix airtime with connectivity.
+
+Prediction, to be stated before running: delivery unchanged within error bars, and
+convergence near 28 s. If delivery drops, §6.5's "airtime is not the variable"
+needs qualifying to "not below ~3.5%".
+
+Blockers on rpi1 only: `libopenblas0` for numpy, and `/dev/ttyACM0`.
+
+### 8.5 Also queued
+
+* Finish the publish-rate sweep: p400 and p200 are collected and clean; p080 and
+  p040 still to run, and both are ceiling-capped (§6.3), not liftable.
 * Diagnose the single-link collapse (§6.5) — it gates the credibility of every
   error bar.
 * Nine agents on three hosts. Needs a third Pi and `n9-ring` regenerated: it

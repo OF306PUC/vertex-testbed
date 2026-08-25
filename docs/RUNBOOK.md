@@ -720,6 +720,26 @@ to serve time to the other (`local stratum 10` plus an `allow` line in
 `chrony.conf`) -- and then the *served* host is the reference, so its own accuracy
 is what bounds every delay measurement in the experiment.
 
+### The declared host order, and the one exception
+
+Declare the lab in address order, so agent *k* of each band lands on host *k*:
+
+```bash
+export VERTEX_HOSTS=10.6.5.1,10.6.5.2,10.6.5.4     # rpi1, rpi2, rpi4
+```
+
+`n9-*` then reads node 1/11/21 on rpi1, 2/12/22 on rpi2, 3/13/23 on rpi4.
+
+**The two-host family is pinned to hosts 2 and 3, not 1 and 2** (`n6_pair()` in the
+generator). Every n6 run collected — `n6-fast` x10, `n650` x10, four sweep points
+x10 — has node 1 on rpi2 and node 2 on rpi4, and PLATFORM.md 6.4 showed the
+receiver asymmetry is a property of a particular board's front-end. Re-running n6
+on a different pair would be a different experiment, not a replication. Nine agents
+use all three in order and need no exception.
+
+Export `VERTEX_HOSTS` rather than passing `--hosts` each time: the generator
+silently reverts every manifest to the built-in `10.6.5.1..10` if neither is given.
+
 ### Host addresses belong in the generator, not in the generated file
 
 The two boards were `10.6.5.4` and `10.6.5.2`, and `n6-ring.yaml` had been edited

@@ -22,7 +22,14 @@ class LoopbackBus:
     """Shared medium. Create one per simulation and hand it to every transport.
 
     ``loss`` is the probability an individual *delivery* is dropped, evaluated per
-    receiver -- not per send. 
+    receiver -- not per send.
+
+    A single ``loss``/``delay_s`` models a homogeneous medium, which this testbed
+    is not: measured per-class delivery spans 0.61 (nRF->Pi) to 0.98 (UDP) and
+    delay 56 ms to 180 ms. Pass ``node_types`` together with ``link_loss`` and
+    ``link_delay_s`` to model that; both are keyed by
+    ``(sender_type, receiver_type)`` and fall back to the scalars when a pair is
+    absent.
     """
 
     clock: Clock
@@ -30,6 +37,11 @@ class LoopbackBus:
     delay_s: float = 0.0
     serialise: bool = True
     seed: int = 0
+    #: node id -> "ble" | "wifi" | "bridge". Required for per-class parameters.
+    node_types: dict[int, str] | None = None
+    #: (sender_type, receiver_type) -> probability / seconds.
+    link_loss: dict[tuple[str, str], float] | None = None
+    link_delay_s: dict[tuple[str, str], float] | None = None
     _subscribers: dict[int, ReceiveCallback] = field(default_factory=dict, repr=False)
     _rng: np.random.Generator | None = field(default=None, repr=False)
     _sent: int = 0
@@ -59,18 +71,28 @@ class LoopbackBus:
         for node_id, callback in list(self._subscribers.items()):
             if node_id == sender_id:
                 continue                      # an agent does not hear itself
-            if self.loss and float(self._rng.random()) < self.loss:
+            loss, delay = self._params(sender_id, node_id)
+            if loss and float(self._rng.random()) < loss:
                 self._dropped += 1
                 continue
-            if self.delay_s:
+            if delay:
                 asyncio.get_running_loop().create_task(
-                    self._deliver_later(callback, wire, packet)
+                    self._deliver_later(callback, wire, packet, delay)
                 )
             else:
                 self._deliver(callback, wire, packet)
 
-    async def _deliver_later(self, callback, wire, packet) -> None:
-        await self.clock.sleep(self.delay_s)
+    def _params(self, sender_id: int, receiver_id: int) -> tuple[float, float]:
+        """(loss, delay) for this ordered pair, falling back to the scalars."""
+        if self.node_types is None:
+            return self.loss, self.delay_s
+        key = (self.node_types.get(sender_id), self.node_types.get(receiver_id))
+        loss = (self.link_loss or {}).get(key, self.loss)
+        delay = (self.link_delay_s or {}).get(key, self.delay_s)
+        return loss, delay
+
+    async def _deliver_later(self, callback, wire, packet, delay_s=None) -> None:
+        await self.clock.sleep(self.delay_s if delay_s is None else delay_s)
         self._deliver(callback, wire, packet)
 
     def _deliver(self, callback: ReceiveCallback, wire: bytes | None,
