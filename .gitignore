@@ -63,3 +63,5 @@ results/
 *.swp
 *~
 .DS_Store
+
+docs/papers/
