@@ -659,6 +659,11 @@ def manifests() -> dict[str, dict]:
         n["neighbors"] = CLUSTER_EDGES[n["id"]]
         if n["id"] in CLUSTER_DISABLED:
             n["enabled"] = False
+    # G3 is time-varying, which is the whole point of it: the three clusters
+    # converge separately while 21 and 30 are down, then the bridges come up and
+    # the components merge. Statically it cannot reach agreement and should not --
+    # there is no path between clusters. The merge transient is the measurement.
+    CLUSTER_MERGE_AT_S = 60.0
     out["n30-clusters"] = {
         "name": "n30-clusters",
         "description": (
@@ -670,6 +675,9 @@ def manifests() -> dict[str, dict]:
         "seed": 20260818,
         "controller": CONTROLLER,
         "nodes": clustered,
+        "events": [{"at_s": CLUSTER_MERGE_AT_S,
+                    "nodes": sorted(CLUSTER_DISABLED),
+                    "set": {"enabled": True}}],
     }
 
     # Regular topologies over BAND_ORDER rather than 1..30.

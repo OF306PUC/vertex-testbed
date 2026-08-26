@@ -31,6 +31,7 @@ happened, and the report says what was missing.
 from __future__ import annotations
 
 import asyncio
+import sys
 import json
 import time
 from dataclasses import dataclass, field
@@ -76,6 +77,10 @@ class RunReport:
     nodes: dict[int, NodeOutcome] = field(default_factory=dict)
     trigger_spread_s: float = 0.0
     out_dir: Path | None = None
+    #: What happened during the run that was not a per-node outcome -- scheduled
+    #: events applied, and any that could not be. A time-varying run is a
+    #: different experiment from a static one, so it must be on the record.
+    notes: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -94,6 +99,8 @@ class RunReport:
             lines.append(f"  {flag} {nid:>3} {n.node_type:<7} {n.address:<21} "
                          f"samples={n.samples} files={len(n.files)}"
                          + (f" -- {n.errors[0]}" if n.errors else ""))
+        for note in self.notes:
+            lines.append(f"  event  {note}")
         return "\n".join(lines)
 
     def to_dict(self) -> dict[str, Any]:
@@ -175,6 +182,33 @@ class ExperimentRunner:
             out.started_at = time.monotonic()
         except ControlError as exc:
             out.errors.append(f"start: {exc}")
+
+    async def _apply_event(self, ev, ids: list[int]) -> list[int]:
+        """Push one scheduled change to the nodes it names, mid-run.
+
+        Reconfigures rather than restarts: `AgentService._configure` on a running
+        agent updates the live controller and leaves its integrators alone, so the
+        run continues through the event. Nodes not in this run are skipped rather
+        than erroring -- `--only` is allowed to exclude them.
+        """
+        targets = [i for i in ev.nodes if i in ids]
+        done = []
+        for nid in targets:
+            a = self.assignments.get(nid)
+            if a is None:
+                continue
+            self.assignments[nid] = a.model_copy(update=dict(ev.set))
+            try:
+                await self._client(nid).configure(self.assignments[nid])
+                done.append(nid)
+            except Exception as exc:
+                # An event that fails is a different experiment, so it must be
+                # visible -- but the run is already in flight and stopping it
+                # would lose the data collected so far.
+                self.assignments[nid] = a
+                print(f"warning: event at {ev.at_s}s failed on node {nid}: {exc}",
+                      file=sys.stderr)
+        return done
 
     async def _clear_stale(self, node_id: int) -> None:
         """Best-effort `stop`, recording nothing.
@@ -272,8 +306,24 @@ class ExperimentRunner:
         stamps = [n.started_at for n in report.nodes.values() if n.started_at]
         report.trigger_spread_s = (max(stamps) - min(stamps)) if len(stamps) > 1 else 0.0
 
-        # 3. wait out the run
-        await asyncio.sleep(duration_s)
+        # 3. wait out the run, applying any scheduled events on the way.
+        #    Offsets are from the trigger, so they are measured from here rather
+        #    than from configure -- an event at 60 s means 60 s of run, not 60 s
+        #    minus however long the control plane took.
+        events = sorted(self.manifest.events, key=lambda e: e.at_s)
+        t0 = time.monotonic()
+        for ev in events:
+            if ev.at_s >= duration_s:
+                report.notes.append(
+                    f"event at {ev.at_s}s skipped: beyond the {duration_s}s run")
+                continue
+            remaining = ev.at_s - (time.monotonic() - t0)
+            if remaining > 0:
+                await asyncio.sleep(remaining)
+            applied = await self._apply_event(ev, ids)
+            report.notes.append(
+                f"t={ev.at_s:g}s applied {ev.set} to {applied}")
+        await asyncio.sleep(max(0.0, duration_s - (time.monotonic() - t0)))
 
         # 4. stop before fetching: a fetch mid-run reads a file still being
         #    appended to.

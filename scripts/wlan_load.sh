@@ -10,29 +10,36 @@
 # Load must be generated ON the Pi, not at it: the mechanism is the Pi's own
 # radio competing with its own BLE receiver, so the traffic has to originate here.
 #
-#   # once, on the hub laptop:
-#   iperf3 -s
+#   # on the hub laptop, ONE SERVER PER PI -- see the PORT note below:
+#   for p in 5201 5202 5203; do iperf3 -s -p $p & done
 #
-#   # on each Pi, just before triggering the run:
-#   bash scripts/wlan_load.sh 10.6.5.100 5 130     # server, Mbit/s, seconds
+#   # on each Pi, just before triggering the run (one port each):
+#   bash scripts/wlan_load.sh 10.6.0.39 5 130 5201    # pi1
+#   bash scripts/wlan_load.sh 10.6.0.39 5 130 5202    # pi2
+#   bash scripts/wlan_load.sh 10.6.0.39 5 130 5203    # pi4
 #
 # Then start the experiment from the hub. Runs slightly longer than the run so
 # the load covers the whole measurement.
 set -uo pipefail
 
-SERVER="${1:?usage: wlan_load.sh <server-ip> <mbps> <seconds>}"
+SERVER="${1:?usage: wlan_load.sh <server-ip> <mbps> <seconds> [port]}"
 MBPS="${2:?}"
 SECS="${3:-130}"
+# One PORT PER PI, and this matters: `iperf3 -s` serves one test at a time, so
+# three Pis pointed at one port load the medium SEQUENTIALLY -- observed as
+# "test #1 ... test #2 ... test #3", 130 s each, one Pi on air at a time. The
+# experiment needs them concurrent, so each Pi gets its own server.
+PORT="${4:-5201}"
 OUT="${OUT:-/tmp/wlan_load-$(date +%H%M%S).json}"
 
 command -v iperf3 >/dev/null 2>&1 || {
     echo "iperf3 not installed:  sudo apt-get install -y iperf3" >&2; exit 1; }
 
-echo "load: ${MBPS} Mbit/s UDP to ${SERVER} for ${SECS}s  -> $OUT"
+echo "load: ${MBPS} Mbit/s UDP to ${SERVER}:${PORT} for ${SECS}s  -> $OUT"
 # UDP, not TCP: TCP adapts its rate to loss, so the offered load would not be the
 # controlled variable -- it would fall exactly when BLE contention rose, which is
 # the interaction being measured.
-iperf3 -c "$SERVER" -u -b "${MBPS}M" -t "$SECS" -J >"$OUT" 2>/dev/null &
+iperf3 -c "$SERVER" -p "$PORT" -u -b "${MBPS}M" -t "$SECS" -J >"$OUT" 2>/dev/null &
 pid=$!
 echo "  iperf3 pid $pid; it exits on its own after ${SECS}s"
 echo "  stop early with: kill $pid"

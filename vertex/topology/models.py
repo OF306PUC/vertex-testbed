@@ -12,7 +12,8 @@ from pydantic import (BaseModel, ConfigDict, Field, ValidationInfo, field_valida
 from ..net import AgentType
 
 __all__ = ["AgentType", "NodeSpec", "DisturbanceSpec", "ControllerSpec",
-           "RadioSpec", "StructureSpec", "ExperimentManifest", "MAX_NODE_ID"]
+           "RadioSpec", "StructureSpec", "ScheduledEvent", "ExperimentManifest",
+           "MAX_NODE_ID"]
 
 #: Upper bound on a node id: the wire format carries it in a uint8.
 MAX_NODE_ID = 255
@@ -222,6 +223,35 @@ class StructureSpec(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
 
 
+class ScheduledEvent(BaseModel):
+    """A change applied to a running fleet at a fixed offset from the trigger.
+
+    The agents already accept it: `configure` on a running agent applies to the
+    live controller without touching its integrators, so a perturbation is an
+    event rather than a restart. What was missing was anything to schedule it.
+
+    The motivating case is `n30-clusters`, which disables the two bridges that
+    join its three clusters. Statically that graph has no path between clusters
+    and cannot reach agreement -- correctly so. The experiment it is meant to
+    express is time-varying: the clusters converge separately, then the bridges
+    come up and the components merge. That is G3(t), and the merge transient is
+    the measurement.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    at_s: float = Field(gt=0.0, description="offset from the run trigger")
+    nodes: list[int] = Field(min_length=1)
+    #: Fields to override on those nodes. `enabled` is the one this exists for.
+    set: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _has_changes(self) -> "ScheduledEvent":
+        if not self.set:
+            raise ValueError("a scheduled event with no `set` changes nothing")
+        return self
+
+
 class ExperimentManifest(BaseModel):
     """A complete, reproducible experiment definition."""
 
@@ -233,6 +263,8 @@ class ExperimentManifest(BaseModel):
     controller: ControllerSpec = ControllerSpec()
     radio: RadioSpec = RadioSpec()
     structure: StructureSpec | None = None
+    #: Mid-run changes, applied in order of `at_s`. Empty for a static run.
+    events: list[ScheduledEvent] = Field(default_factory=list)
 
     seed: int = Field(
         default=0,

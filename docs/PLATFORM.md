@@ -323,6 +323,42 @@ the 3 Mbaud BT UART caps at ~6600 reports/s, which pure Python clears comfortabl
 (c) even when we want to keep the C++, and is the better shape for a testbed:
 the BLE radio becomes a replaceable service rather than a linked dependency.
 
+#### A5.2 The connection-oriented option *(future, JI 2026-08-26)*
+
+Separate from *how* to reuse the stack: what it would let the platform do. A
+connection-oriented BLE transport is the BLE analogue of the UDP unicast proposal
+in §4 C2.2, and it bears on two open problems.
+
+**The run-start stall (§6.10).** Connectionless advertising has no
+acknowledgement, so a link that goes silent is indistinguishable from one that is
+merely lossy, and nothing recovers it -- measured as `21→2` silent for up to 96 s
+with no mechanism to notice or retry. A connection has link-layer acknowledgement,
+retransmission and a supervision timeout: the same fault would either self-recover
+or drop the connection and reconnect, and either way it becomes an **observable
+event** rather than a hole in the data. Both configuration hypotheses for that
+stall (duplicate filtering, advertising-interval collision) have been eliminated
+by experiment, so a transport-level fix is now the more promising direction than
+further parameter search.
+
+**The one-bridge-per-host limit (§8.3).** The reason 30 agents cannot run on three
+Pis is that the HCI user channel is exclusive, so a host carries at most one
+`bridge`. That is a property of *how the platform takes the controller*, not of
+the radio: an in-house stack owning the socket could host several logical agents in
+one process, and BT5 extended advertising provides multiple advertising sets with
+independent addresses and data. If that works on the CYW43455, agents-per-host
+stops being 1 and the 30-agent target becomes reachable on existing hardware. That
+needs checking against the controller's advertising-set count before it is
+believed.
+
+**The cost, and it is not small.** Connections add retransmission, and
+retransmission hides the raw loss this platform exists to characterise. Every
+delivery figure in §6 is a *link* measurement precisely because nothing retries;
+under connections those numbers would measure the retry policy instead, and would
+not be comparable with anything collected so far. Airtime also becomes
+O(degree), exactly as C2.2 notes for unicast. So this is a second transport to
+compare against broadcast, not a replacement for it -- which is the same
+conclusion C2.2 reached, and for the same reason.
+
 **Blocked on reading the code.** Decide once we've seen its size and what quirks
 it handles — those quirks are the asset either way, so the first task is a read-through
 and a written list of what it knows that a naive implementation wouldn't.
@@ -1564,11 +1600,19 @@ own radio competing with its own BLE receiver, so the traffic has to originate
 there. `scripts/wlan_load.sh` does that.
 
 ```bash
-iperf3 -s                                            # once, on the hub
-bash scripts/wlan_load.sh <hub-ip> <mbps> 130        # on EACH Pi, then trigger
+bash scripts/load_servers.sh start 3                 # hub: ONE SERVER PER PI
+bash scripts/wlan_load.sh <hub-ip> 5 130 5201        # pi1  \
+bash scripts/wlan_load.sh <hub-ip> 5 130 5202        # pi2   > then trigger
+bash scripts/wlan_load.sh <hub-ip> 5 130 5203        # pi4  /
 python3 -m vertex.hub run experiments/n9-50hz.yaml \
-    --duration 120 --repeat 10 --run-name n9load<mbps>
+    --duration 120 --repeat 10 --run-name n9load5
 ```
+
+**One port per Pi, and this is not cosmetic.** `iperf3 -s` serves one test at a
+time, so three Pis pointed at a single port load the medium *sequentially* --
+observed on the first attempt as `test #1 ... test #2 ... test #3`, 130 s each,
+one Pi on air at a time. That measures nothing the experiment wants: the
+mechanism is contention, and contention needs the loads concurrent.
 
 UDP rather than TCP, deliberately: TCP adapts its rate to loss, so the offered
 load would fall exactly when BLE contention rose -- the offered load would stop
@@ -1598,6 +1642,23 @@ Four points x 10 repeats x 120 s is about 90 minutes.
 
 `nRF→nRF` is the built-in control: neither end shares a front-end, so if it falls
 too, the effect is on-air contention rather than anything about the Pi.
+
+#### A baseline observation from the first (sequential) attempt
+
+Worth keeping, because it is a load measurement with no BLE run alongside it. At
+5 Mbit/s offered, each Pi achieved 5.00 Mbit/s, but the loss differed by host:
+
+| host | datagrams lost | note |
+|---|---|---|
+| pi1 | 0 / 56112 | 0% |
+| pi2 | 0 / 56112 | 0% |
+| **pi4** | **32 / 56112** | 0.057%, in bursts of 1.2-2.8% |
+
+Only pi4 lost anything, and in bursts rather than uniformly. That is the same
+shape as the BLE stalls -- brief, host-specific, bursty -- and pi4 is one of the
+two hosts implicated in them. Whether the agents were running during this is not
+recorded, so it cannot be attributed to coexistence; it is a reason to log the
+per-host iperf3 loss on every load point and compare against this.
 
 Record the achieved rate from each Pi's iperf3 JSON alongside the run: offered and
 achieved diverge once the medium saturates, and the achieved figure is the one that
