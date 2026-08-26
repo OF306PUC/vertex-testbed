@@ -26,7 +26,13 @@ case "$ACTION" in
     echo "  point one Pi at each port; concurrent load needs concurrent servers"
     ;;
   stop)
-    pkill -f 'iperf3 -s -p' && echo "  stopped" || echo "  none running"
+    # Matches a bare `iperf3 -s` too, not just the ones this script started: a
+    # hand-started server holds its port and makes `start` skip it silently.
+    pkill -f 'iperf3 -s' && echo "  stopped" || echo "  none running"
     ;;
-  *) echo "usage: $0 {start|stop} [n]" >&2; exit 2 ;;
+  status)
+    pgrep -af 'iperf3 -s' || echo "  no iperf3 servers running"
+    ss -lntu 2>/dev/null | awk 'NR==1 || /:52[0-9][0-9] /'
+    ;;
+  *) echo "usage: $0 {start|stop|status} [n]" >&2; exit 2 ;;
 esac

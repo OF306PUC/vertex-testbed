@@ -350,6 +350,15 @@ stops being 1 and the 30-agent target becomes reachable on existing hardware. Th
 needs checking against the controller's advertising-set count before it is
 believed.
 
+**Note on the mechanism.** §6.4's explanation was corrected on 2026-08-26: the
+asymmetry is the 83x difference between BLE receive duty (100%, continuous
+scanning) and BLE transmit duty (1.2%), not an inability of PTA to arbitrate
+receives. A connection-oriented transport changes this picture substantially,
+because a connection's receive windows are *scheduled* rather than continuous --
+the receiver knows when the peer will transmit, so its front-end request drops
+from 100% to the connection's own duty cycle. That is arguably a stronger argument
+for connections than the retransmission one.
+
 **The cost, and it is not small.** Connections add retransmission, and
 retransmission hides the raw loss this platform exists to characterise. Every
 delivery figure in §6 is a *link* measurement precisely because nothing retries;
@@ -733,12 +742,35 @@ intervals between agent classes, and it applies retrospectively to the JS platfo
 ### 6.4 nRF→Pi is the weak direction, and the receiver is why
 
 `nRF→Pi` is the worst link class in every measurement, at every rate. The
-explanation that fits is JI's: the nRF52 is a single-protocol radio with no Packet
-Traffic Arbitration, and needs none. The CYW43455 has PTA because WLAN and BLE
-share one front-end there — **but PTA can only arbitrate transmissions the chip
-itself originates.** The Pi can schedule its own BLE TX around its own WLAN. It
-cannot schedule the nRF's. The direction in which the Pi *receives* is the one with
-no coordination available to it.
+explanation that fits is JI's, with a correction to its mechanism made 2026-08-26.
+
+The nRF52 is a single-protocol radio with no Packet Traffic Arbitration, and needs
+none. The CYW43455 has PTA because WLAN and BLE share one front-end there.
+
+**An earlier version of this section said PTA "can only arbitrate transmissions the
+chip itself originates". That is wrong: PTA arbitrates the shared front-end for
+transmit and receive alike, on both radios.** The asymmetry is not TX versus RX in
+principle -- it is **duty cycle**:
+
+| BLE role on a Pi | share of time the front-end is needed |
+|---|---|
+| transmit (advertising) | one ~1.2 ms event per 100 ms = **1.2%** |
+| receive (scanning) | `scan_window == scan_interval` = **100%** |
+
+An 83x difference in exposure. When WLAN wants the antenna it almost never collides
+with the 1.2% transmit request and *always* collides with the 100% receive request.
+The receiving direction loses because it asks for the resource continuously, not
+because arbitration is unavailable to it.
+
+A second, independent asymmetry compounds it: a transmit can be deferred a few ms
+and still fall inside its advertising event's own slack, whereas a receive
+opportunity is set by the **remote** transmitter's clock and cannot be moved at
+all. That part of the original argument stands.
+
+Corollary, and it is testable: shortening `scan_window` below `scan_interval` cuts
+the receive-side exposure proportionally, at the cost of missing advertisements
+that fall outside the window. The platform has always run at 100% scan duty, so
+this has never been varied.
 
 The RSSI distributions localise it to the Pi's receive path. Geometry is fixed and
 the transmitter is the same board in each pair, so a spread difference is a
@@ -1190,7 +1222,101 @@ Until this is settled, **no multi-run result should be quoted without stating th
 collapse rate**, and any set of 10 should be checked for a run whose convergence
 sits well outside the others' spread.
 
-### 6.11 Open anomalies
+### 6.11 WLAN load at 5 Mbit/s: the control moved, so the PTA mechanism is not what was measured
+
+*(2026-08-26. `n9load5` vs `n950f`: same manifest, same firmware, 10 repeats each;
+5 Mbit/s UDP from each of three Pis concurrently. Stall run excluded per side.)*
+
+§8.2 set out a directional prediction: `nRF→Pi` falls under WLAN load,
+`Pi→nRF` holds, and `nRF→nRF` -- no CYW43455 at either end -- is immune. The last
+of those is the discriminator.
+
+| class | receiver has CYW43455? | unloaded | 5 Mbit/s | delta | t |
+|---|---|---|---|---|---|
+| nRF→Pi | yes | 0.593 ± 0.027 | 0.549 ± 0.087 | −0.044 | 2.04 |
+| Pi→nRF | no | 0.781 ± 0.173 | 0.806 ± 0.073 | +0.025 | 0.57 |
+| **nRF→nRF** | **no** | 0.790 ± 0.028 | 0.765 ± 0.037 | **−0.025** | **3.25** |
+| Pi→Pi | yes | 0.910 ± 0.079 | 0.854 ± 0.075 | −0.056 | 2.16 |
+| UDP | -- | 0.975 ± 0.007 | 0.974 ± 0.008 | −0.001 | 0.86 |
+
+**The control moved, at higher significance than the link predicted to fall.**
+`nRF→nRF` involves no Pi radio at either end, so a mechanism internal to the
+CYW43455's front-end cannot touch it. It fell anyway. What this experiment
+measured is therefore **shared-medium contention** -- WLAN transmissions colliding
+with BLE advertisements on the air -- and not the PTA/receive-path mechanism of
+§6.4.
+
+**§6.4 is neither confirmed nor refuted by this.** The effect at 5 Mbit/s is small
+(2-6 points) and `Pi→nRF`'s spread is too wide to resolve a 0.025 change, so the
+test lacks the power to separate the two mechanisms even in principle at this load.
+Note also `Pi→nRF` moved *up* by 0.025, which is within its own noise and should
+not be read as anything.
+
+**What the design got right and wrong.** Right: including a control link with no
+CYW433455 at either end, which is the only reason this reads as a null result
+rather than a confirmation. Wrong: choosing a single load point, and one small
+enough that every effect sits within 2-3 sigma of noise.
+
+**To make it decisive:** 10 and 20 Mbit/s points, where 3 x 20 Mbit/s approaches
+saturation and any directional term should separate from the common one. The
+quantity to test is not each class in isolation but the **difference** between
+`nRF→Pi` and `nRF→nRF`: contention moves both, PTA moves only the first, so their
+gap isolates the mechanism. At 5 Mbit/s that gap is 0.019 ± 0.03 -- consistent with
+zero.
+
+**UDP was unaffected** (0.975 -> 0.974) despite 15 Mbit/s aggregate offered. The
+state datagrams are small and DTIM-buffered, so they were never competing for the
+capacity the load consumed. Wi-Fi delivery is not a useful load indicator here;
+the iperf3 per-host loss is.
+
+### 6.12 Spectral geometry: the lab runs on channel 11, which explains the null
+
+*(2026-08-26, from the recorded `wlan_channel`. `scripts/rf_survey.sh` prints this
+per host.)*
+
+BLE advertising uses three fixed channels -- 37, 38, 39 at **2402, 2426 and
+2480 MHz** -- placed by design to fall between the non-overlapping Wi-Fi channels
+1/6/11. This lab's AP is on **channel 11**:
+
+| | centre | 20 MHz span | overlaps BLE adv |
+|---|---|---|---|
+| wi-fi ch 1 | 2412 | 2402-2422 | **37** |
+| wi-fi ch 6 | 2437 | 2427-2447 | none |
+| **wi-fi ch 11** | **2462** | **2452-2472** | **none** |
+| wi-fi ch 13 | 2472 | 2462-2482 | **39** |
+
+Clearances from channel 11: 50 MHz to adv 37, 26 MHz to 38, 8 MHz to 39. So the AP
+and every Pi transmit where **no WLAN energy lands on an advertising channel**.
+
+**This is why §6.11's load experiment found nothing.** Two mechanisms were being
+conflated:
+
+* **Spectral contention** -- WLAN energy colliding with BLE packets on air. Depends
+  entirely on channel overlap, and here there is none. Adding WLAN traffic on
+  channel 11 cannot collide with advertising on 2402/2426/2480.
+* **Front-end contention** -- the Pi's own WLAN activity occupying the shared
+  antenna, the 100%-vs-1.2% duty argument of §6.4. **Independent of frequency**: a
+  busy antenna is busy whatever channel it is busy on.
+
+The load sweep varied a quantity that could only act through the first mechanism,
+in a configuration where that mechanism is absent. A weak, non-monotonic result is
+exactly what channel 11 predicts, and the 5 Mbit/s "control moved" reading is
+better explained as between-set noise -- the 10 Mbit/s point reversed it.
+
+**The decisive experiment is therefore a channel change, not more load.** Moving
+the AP to **channel 1** puts WLAN energy directly on advertising channel 37, one of
+the three the platform depends on. Repeating the load sweep there separates the two
+mechanisms cleanly:
+
+* if delivery falls on channel 1 and not on 11, the effect is spectral;
+* if it falls equally on both, it is front-end;
+* the `nRF→nRF` control distinguishes local from ambient in either case.
+
+That was available at zero cost from a number already in every run's metadata, and
+was not checked before designing the experiment. Recording a parameter is not the
+same as reasoning about it.
+
+### 6.13 Open anomalies
 
 **A single link collapses, about once in fifteen runs.** Three occurrences:
 `n6-fast-0` r6 (0.848) and r9 (0.733), and `sweep-p200` r1, where one link fell to
@@ -1308,7 +1434,57 @@ between them is the medium and not the implementation. That is the comparison th
 platform is built to support.
 
 
-### 7.3 Configuring the radio parameters
+### 7.3 Radio parameters: what each controller exposes
+
+The state of the platform as of 2026-08-26. Everything in the "manifest" column is
+driven from `RadioSpec` and recorded in every run's environment block.
+
+#### CYW43455 — the Pi, over the raw HCI user channel
+
+| parameter | HCI command | manifest field | notes |
+|---|---|---|---|
+| advertising interval min/max | `0x2006` | `adv_interval_ms`, `adv_interval_max_ms` | **floor 100 ms** for `ADV_NONCONN_IND`: the controller enforces the Bluetooth 4.x rule, not 5.0's 20 ms (§6.3) |
+| advertising type | `0x2006` | -- | fixed `ADV_NONCONN_IND`: non-connectable and non-scannable, so no `SCAN_REQ`/`SCAN_RSP` airtime (§5) |
+| advertising channel map | `0x2006` | `channel_map` | default `0x07`, all three channels |
+| own address type / filter policy | `0x2006` | -- | public address, no white list |
+| advertising data | `0x2008` | -- | the 16-byte v1 air format, one manufacturer element |
+| advertising enable | `0x200A` | -- | lifecycle |
+| scan interval / window | `0x200B` | `scan_interval_ms`, `scan_window_ms` | equal by default = 100% receive duty, which is the exposure term in §6.4 |
+| scan type | `0x200B` | `passive_scan` | passive by default; active would add `SCAN_REQ` airtime |
+| duplicate filtering | `0x200C` | `filter_duplicates` | **must stay False**: enabling it took BLE-only delivery from 0.768 to 0.331 (§6.8) |
+| advertising TX power | `0x2007` | -- | **read only**, and nominal: reports +12 dBm while radiating ~20 dB below the nRF (§6.4) |
+| transmit power | -- | -- | **not settable**: vendor command only for legacy advertising, and Broadcom's is not public |
+
+#### nRF52840 — Zephyr, configured over the RADIO serial frame
+
+| parameter | applied by | manifest field | notes |
+|---|---|---|---|
+| advertising interval min/max | `bt_le_adv_start` | `adv_interval_ms`, `adv_interval_max_ms` | same values as the Pi, from one `RadioSpec` |
+| advertising type | `bt_le_adv_start` | -- | `BT_LE_ADV_NCONN`, matching the Pi |
+| advertising channel map | -- | `channel_map` | **not exposed by Zephyr's API**: applied on `bridge`, recorded as unapplied for `ble` |
+| scan interval / window | `bt_le_scan_start` | `scan_interval_ms`, `scan_window_ms` | same values as the Pi |
+| scan type | `bt_le_scan_start` | `passive_scan` | same |
+| duplicate filtering | `bt_le_scan_start` | -- | **hardcoded off** since 2026-08-25, matching the Pi. Needs a reflash to change |
+| transmit power | Nordic VS command | -- | +8 dBm requested; the nRF52840 grants it. Logged to RTT only -- no `STATS` handler, so it never reaches the host |
+
+#### Wi-Fi — the Pi
+
+| parameter | how | notes |
+|---|---|---|
+| transmit power | `iw dev wlan0 set txpower fixed <mBm>` | **settable, verified**: 800 mBm reads back +8.0 dBm. The default reads 31.0 dBm, which is a `brcmfmac` placeholder, not a measurement |
+| channel / frequency | AP-determined | recorded, not chosen |
+| power save | `iw` | recorded; ruled out as the cause of the DTIM delay (§6.2) |
+
+#### What is not controllable, and will not become so
+
+* **BLE transmit power on the Pi.** No public interface. The Pi radiates ~20 dB
+  below the nRF despite reporting higher, and the asymmetry runs opposite to the
+  delivery asymmetry, so it explains nothing (§6.4).
+* **Advertising below 100 ms.** Controller-enforced.
+* **The nRF's granted TX power, at the host.** Needs the `STATS_REQ` handler.
+* **`channel_map` on the nRF.** Zephyr does not expose it.
+
+### 7.4 Configuring the radio parameters
 
 `ExperimentManifest.radio` is the single source. It fans out by agent type:
 
@@ -1365,7 +1541,7 @@ return out` returned from `manifests()` rather than skipping `n9-ring`, so a 2-h
 lab produced 3 manifests instead of 11 while printing only `skip n9-ring`. Both
 skips are now guards; only the last block in the function returns early.
 
-### 7.4 Repository layout
+### 7.5 Repository layout
 
 ```
 vertex/
@@ -1385,7 +1561,7 @@ vertex/
 
 ---
 
-### 7.5 Experiment infrastructure
+### 7.6 Experiment infrastructure
 
 - **D1. Fault injection as a scenario DSL.** `midRunEvents` in `hub.js` is the
   seed. Generalize: link drop, added delay, packet-loss rate, node kill, and
