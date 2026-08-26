@@ -1557,6 +1557,52 @@ It also reframes the degree comparison. Degree does not change broadcast airtime
 is where the damage happens. An effect there would be receive-side load, not
 airtime. Reporting it as airtime would repeat the §6.2 error.
 
+### 8.2b Running the WLAN-load experiment
+
+The load must be generated **on** the Pi, not at it: the mechanism is the chip's
+own radio competing with its own BLE receiver, so the traffic has to originate
+there. `scripts/wlan_load.sh` does that.
+
+```bash
+iperf3 -s                                            # once, on the hub
+bash scripts/wlan_load.sh <hub-ip> <mbps> 130        # on EACH Pi, then trigger
+python3 -m vertex.hub run experiments/n9-50hz.yaml \
+    --duration 120 --repeat 10 --run-name n9load<mbps>
+```
+
+UDP rather than TCP, deliberately: TCP adapts its rate to loss, so the offered
+load would fall exactly when BLE contention rose -- the offered load would stop
+being the controlled variable and start being a function of the thing being
+measured.
+
+Suggested points, against the 5.18% BLE duty six advertisers generate:
+
+| offered | approximate WLAN airtime |
+|---|---|
+| 0 Mbit/s | 0% (the control) |
+| 2 Mbit/s | ~3% |
+| 5 Mbit/s | ~8% |
+| 10 Mbit/s | ~15% |
+
+Four points x 10 repeats x 120 s is about 90 minutes.
+
+**What to look at, and what would falsify the mechanism.** Not aggregate delivery
+-- the two directions separately:
+
+| | prediction if PTA-limited | prediction if simple congestion |
+|---|---|---|
+| nRF→Pi | falls with load | falls with load |
+| Pi→nRF | **holds** | falls with load |
+| asymmetry | **grows** | flat |
+| nRF→nRF | holds (no CYW43455 either end) | holds |
+
+`nRF→nRF` is the built-in control: neither end shares a front-end, so if it falls
+too, the effect is on-air contention rather than anything about the Pi.
+
+Record the achieved rate from each Pi's iperf3 JSON alongside the run: offered and
+achieved diverge once the medium saturates, and the achieved figure is the one that
+describes the experiment.
+
 ### 8.3 Varying airtime when the rate is floored
 
 **The publish-rate sweep cannot vary BLE airtime past 10 Hz.** Airtime is set by
@@ -1579,6 +1625,33 @@ airtime and different ceilings*, which makes them a controlled test of the ceili
 model itself: if `obs/ceiling` agrees between them, the model holds with airtime
 held fixed. That is a stronger check than the earlier 0.818/0.826 agreement, which
 had airtime varying underneath it.
+
+#### Thirty agents, simulated and calibrated (2026-08-25)
+
+Thirty heterogeneous agents cannot run on three Pis (§8.3 lists the binding
+limits), so the 30-agent topologies were run in simulation with the per-class loss
+and delay measured on the 9-agent hardware, via `tools/link_profile.py`. The
+simulator was validated against hardware at two scales first -- 12.75 s against
+13.24 s at 6 agents, 23.59 s against 24.07 s at 9 -- so it runs about **3%
+optimistic**, consistently, because the bus draws independent Bernoulli losses
+while real losses are correlated (§6.5).
+
+| topology | lambda_2 | convergence |
+|---|---|---|
+| G2, ring degree 4 | 0.2166 | **50.0 ± 0.3 s** |
+| G1, directed ring | 0.0219 | **220 ± 16 s** |
+| G3, clusters | 0.1392 | **does not converge** |
+
+G3 does not converge and should not: disabling nodes 21 and 30 splits the graph
+into three components, so there is no path between them and fleet-wide agreement
+is impossible by construction. Per component it converges in **8.7-12.9 s**. The
+fleet-wide figure for that topology is meaningless and must never be quoted -- the
+first pass here reported "600.0 s", which was simply the run duration, the exact
+failure mode identified in the review of `sim_analysis.py`.
+
+Note also that lambda_2 does not order the results: G3 has a higher lambda_2 than
+G1 yet never converges, because lambda_2 is computed on the declared graph while
+the disabled nodes change the effective one.
 
 #### Routes to a wider airtime range
 
