@@ -16,6 +16,13 @@ Run with the agents stopped; the BLE read needs the user channel.
 
     bash scripts/agents.sh stop
     sudo .venv/bin/python scripts/tx_power.py
+
+NOTE: taking the user channel and releasing it hands `hci0` back to bluetoothd,
+which powers the adapter UP -- and the user channel requires it DOWN. So the next
+agent start fails with EBUSY. This script therefore puts the adapter back DOWN on
+exit, and says so. If it is killed before that, run:
+
+    sudo hciconfig hci0 down
 """
 from __future__ import annotations
 
@@ -49,6 +56,10 @@ def ble_tx_power() -> tuple[int | None, str]:
             sock.close()
         except Exception:
             pass
+        # bluetoothd reclaims and powers the adapter up the moment the user
+        # channel is released, which blocks the next agent start. Put it back.
+        subprocess.run(["hciconfig", "hci0", "down"],
+                       capture_output=True, check=False)
 
 
 def main() -> int:
@@ -66,6 +77,15 @@ def main() -> int:
     print(f"  txpower                {tp:+.1f} dBm" if tp is not None
           else "  txpower                unknown")
     print( "  settable               yes: iw dev <ifc> set txpower fixed <mBm>")
+
+    if dbm is not None:
+        st_after = subprocess.run(["hciconfig", "hci0"], capture_output=True,
+                                  text=True, check=False).stdout
+        state = "DOWN" if "DOWN" in st_after else ("UP" if "UP" in st_after else "?")
+        print(f"  adapter left            {state}"
+              f"{'  (correct for the user channel)' if state == 'DOWN' else ''}")
+        if state != "DOWN":
+            print("  -> run: sudo hciconfig hci0 down   before starting agents")
 
     print("\n== nRF52840 (peer board, for reference)")
     print("  requested              +8 dBm (broadcaster.h TX_POWER_LEVEL_BLE)")

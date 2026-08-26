@@ -733,6 +733,53 @@ every point, while `nRF→Pi` sits below both and the gap widens 0.03 → 0.23. 
 claim that falling delivery under load is "coexistence" needs §8.2's experiment,
 because `nRF→nRF` — no CYW43455 at either end — fell just as far.
 
+#### Transmit power, measured 2026-08-25: the reported figures are not radiated power
+
+All three Pis report identically, so the fleet is homogeneous and the only
+transmit asymmetry is Pi versus nRF:
+
+| radio | reported | settable | note |
+|---|---|---|---|
+| Pi BLE (CYW43455) | **+12 dBm** | no | vendor command only for legacy advertising |
+| Pi Wi-Fi | 31.0 dBm | **yes** | `brcmfmac` placeholder; `iw ... fixed 800` verified to take effect |
+| nRF52840 BLE | +8 dBm, requested and granted | yes | RTT only, never reaches the host |
+
+Wi-Fi power is not a cross-class asymmetry at all: only `wifi` and `bridge` use it,
+both run on Pis, and all three read the same. It matters only as a deliberate
+variable.
+
+**The +12 dBm is not what the CYW43455 radiates.** The nRF receives from two link
+classes, so its RSSI compares them directly, and the geometry is identical -- the
+bridge and the `ble` agent sit on the same Pi at each end:
+
+| transmitter | median RSSI at the nRF | p5..p95 |
+|---|---|---|
+| nRF | **−17 dBm** | −17..−16 |
+| Pi | **−37 dBm** | −45..−34 |
+
+The Pi's advertisements arrive **20 dB weaker** while the reported powers predict
+them arriving 4 dB stronger: a ~24 dB contradiction, so the HCI read returns a
+nominal figure rather than radiated power. The likely cause is the shared antenna
+path -- BLE and WLAN reach the antenna through one front-end on that chip, and that
+costs dB the controller does not account for. The −17 dBm row spans 1 dB across
+119,810 samples, which is RSSI saturation at the nRF, so 20 dB is a **lower bound**.
+
+**This strengthens the receiver argument rather than competing with it:**
+
+| direction | arrives at | delivery |
+|---|---|---|
+| Pi → nRF | −37 dBm | **0.857** |
+| nRF → Pi | −32 dBm | **0.663** |
+
+The direction with the *stronger* received signal delivers *worse*, by 0.19. A
+receiver given more signal and doing less with it is not a link-budget problem. The
+transmit asymmetry runs opposite to the delivery asymmetry, which eliminates it as
+the cause and leaves the Pi's receive path as the explanation.
+
+The asymmetry also cannot be removed: the Pi's BLE power is not settable through
+any public interface, and the nRF already sits 20 dB above it. Measuring it was the
+option available, and that is now done -- `scripts/tx_power.py`.
+
 ### 6.5 The completed publish-rate sweep: airtime is not the variable
 
 *(2026-08-25. Four points x 10 repeats x 120 s, 39 of 40 runs usable, identical
@@ -937,7 +984,62 @@ the **second** run of a series, which is a thin pattern but the only one there i
 Still undiagnosed (§6.8), and it now inflates `Pi→nRF`'s sd to 0.088 against 0.018
 for its neighbours.
 
-### 6.8 Two conditions on `alpha`, and only one of them was being applied
+### 6.8 Duplicate filtering costs 0.44 delivery on the Pi, and the answer is asymmetric
+
+*(2026-08-25. `n9-k2` vs `n9-k2-dupfilter`: 9 agents, k = 2, 10 repeats each,
+differing in `radio.filter_duplicates` alone.)*
+
+A BLE controller can suppress repeated advertising reports below the host. The
+feature exists for device *discovery* -- an advertiser repeating 10x a second
+should be reported once, not 600 times a minute. Here an advertisement is a data
+packet whose payload changes every publish, so the feature is being applied to a
+channel it was not designed for.
+
+| receiver | link | k=1 | k=2 filter OFF | k=2 filter ON | delta | t |
+|---|---|---|---|---|---|---|
+| **Pi** | nRF→Pi | 0.605 | **0.768 ± 0.089** | **0.331 ± 0.023** | **−0.437** | **21.3** |
+| **Pi** | Pi→Pi | 0.898 | 0.976 ± 0.008 | 0.958 ± 0.021 | −0.019 | 3.8 |
+| nRF | nRF→nRF | 0.796 | 0.949 ± 0.010 | 0.946 ± 0.013 | −0.003 | 1.1 |
+| nRF | Pi→nRF | 0.750 | 0.935 ± 0.074 | 0.924 ± 0.139 | −0.012 | 0.3 |
+
+The nRF rows are the control: its scanner filters in firmware in **both** variants,
+and neither moves (t = 1.1 and 0.3). So the effect is entirely on the Pi's receive
+path, which is what the experiment varied.
+
+**It is far worse than losing the retry.** The prediction was that filtering would
+suppress the duplicate copy and push `nRF→Pi` back toward its k=1 value of 0.605.
+It went to **0.331** -- roughly half of k=1, not equal to it. So the CYW43455 is not
+merely dropping the byte-identical repeat; it is suppressing reports whose payload
+has changed. Whatever its filter keys on, it is not the advertising data.
+
+**`Pi→Pi` is protected, and that is informative rather than contradictory.** A
+`bridge` carries both media, so `MultiTransport` sends every packet over BLE *and*
+UDP. When the BLE copy is filtered away the UDP copy still arrives, so the link
+barely moves. `ble→bridge` has only BLE and takes the full hit. The redundancy that
+makes a bridge expensive in airtime (C2.2) is also what makes it robust here.
+
+**The two stacks do not behave alike.** Zephyr's controller on the nRF has
+filtering enabled and delivers 0.949 -- it is evidently data-sensitive. The
+CYW43455's is destructive. "Duplicate filtering" names two different behaviours,
+and the platform's asymmetry was therefore never removable by matching the flag:
+setting it on both ends would have crippled one end only.
+
+**Conclusion: `filter_duplicates` must stay `False` on the Pi**, which is what every
+run to date used. The residual asymmetry with the nRF is real, is not fixable by
+configuration, and is benign in the direction it exists.
+
+#### What it does not affect
+
+Convergence: 26.62 ± 2.74 s filtered off, 26.72 ± 2.79 s filtered on. Losing 44
+points of delivery on one link class did not move it. The ring keeps enough other
+paths, and most of the graph is UDP, so the control law absorbed a change that
+looks catastrophic per link. Worth remembering when reading any per-link figure as
+though it predicted control performance.
+
+Both sets contain one slow run each -- `n9k2-r4` at 34.4 s and `n9k2dup-r1` at
+34.6 s against ~25.8 s -- the same collapse signature as §6.9, now six occurrences.
+
+### 6.9 Two conditions on `alpha`, and only one of them was being applied
 
 `alpha` and `eta` appear in the update with **no `dt` factor**:
 
@@ -1004,7 +1106,55 @@ worth stating because the obvious tuning move — raise `alpha` until convergenc
 fast enough — degrades the thing being measured. The `n6-50hz` rescaling improves
 the floor 4x as a side effect of halving `alpha` for dt invariance.
 
-### 6.9 Open anomalies
+### 6.10 The run-start collapses: diagnosed to a receive-side stall, not loss
+
+Six occurrences across ~110 runs (~5%): `n6-fast` r6 and r9, `sweep-p200` r1,
+`n950` r1, `n9k2` r4, `n9k2dup` r1. Characterised 2026-08-25.
+
+**It is not elevated packet loss.** In `n9k2-r4` the worst link's whole-run
+delivery is 0.678, entirely normal for that configuration, yet convergence took
+34.4 s against ~25.7 s. Averaged delivery hides it because the fault is confined to
+the start of the run.
+
+**It is a link that is silent from the trigger and then recovers.** Time from run
+start until a neighbour is first heard, against a normal median of ~0.2 s:
+
+| run | link | first heard |
+|---|---|---|
+| `n9k2-r4` | 21→2 | **26.0 s** |
+| `n9k2dup-r1` | 22→3 | **14.7 s** |
+| `n9k2dup-r1` | 21→2 | 4.3 s |
+| `n950-r1` | 21→2 | heard, then silent for the rest of the run |
+
+**The transmitter is fine.** Every collapsed run shows `published: 600, failed: 0`
+on the silent link's sender, identical to healthy runs. The Pi transmits; the nRF
+does not register it.
+
+**The direction is always the same.** Every late-starting link is `bridge -> ble`:
+the nRF receiving from a Pi. Never the reverse, and never a UDP link.
+
+That is exactly where the nRF's duplicate filter operates, and §6.8 has just shown
+that a duplicate filter can suppress far more than byte-identical repeats. The
+nRF's accept path was audited and contains no time-dependent rejection --
+`on_data_parse_after_device_found` decodes, maps the node id and stores, with
+counters for every rejection class -- so the packets are not arriving at the host
+at all.
+
+**Action taken:** `BT_LE_SCAN_OPT_FILTER_DUPLICATE` removed from `observer.c`
+(2026-08-25), which both removes the last configuration asymmetry between the two
+receive paths and tests this hypothesis. Requires reflashing every board.
+
+**Prediction:** if the filter is the cause, the collapse rate falls to zero across a
+10-repeat set. If collapses continue at ~5%, the cause is elsewhere and the next
+suspect is the advertising schedule -- both ends currently advertise with
+`interval_min == interval_max`, which gives the controller no range to spread
+events over.
+
+Until this is settled, **no multi-run result should be quoted without stating the
+collapse rate**, and any set of 10 should be checked for a run whose convergence
+sits well outside the others' spread.
+
+### 6.11 Open anomalies
 
 **A single link collapses, about once in fifteen runs.** Three occurrences:
 `n6-fast-0` r6 (0.848) and r9 (0.733), and `sweep-p200` r1, where one link fell to

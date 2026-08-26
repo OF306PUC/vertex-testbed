@@ -42,10 +42,20 @@ the parameter is now reported rather than inferred. The BLE and bridge agents in
 revised experiments therefore share identical advertising and scanning parameters.
 
 \textbf{Residual asymmetries.} We note three that remain, for completeness:
-(i) transmit power is set explicitly on the nRF52 but left at the controller default
-on the Raspberry Pi; (ii) duplicate filtering is enabled in the nRF52 scanner and
-disabled in the Raspberry Pi scanner, so the two ends apply different acceptance
-policies to repeated advertisements; and (iii) the CYW43455 on the Raspberry Pi
+(i) transmit power differs between the two radios and cannot be equalised: the
+Raspberry Pi's controller reports $+12$\,dBm for advertising but its
+advertisements arrive $20$\,dB weaker than the nRF52's at a common receiver of
+identical geometry, indicating that the reported figure is nominal rather than
+radiated, and the Bluetooth specification provides no means of setting transmit
+power for legacy advertising. We note that this asymmetry acts in the opposite
+direction to the delivery asymmetry we report, and therefore cannot account for
+it; (ii) duplicate filtering is enabled in the nRF52 scanner and disabled in the
+Raspberry Pi scanner. We verified experimentally that this asymmetry cannot be
+removed by matching the setting: enabling it on the Raspberry Pi reduces delivery
+on BLE-only links from $0.768$ to $0.331$ ($10$ repeats each, $t=21.3$), whereas
+the nRF52 delivers $0.949$ with the same feature enabled. The two controllers
+implement materially different behaviour under the same name, and the
+configuration in use is the one that is correct for each; and (iii) the CYW43455 on the Raspberry Pi
 shares a single front-end between Wi-Fi and BLE with a packet traffic arbitration
 mechanism, which the nRF52, a single-protocol radio, does not have. We find the
 effect of (iii) to be measurable and directional, and we report it separately.

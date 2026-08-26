@@ -216,7 +216,16 @@ def wlan_state(interface: str = DEFAULT_INTERFACE) -> dict[str, Any]:
         out["wlan_freq_mhz"] = int(m.group(2))
     m = re.search(r"txpower\s+([-\d.]+)\s*dBm", info)
     if m:
-        out["wlan_txpower_dbm"] = float(m.group(1))
+        tp = float(m.group(1))
+        out["wlan_txpower_dbm"] = tp
+        # 31.00 dBm is ~1.3 W: above what the CYW43455 can radiate and above
+        # every 2.4 GHz regulatory limit. brcmfmac reports it as a fixed
+        # placeholder when it does not expose real transmit power. Recording it
+        # unflagged would put a fabricated number in every run's environment.
+        out["wlan_txpower_trusted"] = tp < 30.0
+        if tp >= 30.0:
+            out["wlan_txpower_note"] = (
+                "driver placeholder, not a measurement -- treat as unknown")
     m = re.search(r"type\s+(\w+)", info)
     if m:
         out["wlan_type"] = m.group(1)

@@ -162,13 +162,29 @@ int observer_init(void)
 	}
 	struct bt_le_scan_param scan_param = {
 		.type     = scan_active ? BT_LE_SCAN_TYPE_ACTIVE : BT_LE_SCAN_TYPE_PASSIVE,
-		/* Duplicate filtering ON, as it has always been here. The Pi-side scanner
-		 * deliberately turns it off, because a suppressed duplicate is
-		 * indistinguishable from a lost packet -- the number being measured. The
-		 * two receive paths are therefore measuring loss under different rules.
-		 * Left as-is rather than changed quietly: flipping it changes what every
-		 * `ble` agent has recorded. See PLATFORM.md 8b.A0. */
-		.options  = BT_LE_SCAN_OPT_FILTER_DUPLICATE,
+		/* Duplicate filtering OFF, matching the Pi-side scanner (2026-08-25).
+		 *
+		 * A suppressed duplicate is indistinguishable from a lost packet, which
+		 * is the number being measured, so the two receive paths must apply the
+		 * same rule. It was ON here and OFF on the Pi until now.
+		 *
+		 * Measured before changing it: enabling it on the Pi took BLE-only
+		 * delivery from 0.768 to 0.331 (PLATFORM.md 6.8), so the two controllers
+		 * implement very different behaviour under one name and matching the
+		 * FLAG was never the same as matching the BEHAVIOUR. Turning it off on
+		 * both is the only setting that makes the rule identical: report
+		 * everything, and let the host decide what is a repeat.
+		 *
+		 * It is also the leading suspect for the run-start collapses: the links
+		 * that go silent for tens of seconds are consistently `bridge -> ble`,
+		 * i.e. the nRF receiving from a Pi, which is exactly where this filter
+		 * acts. PLATFORM.md 6.10.
+		 *
+		 * Cost: the observer now sees every advertising event rather than one per
+		 * distinct payload, so `on_device_found` runs more often. It writes into a
+		 * depth-1 mailbox that is overwritten by design, so nothing queues up --
+		 * `queue_drops` will rise, and that is the counter working, not a fault. */
+		.options  = BT_LE_SCAN_OPT_NONE,
 		.interval = scan_interval,
 		.window   = scan_window,
 	};

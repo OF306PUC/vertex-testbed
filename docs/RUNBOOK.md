@@ -175,6 +175,17 @@ Nothing host-side blocks a first run. Remaining, in order:
 
 ## Recovering a stuck Bluetooth adapter
 
+**After running anything that takes the user channel** (`scripts/tx_power.py`,
+`scripts/adv_floor.py`), `bluetoothd` reclaims `hci0` and powers it **UP** the
+moment the socket closes — and the user channel needs it DOWN. The next agent
+start then fails with `configure refused -- HciError: ... Device or resource
+busy`. `tx_power.py` now puts it back down itself; if a tool is killed first:
+
+```bash
+sudo hciconfig hci0 down
+```
+
+
 `cannot take hci0 on the user channel ([Errno 16] Device or resource busy)` means
 the adapter is up under BlueZ, or a previous process still holds the user channel.
 

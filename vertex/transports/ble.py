@@ -106,6 +106,7 @@ class BleTransport(Transport):
         *,
         device: int = 0,
         adv_interval_ms: float = 100.0,
+        adv_interval_max_ms: float | None = None,
         scan_interval_ms: float = 100.0,
         scan_window_ms: float = 100.0,
         channel_map: int = CHANNELS_ALL,
@@ -119,6 +120,7 @@ class BleTransport(Transport):
         self.clock = clock
         self.device = device
         self.adv_interval_ms = adv_interval_ms
+        self.adv_interval_max_ms = adv_interval_max_ms
         self.scan_interval_ms = scan_interval_ms
         self.scan_window_ms = scan_window_ms
         self.channel_map = channel_map
@@ -148,6 +150,7 @@ class BleTransport(Transport):
             "device": self.device,
             "adv_interval_ms": self.adv_interval_ms,
             "adv_interval_units": ms_to_units(self.adv_interval_ms),
+            "adv_interval_max_ms": self.adv_interval_max_ms,
             "scan_interval_ms": self.scan_interval_ms,
             "scan_interval_units": ms_to_units(self.scan_interval_ms),
             "scan_window_ms": self.scan_window_ms,
@@ -190,8 +193,11 @@ class BleTransport(Transport):
         adv_units = ms_to_units(self.adv_interval_ms)
         self._sock.command(cmd_le_set_adv_enable(False),
                            tolerate=(HciStatus.COMMAND_DISALLOWED,))
+        adv_units_max = ms_to_units(self.adv_interval_max_ms
+                                    if self.adv_interval_max_ms is not None
+                                    else self.adv_interval_ms)
         self._sock.command(cmd_le_set_adv_parameters(
-            interval_min=adv_units, interval_max=adv_units,
+            interval_min=adv_units, interval_max=adv_units_max,
             adv_type=ADV_NONCONN_IND, channel_map=self.channel_map))
         # Something valid must be advertised before enabling, or the controller
         # radiates whatever was left in its buffer from the previous run.

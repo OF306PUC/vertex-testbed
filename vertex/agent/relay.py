@@ -75,7 +75,8 @@ def assignment_to_frames(a: AgentAssignment, *,
     return frames
 
 
-def radio_frame(*, adv_interval_ms: float, scan_interval_ms: float,
+def radio_frame(*, adv_interval_ms: float,
+                adv_interval_max_ms: float | None = None, scan_interval_ms: float,
                 scan_window_ms: float, advertising: bool = True,
                 active_scan: bool = False) -> tuple[int, bytes]:
     """Radio parameters for the nRF, in 0.625 ms units.
@@ -90,7 +91,9 @@ def radio_frame(*, adv_interval_ms: float, scan_interval_ms: float,
         raise RelayError(
             f"scan window {scan_window_ms} ms exceeds interval {scan_interval_ms} ms")
     return (FrameType.RADIO, encode_radio(
-        adv_min=units(adv_interval_ms), adv_max=units(adv_interval_ms),
+        adv_min=units(adv_interval_ms),
+        adv_max=units(adv_interval_max_ms if adv_interval_max_ms is not None
+                      else adv_interval_ms),
         scan_interval=units(scan_interval_ms), scan_window=units(scan_window_ms),
         active_scan=active_scan, advertising=advertising))
 

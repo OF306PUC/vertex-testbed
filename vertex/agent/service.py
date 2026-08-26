@@ -154,6 +154,8 @@ class AgentService:
             node_id, self.clock,
             sock=self._hci_socket(),
             adv_interval_ms=float(r.get("adv_interval_ms", 100.0)),
+            adv_interval_max_ms=(float(r["adv_interval_max_ms"])
+                                 if r.get("adv_interval_max_ms") else None),
             scan_interval_ms=float(r.get("scan_interval_ms", 100.0)),
             scan_window_ms=float(r.get("scan_window_ms", 100.0)),
             channel_map=int(r.get("channel_map", 0x07)),
@@ -287,6 +289,8 @@ class AgentService:
         # recorded as unapplied for `ble` -- see radio_environment().
         return radio_frame(
             adv_interval_ms=float(r.get("adv_interval_ms", 100.0)),
+            adv_interval_max_ms=(float(r["adv_interval_max_ms"])
+                                 if r.get("adv_interval_max_ms") else None),
             scan_interval_ms=float(r.get("scan_interval_ms", 100.0)),
             scan_window_ms=float(r.get("scan_window_ms", 100.0)),
             active_scan=not bool(r.get("passive_scan", True)))

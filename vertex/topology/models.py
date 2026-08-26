@@ -144,6 +144,16 @@ class RadioSpec(BaseModel):
                     "4.x floor of 100 ms for non-connectable undirected "
                     "advertising, not the 20 ms of 5.0.",
     )
+    #: Upper end of the advertising interval. None means min == max, which is
+    #: what every run before 2026-08-25 used and which leaves the controller no
+    #: range to spread events over: at the trigger all advertisers start within
+    #: the trigger spread (~10-30 ms), so their 100 ms cycles begin nearly in
+    #: phase. A radio cannot scan while it advertises, so a pair whose events
+    #: coincide stays blind to each other until their clocks drift apart --
+    #: measured as one link silent for 7.5-26 s at run start, in ~10% of
+    #: nine-agent runs (PLATFORM.md 6.10).
+    adv_interval_max_ms: float | None = Field(default=None, ge=100.0, le=10240.0)
+
     scan_interval_ms: float = Field(default=100.0, ge=2.5, le=10240.0)
     scan_window_ms: float = Field(
         default=100.0, ge=2.5, le=10240.0,
@@ -178,6 +188,15 @@ class RadioSpec(BaseModel):
                     "no TX airtime -- which is the thing that blanks our own BLE "
                     "receive window.",
     )
+
+    @model_validator(mode="after")
+    def _adv_range_ordered(self) -> "RadioSpec":
+        if (self.adv_interval_max_ms is not None
+                and self.adv_interval_max_ms < self.adv_interval_ms):
+            raise ValueError(
+                f"adv_interval_max_ms ({self.adv_interval_max_ms}) is below "
+                f"adv_interval_ms ({self.adv_interval_ms})")
+        return self
 
     @model_validator(mode="after")
     def _window_fits(self) -> "RadioSpec":

@@ -535,6 +535,38 @@ def manifests() -> dict[str, dict]:
             "nodes": n950,
         }
 
+        # ── n9-jitter: the same run with an advertising interval RANGE ────────
+        # Every run so far advertised with interval_min == interval_max, so the
+        # controller had no range to spread events over. At the trigger all nine
+        # agents start within ~10-30 ms, so every advertiser's 100 ms cycle begins
+        # nearly in phase -- and a radio cannot scan while it advertises, so a
+        # pair whose events coincide is blind to each other until their clocks
+        # drift apart. Measured as one link silent for 7.5-26 s at run start in
+        # ~10% of nine-agent runs, and only ~3% of six-agent ones, which is the
+        # right direction for a collision explanation (PLATFORM.md 6.10).
+        #
+        # 100-120 ms gives the controller a 20 ms spreading range on both ends.
+        # Everything else is identical to n9-50hz, so this is a paired test.
+        njit = hosts_for(3, hosts=FIRST_RUN_HOSTS)
+        njit_edges = ring(ids=N9_ORDER)
+        for node in njit:
+            node["neighbors"] = njit_edges[node["id"]]
+            node["publish_period_s"] = 0.1
+        out["n9-jitter"] = {
+            "name": "n9-jitter",
+            "description": (
+                "n9-50hz with an advertising interval RANGE of 100-120 ms "
+                "instead of a fixed 100 ms, on both the Pi and the nRF. Paired "
+                "with n9-50hz: identical in every other field. Tests whether the "
+                "run-start link stalls are advertising-event collisions between "
+                "two radios locked to the same nominal interval."
+            ),
+            "seed": 20260818,
+            "controller": CONTROLLER_50HZ,
+            "radio": {**radio_for(0.1), "adv_interval_max_ms": 120.0},
+            "nodes": njit,
+        }
+
         # ── n9-k2 / n9-k2-dupfilter: does duplicate filtering eat the retry? ──
         # 10 Hz advertising against a 5 Hz publish gives k = 2: every value goes
         # out twice, with identical bytes and identical address. That is a
