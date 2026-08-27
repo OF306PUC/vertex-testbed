@@ -12,4 +12,13 @@ struct bt_hci_cp_vs_write_tx_power_level {
 struct bt_hci_rp_vs_write_tx_power_level {
     uint8_t status; uint16_t handle; uint8_t handle_type; int8_t selected_tx_power;
 };
+/* Mirrors zephyr/include/zephyr/bluetooth/hci_vs.h:178-186. Absent here until
+ * test/nrf/txpower needed it, which made a correct source fail the check. */
+#define BT_HCI_OP_VS_READ_TX_POWER_LEVEL 0xfc0f
+struct bt_hci_cp_vs_read_tx_power_level {
+    uint16_t handle; uint8_t handle_type;
+};
+struct bt_hci_rp_vs_read_tx_power_level {
+    uint8_t status; uint16_t handle; uint8_t handle_type; int8_t tx_power_level;
+};
 #endif

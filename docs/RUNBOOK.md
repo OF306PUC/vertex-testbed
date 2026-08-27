@@ -1,8 +1,9 @@
 # VERTEX runbook
 
-Everything needed to get a run off the ground on real hardware, and the traps that
-cost time the first time round. Design rationale is in `PLATFORM.md`; the dated
-record of what each run showed is in `JOURNAL.md`.
+The traps, the recovery procedures and the environment work -- what to read when a
+run has already gone wrong. The bring-up procedure itself is in the README; this
+file deliberately does not repeat it. Design rationale is in `PLATFORM.md`; the
+dated record of what each run showed is in `JOURNAL.md`.
 
 ---
 
@@ -34,7 +35,7 @@ reporting path had no caller at all until recently -- is absent.
 
 Rehearsed host-side: 4/4 nodes, 160 samples, one epoch.
 
-### 8d. Runbook: two hosts, six agents
+### 8d. `n6-ring`: six agents, and why the cycle is forced
 
 `experiments/n6-ring.yaml`. The step between one board and the full nine.
 
@@ -60,35 +61,6 @@ Note 21-22 is *not* in the cycle, so bridge-to-bridge over BLE is the one path t
 manifest does not cover. Add that edge to get it, at the cost of degree 3 on the
 bridges.
 
-### Sequence
-
-**On each Pi**, once:
-
-```
-bash scripts/agents.sh preflight     # do not skip this
-sudo hciconfig hci0 down             # the bridge needs the HCI user channel, exclusively
-bash scripts/agents.sh start
-bash scripts/agents.sh status
-```
-
-`preflight` checks the four things that actually stop a run: the interface has an
-address, **chrony is tracking** (the shared epoch is only shared if the clocks
-are), the nRF's serial port exists and is writable, and `hci0` is DOWN with
-CAP_NET_ADMIN available. It is a checklist rather than a stack trace on purpose.
-
-`scripts/agents.sh` does **not** pass `--epoch`. The epoch is per-run and the hub
-sends it with the trigger; one fixed at launch would give each agent its own origin.
-
-**On the hub:**
-
-```
-python3 -m vertex.hub status experiments/n6-ring.yaml
-python3 -m vertex.hub run    experiments/n6-ring.yaml --duration 120
-```
-
-`status` first, always. Finding a Pi that did not come up costs seconds there and a
-whole run otherwise.
-
 ### What to look for in the result
 
 * **`enabled=[True]` on some neighbour.** The first thing two boards buy that one
@@ -110,17 +82,6 @@ Host-side rehearsed with `python3 test/hub/check_fleet.py experiments/n6-ring.ya
 6/6 nodes, 240 samples, one epoch.
 
 ---
-
-### Deployment facts to know before trying
-
-* The `bridge` agent binds the **HCI user channel exclusively**. BlueZ must be
-  stopped and the adapter down (`hciconfig hci0 down`), and the process needs
-  `CAP_NET_ADMIN`.
-* On each Pi the `bridge` and `wifi` agents share the CYW43455. That is the
-  coexistence effect being measured (PLATFORM.md §3 A2/A3), not a misconfiguration.
-* The three agents on a host take distinct control ports (3001/3002/3003) and
-  share `STATE_PORT` via `SO_REUSEPORT`. The manifest validator already refuses two
-  agents of the same type on one address.
 
 ### Restarting agents, and stale pidfiles
 
@@ -145,31 +106,6 @@ Liveness also verifies the pid is *ours*. A dead agent leaves a stale pidfile an
 Linux recycles pids, so `/proc/<pid>` existing is not enough -- a recycled pid would
 make `start` skip a dead agent and `status` report it up. It now also checks
 `/proc/<pid>/cmdline` contains `vertex.agent` and the agent type.
-
-### What is left
-
-Nothing host-side blocks a first run. Remaining, in order:
-
-1. **Bring up the flashed board:** `python3 test/nrf/check_board.py --port
-   /dev/ttyACM0`, then again with `--scan`. Deliberately NOT in `check_all.sh`,
-   which is hardware-free. It runs in the order things fail: PING (which is the
-   test for `CONFIG_UART_0_NRF_HW_ASYNC` -- an empty payload makes the smallest
-   frame there is, and without byte counting it never leaves the DMA buffer), then
-   a deliberate rejection, then configure/trigger, then the STATE stream, then
-   `--scan` reads the board's own advertisements back with the *host* codec. That
-   last stage is the only check that puts firmware-encoded v1 on a real radio;
-   `check_air_wire.py` proves the two codecs agree, this proves the radio path
-   does.
-2. **Bring up one Pi**: `python3 -m vertex.agent --type wifi`, then
-   `python3 -m vertex.hub status experiments/n9-ring.yaml --only 11`.
-3. **Provisioning.** Three Pis × three agents launched by hand is nine terminals;
-   templated systemd units (D6) and chrony are what make it repeatable. chrony
-   matters more than convenience: without it the shared epoch is shared in name
-   only.
-4. **Analysis.** `vertex/analysis/` is `units.py`; a collected run currently needs
-   `runlog.read_run_file` by hand. Loaders and per-link metrics next.
-5. **README.** Two lines, no procedure, and the procedure now exists.
-6. PLATFORM.md §8.1: `pyproject.toml` `testpaths`.
 
 ---
 
@@ -216,6 +152,39 @@ Since 2026-08-24 each agent process opens **one** HCI socket and keeps it, so th
 should no longer accumulate across a sweep. If it recurs, check for a second agent
 process on the same host holding `hci0` -- only one process per host may own the
 user channel.
+
+## Reading the nRF's radio state
+
+**The serial port does not carry logs.** `prj.conf` sets `CONFIG_UART_CONSOLE=n`
+and `CONFIG_LOG_BACKEND_UART=n`: logging goes to **RTT over SWD**, and the UART
+carries only the framed binary protocol. A serial monitor shows `0x7E` frames, not
+text.
+
+```bash
+bash test/nrf/rtt_tx_power.sh          # start capture, then trigger a run
+```
+
+The transmit-power line is emitted by `broadcaster_init()`, which runs at the **run
+trigger**, not at boot — so start the capture first, then start a run. RTT is
+non-intrusive over SWD, so the agent can keep running.
+
+What the lines mean:
+
+| line | meaning |
+|---|---|
+| `Tx power: 8 dBm` | requested and granted (nRF52840) |
+| `Tx power 8 dBm requested, 4 dBm selected` | controller capped it (nRF52832) |
+| `Set Tx power err` | the Nordic vendor command failed |
+| no line at all | no run was triggered during the capture |
+
+Without a J-Link tool the value is still determined: `broadcaster.h` requests
+`TX_POWER_LEVEL_BLE = +8`, an nRF52840 grants +8 and an nRF52832 caps at +4. The
+log only confirms which happened.
+
+**This is a workaround, not the fix.** The value never reaches the host, so it is
+absent from every run's metadata — see PLATFORM.md §8.1 item A2, the missing
+`STATS_REQ` handler. With that implemented the figure would land in the environment
+block like every other radio parameter, and this script would be unnecessary.
 
 ## Privileges and capabilities
 
@@ -271,15 +240,15 @@ a variable there fails to start with "path is not absolute". `install.sh` genera
 those three into a drop-in from the env file, and runs `systemd-analyze verify` on
 all three instances before it finishes.
 
-### Privileges: only the bridge needs them
+### Privileges: the three routes, and what they broke
 
-Of the three agents, `bridge` alone needs elevation -- it binds the **HCI user
-channel**, which is exclusive and root-only. `ble` needs the serial port
-(`dialout` group) and `wifi` needs nothing beyond the LAN.
+`bridge` alone needs elevation and `scripts/agents.sh` elevates only it -- see the
+README for which agent needs what. What matters here is that there is more than one
+way to grant it, and two of them bite.
 
-`scripts/agents.sh` therefore elevates the bridge and nothing else. Running all
-three under `sudo` would be simpler and wrong: every run log becomes root-owned,
-and two processes that never touch the radio get the capability anyway.
+The three agents on a host take distinct control ports (3001/3002/3003) and share
+`STATE_PORT` via `SO_REUSEPORT`; the manifest validator already refuses two agents
+of the same type on one address.
 
 Three ways to satisfy it, in order of preference:
 

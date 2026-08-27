@@ -42,6 +42,7 @@ int64_t k_uptime_ticks(void);
 int64_t k_ticks_to_us_floor64(int64_t t);
 int64_t k_ticks_to_us_near64(int64_t t);
 void k_sleep(k_timeout_t t);
+void k_msleep(int ms);
 struct k_timer { int _; };
 typedef void (*k_timer_expiry_t)(struct k_timer *t);
 typedef void (*k_timer_stop_t)(struct k_timer *t);

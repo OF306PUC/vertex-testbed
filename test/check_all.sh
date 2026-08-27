@@ -21,6 +21,7 @@ run() {
 run "firmware syntax: nordic"          bash test/common/syntax_check.sh firmware/nordic
 run "firmware syntax: loopback a"      bash test/common/syntax_check.sh test/loopback-uart-ble-a/firmware
 run "firmware syntax: loopback b"      bash test/common/syntax_check.sh test/loopback-uart-ble-b/firmware
+run "firmware syntax: txpower probe"  bash test/common/syntax_check.sh test/nrf/txpower
 run "firmware symbols"                 python3 test/common/check_firmware_symbols.py firmware/nordic
 
 # Does the host encode what each firmware decodes? All three, not just nordic:
