@@ -131,7 +131,8 @@ def main() -> int:
                 dt_ms=DT_MS, clock_ms=CLOCK_MS,
                 state0=quantize(STATE0), vstate0=quantize(VSTATE0),
                 vartheta0=0, counter0=0,
-                alpha=quantize(0.02), delta=quantize(0.01), eta=quantize(2e-6))),
+                gain_ij=quantize(0.02), delta=quantize(0.01),
+                eta=quantize(2e-6), alpha=quantize(0.5))),
             ("DISTURBANCE", FrameType.DISTURBANCE, encode_disturbance(
                 active=True, sine_amplitude=quantize(3.75e-3),
                 frequency=quantize(2.0), phase=quantize(0.0),

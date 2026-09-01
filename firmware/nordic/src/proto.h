@@ -62,7 +62,7 @@
 #define PROTO_MAX_NEIGHBORS     16u
 #define PROTO_NETWORK_MIN_LEN   2u      /* enabled + node_id, zero neighbours */
 #define PROTO_NETWORK_MAX_LEN   (PROTO_NETWORK_MIN_LEN + PROTO_MAX_NEIGHBORS)
-#define PROTO_ALGORITHM_LEN     36u     /* 9 x int32 */
+#define PROTO_ALGORITHM_LEN     40u     /* 10 x int32 */
 #define PROTO_DISTURBANCE_LEN   29u     /* 1 x uint8 + 7 x int32 */
 #define PROTO_CONTROL_LEN       11u     /* run flag + uint32 seed + uint48 epoch */
 #define PROTO_RADIO_LEN         9u

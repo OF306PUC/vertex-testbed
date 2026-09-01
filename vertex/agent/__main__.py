@@ -13,7 +13,7 @@ One process per agent, three per Pi. The type decides almost everything else:
     bridge   controller here, published over BLE *and* UDP -- it is the only agent
              on both media, and the only path between the `ble` and `wifi` subnets.
 
-The control port follows from the type (3001/3002/3003), so the hub needs only the
+The param/execution control port follows from the type (3001/3002/3003), so the hub needs only the
 host address and the manifest. Nothing is configured here: the process starts,
 serves, and waits for the hub to tell it who it is.
 

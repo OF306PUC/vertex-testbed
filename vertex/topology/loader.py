@@ -82,7 +82,7 @@ def controller_params_for(
     return ControllerParams(
         dt_s=c.dt_s,
         state=ics["state"], vstate=ics["vstate"], vartheta=ics["vartheta"],
-        eta=c.eta, alpha=c.alpha, delta=c.delta,
+        eta=c.eta, gain_ij=c.gain_ij, alpha=c.alpha, delta=c.delta,
         disturbance=DisturbanceParams(
             enabled=d.enabled,
             noise_amplitude=d.noise_amplitude,

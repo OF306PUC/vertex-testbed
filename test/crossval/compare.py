@@ -53,7 +53,8 @@ DIST = DisturbanceParams(enabled=True, noise_amplitude=0.1, noise_offset=0.5,
 STEPS = 400
 DT_MS = 200
 STATE0, VSTATE0, VARTHETA0 = 22.3, 22.3, 0.0
-ALPHA, DELTA, ETA = 0.02, 0.01, 2e-6
+GAIN_IJ, DELTA, ETA = 0.02, 0.01, 2e-6
+ALPHA = 0.5           # sign-power exponent
 SEED, NODE = 12345, 3
 NEIGHBOURS = [21.0, 23.0]
 
@@ -80,7 +81,8 @@ def frames() -> str:
             dt_ms=DT_MS, clock_ms=1000,
             state0=quantize(STATE0), vstate0=quantize(VSTATE0),
             vartheta0=quantize(VARTHETA0), counter0=0,
-            alpha=quantize(ALPHA), delta=quantize(DELTA), eta=quantize(ETA))),
+            gain_ij=quantize(GAIN_IJ), delta=quantize(DELTA),
+            eta=quantize(ETA), alpha=quantize(ALPHA))),
         (FrameType.DISTURBANCE, encode_disturbance(
             active=DIST.enabled,
             sine_amplitude=quantize(DIST.sine_amplitude),
@@ -111,7 +113,7 @@ def run_c() -> list[tuple[int, int, int]]:
 
 def run_python() -> list[tuple[int, int, int]]:
     params = ControllerParams(dt_s=DT_MS / 1000.0, state=STATE0, vstate=VSTATE0,
-                              vartheta=VARTHETA0, eta=ETA, alpha=ALPHA,
+                              vartheta=VARTHETA0, eta=ETA, gain_ij=GAIN_IJ, alpha=ALPHA,
                               delta=DELTA, disturbance=DIST)
     # The same stream the firmware draws: PCG32 seeded (seed, node).
     ctrl = FiniteTimeAdaptiveController(params, uniform=Pcg32(SEED, NODE).uniform)

@@ -35,6 +35,7 @@ What it proves, in order of how badly each has already gone wrong:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import shutil
 import sys
@@ -64,7 +65,7 @@ DT_S = 0.05                 # compressed: the point is the plumbing, not the law
 #: cannot catch a length or offset disagreement, which is most of what the serial
 #: path can get wrong.
 PAYLOAD_LENS = {
-    FrameType.ALGORITHM: 36,
+    FrameType.ALGORITHM: 40,
     FrameType.DISTURBANCE: 29,
     FrameType.CONTROL: 11,
     FrameType.RADIO: 9,
@@ -288,9 +289,14 @@ async def main(manifest_path: str) -> int:
         media = getattr(t, "media", None)
         # The factory injects a loopback here, so this checks the wiring the real
         # factory would use rather than the fake.
-        real = services[nid]._make_transport.__doc__ or ""
-        if "both" not in real:
-            fails.append(f"bridge {nid}: transport factory does not document both media")
+        # Asserted against the source of the factory, not its docstring: the
+        # harness injects a loopback transport, so the real wiring is not
+        # exercised here and the only evidence available is what the factory
+        # would construct. Reading the prose instead made an edit to a comment
+        # fail the fleet check.
+        real = inspect.getsource(type(services[nid])._make_transport)
+        if "MultiTransport" not in real:
+            fails.append(f"bridge {nid}: transport factory builds no MultiTransport")
         if media is None and t is not None and t.name == "loopback":
             pass                    # expected under the fake
 

@@ -72,9 +72,10 @@ static int apply_algorithm(struct agent *a, const uint8_t *d, uint16_t len)
     a->params.vstate_0   = proto_ld_i32(&d[12]);
     a->params.vartheta_0 = proto_ld_i32(&d[16]);
     a->params.counter_0  = proto_ld_i32(&d[20]);
-    a->params.alpha      = proto_ld_i32(&d[24]);
+    a->params.gain_ij    = proto_ld_i32(&d[24]);
     a->params.delta      = proto_ld_i32(&d[28]);
     a->params.eta        = proto_ld_i32(&d[32]);
+    a->params.alpha      = proto_ld_i32(&d[36]);
     return AGENT_OK;
 }
 

@@ -39,7 +39,8 @@ float sign(float x)
  */
 float v_i(const struct agent *a)
 {
-    const float z = a->vars.vstate_f;
+    const float z     = a->vars.vstate_f;
+    const float alpha = (float)a->params.alpha * INV_SCALE_FACTOR;
     float vi = 0.0f;
     for (uint8_t j = 0; j < a->params.n_neighbors; j++) {
         if (a->params.neighbors_enabled[j]) {
@@ -47,7 +48,10 @@ float v_i(const struct agent *a)
                 z - (float)a->vars.neighbor_vstates[j] * INV_SCALE_FACTOR;
             /* sign(0) == 0, so a neighbour already in agreement contributes
              * nothing -- the same convention as vertex/numeric.py::sign. */
-            vi += -1.0f * sign(diff) * sqrtf(fabsf(diff));
+            /* alpha = 1/2 recovers the square root this replaced. powf is
+             * several times the cost of VSQRT, which the 5 Hz control
+             * period absorbs; see PLATFORM.md before raising the rate. */
+            vi += -1.0f * sign(diff) * powf(fabsf(diff), alpha);
         }
     }
     return vi;
@@ -80,14 +84,14 @@ void discrete_step(struct agent *a)
     const float vartheta = sanitize_f(a->vars.vartheta_f);
 
     const float eta   = (float)a->params.eta   * INV_SCALE_FACTOR;
-    const float alpha = (float)a->params.alpha * INV_SCALE_FACTOR;
+    const float gain  = (float)a->params.gain_ij * INV_SCALE_FACTOR;
     const float delta = (float)a->params.delta * INV_SCALE_FACTOR;
 
     const float nu    = disturbance(a) * dt;
     const float sigma = x - z;
     const float grad  = sign(sigma);
 
-    const float gi = alpha * v_i(a);
+    const float gi = gain * v_i(a);
 
     const float u       = gi - vartheta * grad;
     const float dvtheta = (fabsf(sigma) > delta) ? 1.0f : 0.0f;

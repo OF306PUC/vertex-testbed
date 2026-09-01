@@ -42,8 +42,9 @@ CASES = {
     "ALGORITHM": (
         "PROTO_ALGORITHM_LEN",
         encode_algorithm(dt_ms=200, clock_ms=1000, state0=1, vstate0=2,
-                         vartheta0=3, counter0=4, alpha=5, delta=6, eta=7),
-        [0, 4, 8, 12, 16, 20, 24, 28, 32],      # 9 x int32
+                         vartheta0=3, counter0=4, gain_ij=5, delta=6, eta=7,
+                         alpha=8),
+        [0, 4, 8, 12, 16, 20, 24, 28, 32, 36],  # 10 x int32
     ),
     "DISTURBANCE": (
         "PROTO_DISTURBANCE_LEN",

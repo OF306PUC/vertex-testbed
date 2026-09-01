@@ -46,6 +46,10 @@ MAX_FRAME = MAX_PAYLOAD + OVERHEAD
 MAX_NEIGHBORS = 16
 MAX_AD_LEN = 31
 
+#: The sign-power exponent alpha = 1/2, scaled by 1e6 like every other gain on
+#: the wire. Every run to date used this value, when it was a hard-coded sqrt.
+ALPHA_HALF = 500_000
+
 
 class FrameType(IntEnum):
     """Must match the ``PROTO_T_*`` defines in ``proto.h``."""
@@ -243,13 +247,22 @@ def encode_network(*, enabled: bool, node_id: int, neighbors: list[int]) -> byte
 
 
 def encode_algorithm(*, dt_ms: int, clock_ms: int, state0: int, vstate0: int,
-                     vartheta0: int, counter0: int, alpha: int, delta: int,
-                     eta: int) -> bytes:
-    """Nine int32s. Order matches ``apply_algorithm()`` in agent.c exactly."""
+                     vartheta0: int, counter0: int, gain_ij: int, delta: int,
+                     eta: int, alpha: int = ALPHA_HALF) -> bytes:
+    """Ten int32s. Order matches ``apply_algorithm()`` in agent.c exactly.
+
+    ``alpha`` is the exponent of the sign-power coupling and is appended rather
+    than inserted, so every field that existed before keeps its offset and only
+    the length changes. ``gain_ij`` is the coupling gain, which this field was
+    called until the exponent needed the name.
+    """
     if dt_ms <= 0 or clock_ms <= 0:
         raise ProtoError("dt_ms and clock_ms must be > 0; the peer rejects zero")
-    return struct.pack("<9i", dt_ms, clock_ms, state0, vstate0, vartheta0,
-                       counter0, alpha, delta, eta)
+    if alpha <= 0:
+        raise ProtoError("alpha must be > 0; a zero exponent makes every "
+                         "nonzero disagreement contribute the same amount")
+    return struct.pack("<10i", dt_ms, clock_ms, state0, vstate0, vartheta0,
+                       counter0, gain_ij, delta, eta, alpha)
 
 
 def encode_disturbance(*, active: bool, sine_amplitude: int, frequency: int,

@@ -180,11 +180,11 @@ def check(manifest: ExperimentManifest, *, require_strong: bool | None = None) -
             "agreement value will be a weighted combination, not the mean"
         )
 
-    if not manifest.controller.eta_well_below_alpha:
+    if not manifest.controller.eta_well_below_gain:
         rep.warnings.append(
             f"eta={manifest.controller.eta} is not much smaller than "
-            f"alpha={manifest.controller.alpha}; the discrete form assumes "
-            "eta << alpha, since both absorb the step size"
+            f"gain_ij={manifest.controller.gain_ij}; the discrete form assumes "
+            "eta << gain_ij, since both absorb the step size"
         )
 
     # Medium reachability. An agent can only hear a neighbour it shares a medium

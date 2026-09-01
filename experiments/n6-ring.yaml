@@ -9,7 +9,8 @@ controller:
   name: finite_time_adaptive
   dt_s: 0.2
   eta: 2.0e-06
-  alpha: 0.02
+  gain_ij: 0.02
+  alpha: 0.5
   delta: 0.01
   disturbance:
     enabled: true

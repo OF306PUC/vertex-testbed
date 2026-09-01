@@ -44,7 +44,8 @@ class AgentAssignment(BaseModel):
     vstate: float = 0.0
     vartheta: float = 0.0
     eta: float = 2e-6
-    alpha: float = 0.02
+    gain_ij: float = 0.02
+    alpha: float = 0.5              # sign-power exponent
     delta: float = 0.01
 
     # disturbance
@@ -63,7 +64,8 @@ class AgentAssignment(BaseModel):
         d = self.disturbance
         return ControllerParams(
             dt_s=self.dt_s, state=self.state, vstate=self.vstate,
-            vartheta=self.vartheta, eta=self.eta, alpha=self.alpha,
+            vartheta=self.vartheta, eta=self.eta, gain_ij=self.gain_ij,
+            alpha=self.alpha,
             delta=self.delta,
             disturbance=DisturbanceParams(
                 enabled=bool(d.get("enabled", False)),
@@ -114,7 +116,8 @@ def assignment_for(
         dt_s=params.dt_s, publish_period_s=node.publish_period_s,
         controller=manifest.controller.name,
         state=params.state, vstate=params.vstate, vartheta=params.vartheta,
-        eta=params.eta, alpha=params.alpha, delta=params.delta,
+        eta=params.eta, gain_ij=params.gain_ij, alpha=params.alpha,
+        delta=params.delta,
         disturbance={
             "enabled": d.enabled, "noise_amplitude": d.noise_amplitude,
             "noise_offset": d.noise_offset, "beta": d.beta,

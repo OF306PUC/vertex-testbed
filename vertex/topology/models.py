@@ -59,18 +59,23 @@ class ControllerSpec(BaseModel):
     name: str = "finite_time_adaptive"
     dt_s: float = Field(default=0.2, gt=0, description="Control period, seconds")
     eta: float = Field(default=2e-6, description="Adaptation rate")
-    alpha: float = Field(default=0.02, description="Coordination gain")
+    gain_ij: float = Field(default=0.02, description="Coupling gain, the paper's a_ij")
+    #: Exponent of the sign-power coupling: v_i = -sum sign(z_i - z_j) |z_i - z_j|^alpha.
+    #: 1/2 is the finite-time case and is what every run before 2026-08-28
+    #: used, when it was a hard-coded square root.
+    alpha: float = Field(default=0.5, gt=0.0, le=1.0,
+                         description="Sign-power exponent")
     delta: float = Field(default=0.01, description="Adaptation dead-band")
     disturbance: DisturbanceSpec = DisturbanceSpec()
 
     @property
-    def eta_well_below_alpha(self) -> bool:
-        """Whether ``eta << alpha``, which the discrete form requires.
+    def eta_well_below_gain(self) -> bool:
+        """Whether ``eta << gain_ij``, which the discrete form requires.
 
         Exposed rather than enforced: exploring the boundary is a legitimate
         experiment, so validation reports it instead of refusing to run.
         """
-        return abs(self.eta) * 100 <= abs(self.alpha)
+        return abs(self.eta) * 100 <= abs(self.gain_ij)
 
 
 class NodeSpec(BaseModel):

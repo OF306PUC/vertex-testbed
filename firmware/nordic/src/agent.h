@@ -16,7 +16,7 @@
  *
  *     ALGORITHM  'A'=0x41  36 bytes
  *       [dt_ms:4][clock_ms:4][state_0:4][vstate_0:4][vartheta_0:4]
- *       [counter_0:4][alpha:4][delta:4][eta:4]
+ *       [counter_0:4][gain_ij:4][delta:4][eta:4][alpha:4]
  *       dt is the control period, clock the communication update period. 
  *
  *     DISTURBANCE  'D'=0x44  29 bytes
@@ -100,7 +100,8 @@ struct agent_params {
     int32_t  vstate_0;
     int32_t  vartheta_0;
     int32_t  counter_0;
-    int32_t  alpha;
+    int32_t  gain_ij;           /* coupling gain, the paper's a_ij */
+    int32_t  alpha;             /* sign-power EXPONENT, not a gain */
     int32_t  delta;
     int32_t  eta;
     uint32_t seed;              /* per-node, per-run PRNG seed, from CONTROL */

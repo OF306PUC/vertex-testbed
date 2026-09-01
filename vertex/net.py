@@ -34,23 +34,18 @@ HUB_PORT = 3000
 #: Single UDP port every agent binds for state broadcast.
 STATE_PORT = 3010
 
-#: Per-type control plane: parameter push and log retrieval. Kept per-type so the
-#: three agents on one host can be addressed and restarted independently.
+#: Per-type control plane: parameter push and log retrieval.
 CONTROL_PORTS: dict[AgentType, int] = {
     AgentType.BLE: 3001,
     AgentType.WIFI: 3002,
     AgentType.BRIDGE: 3003,
 }
 
-#: Which media each agent type can actually transmit and receive on. Two agents
-#: can only exchange state if these intersect -- `ble` and `wifi` do not, which is
-#: what a `bridge` exists to join. Kept beside the types rather than in the
-#: validator so the transport factory and the graph check cannot disagree.
+#: Which media each agent type can actually transmit and receive on.
 AGENT_MEDIA: dict["AgentType", frozenset[str]] = {}
 
 
-#: Interface carrying the experiment LAN. The onboard wireless interface on a
-#: Raspberry Pi; overridden per deployment rather than guessed.
+#: Interface carrying the experiment LAN. 
 DEFAULT_INTERFACE = "wlan0"
 
 

@@ -39,7 +39,8 @@ CONTROLLER = {
     "name": "finite_time_adaptive",
     "dt_s": 0.2,
     "eta": 2e-6,
-    "alpha": 0.02,
+    "gain_ij": 0.02,
+    "alpha": 0.5,
     "delta": 0.01,
     "disturbance": {
         "enabled": True,
@@ -80,7 +81,8 @@ CONTROLLER_FAST = {
     # wall-clock terms and is NOT the same continuous-time experiment as n6-ring
     # -- deliberate, but the two are no longer directly comparable.
     "eta": 2e-6,
-    "alpha": 0.02,
+    "gain_ij": 0.02,
+    "alpha": 0.5,
     "delta": 0.01,                      # unchanged: a threshold, not a rate
     "disturbance": {
         "enabled": True,
@@ -210,7 +212,8 @@ CONTROLLER_50HZ = {
     "name": "finite_time_adaptive",
     "dt_s": 0.02,                       # 50 Hz
     "eta": 1e-6,                        # 2e-6 * 0.5
-    "alpha": 0.01,                       # 0.02  * 0.5
+    "gain_ij": 0.01,                     # 0.02  * 0.5
+    "alpha": 0.5,
     "delta": 0.01,
     "disturbance": {
         "enabled": True,

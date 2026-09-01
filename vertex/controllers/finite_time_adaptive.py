@@ -36,7 +36,8 @@ class FiniteTimeAdaptiveController(Controller):
     def _load(self, p: ControllerParams) -> None:
         self.dt = p.dt_s
         self.state0, self.vstate0, self.vartheta0 = p.state, p.vstate, p.vartheta
-        self.eta, self.alpha, self.delta = p.eta, p.alpha, p.delta
+        self.eta, self.gain_ij, self.delta = p.eta, p.gain_ij, p.delta
+        self.alpha = p.alpha           # exponent of the sign-power coupling
         self.period_samples = int(p.disturbance.period_samples)
 
     def set_params(self, params: ControllerParams) -> None:
@@ -104,7 +105,7 @@ class FiniteTimeAdaptiveController(Controller):
             if not math.isfinite(diff):
                 continue
             # sign(0) == 0, so a neighbour already in agreement contributes nothing
-            total += -sign(diff) * math.sqrt(abs(diff))
+            total += -sign(diff) * abs(diff) ** self.alpha
         return total
 
     def _emit(self) -> ControllerOutput:
@@ -120,7 +121,8 @@ class FiniteTimeAdaptiveController(Controller):
 
         nu = self.disturbance(self.step_count * self.dt) * self.dt
 
-        self.gi = self.alpha * self._consensus_term(neighbor_vstates, neighbor_enabled)
+        self.gi = self.gain_ij * self._consensus_term(neighbor_vstates,
+                                                      neighbor_enabled)
         self.sigma = self._state - self._vstate
         self.grad = sign(self.sigma)
 

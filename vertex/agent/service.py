@@ -65,11 +65,6 @@ class AgentService:
         self.node_type = AgentType(node_type)
         self.data_dir = Path(data_dir)
         self.host_ip = host_ip
-        #: Interface name, used to ask the KERNEL for the broadcast address rather
-        #: than deriving one from an assumed prefix. A /24 guess on the lab's /22
-        #: network sends every datagram to an ordinary host address, and the
-        #: failure is completely silent -- 0/3 UDP links delivered while 3/3 BLE
-        #: links worked.
         self.interface = interface
         self.state_port = state_port
         self.log_format = log_format
@@ -78,8 +73,7 @@ class AgentService:
         self._transport_factory = transport_factory
         #: Framed serial link to the nRF. Required for `ble`, unused otherwise.
         self.link = link
-        #: Radio parameters. Loopback B measured a 6x swing in delivery from the
-        #: scan window alone, so these belong with the run, not with the build.
+        #: Radio parameters. 
         self.radio = radio
 
         self.control = ControlServer(
@@ -90,14 +84,14 @@ class AgentService:
 
         self.assignment: AgentAssignment | None = None
         self.agent: Agent | None = None
-        self._hci = None        # one HCI socket per process, see _hci_socket()
+        self._hci = None        # one HCI socket per process
         self.relay: BleRelay | None = None
         self.runlog: RunLog | None = None
         self.run_name: str | None = None
         self._tasks: list[asyncio.Task] = []
         self._started_at: float = 0.0
 
-    # lifecycle:
+    # lifecycle: -----------------------------------------------------------------
     async def serve(self) -> "AgentService":
         await self.control.start()
         return self
@@ -110,7 +104,7 @@ class AgentService:
             try:
                 self._hci.close()
             except Exception:
-                pass          # best effort: the process is going away regardless
+                pass      
             self._hci = None
 
     @property
@@ -126,25 +120,11 @@ class AgentService:
     def _hci_socket(self):
         """The ONE HCI user-channel socket for this process.
 
-        Opened lazily and never closed between runs. A fresh socket per run is
-        what a parameter sweep does, and the kernel does not release `hci0`
-        instantly on close: three sweep points in, the next open fails with
-        EBUSY and every remaining repeat of that point records nothing. Measured
-        exactly that -- `sweep2-p080` lost both bridges on all 10 runs after
-        p400 and p200 had already consumed 20 opens.
-
-        Reopening is also unnecessary. Advertising and scan parameters are
-        settable on a live socket once the corresponding function is disabled,
-        which is what `BleTransport.start()` does anyway. An injected socket
-        additionally suppresses `HCI_Reset`, so the adapter is not torn down
-        under a neighbour that is still advertising.
+        Opened lazily and never closed between runs. 
         """
         if self._hci is None:
             from ..radio.hci import HciSocket, cmd_reset
             self._hci = HciSocket(0).open()
-            # Once per process, not once per run: clears whatever a previous
-            # process left enabled. Doing it per run is what tore the adapter
-            # down mid-sweep.
             self._hci.command(cmd_reset())
         return self._hci
 
@@ -164,11 +144,6 @@ class AgentService:
 
     def _broadcast_target(self) -> tuple[str, str]:
         """(address, how it was determined). Never guesses silently.
-
-        Derives the interface from `host_ip` when it was not supplied, rather than
-        dropping to the /24 assumption. The caller-must-pass version was forgotten
-        once and cost a whole run: the fallback works, so nothing complains, and
-        every datagram goes to an address nobody holds.
         """
         iface = self.interface or (interface_for_ip(self.host_ip)
                                    if self.host_ip else None)
@@ -203,17 +178,6 @@ class AgentService:
 
     def _make_transport(self, node_id: int) -> Transport:
         """The transport for a locally-computing agent.
-
-        `wifi` gets UDP. `bridge` gets **both** BLE and UDP, which is what makes it
-        a bridge: a `ble` agent has only a radio and a `wifi` agent only a socket,
-        so they share no medium and cannot hear each other at all. The bridge is
-        the only path between the two subnets, and a manifest that gives it
-        neighbours on both -- `n30-clusters` does -- is unrunnable without it.
-
-        The comparison this supports: `bridge` and `wifi` run the *same* controller
-        in the same process, so a difference between them is the medium and not the
-        implementation. A bridge is not airtime-comparable with either, though,
-        because it transmits every packet twice; see transports/multi.py.
         """
         if self._transport_factory is not None:
             return self._transport_factory(node_id, self.clock)
@@ -283,10 +247,6 @@ class AgentService:
         r = self._radio_settings(assignment)
         if not r:
             return None
-        # channel_map is deliberately not forwarded: the RADIO frame has no field
-        # for it because Zephyr's advertising API does not expose the advertising
-        # channel map. It is applied for `bridge`, which drives HCI directly, and
-        # recorded as unapplied for `ble` -- see radio_environment().
         return radio_frame(
             adv_interval_ms=float(r.get("adv_interval_ms", 100.0)),
             adv_interval_max_ms=(float(r["adv_interval_max_ms"])
@@ -358,11 +318,7 @@ class AgentService:
                            "median_delay_us": st.median_delay_us}
                 for nid, st in self.agent.neighbors.link_stats().items()
             }
-            # Transport counters. They exist on every transport and were reachable
-            # from nowhere -- so when both bridges' BLE transmit path collapsed
-            # 80-100 s into a run, the numbers that would have named the cause
-            # (send_errors, send_timeouts, per-medium failures) were unobtainable
-            # during the run and unrecorded after it.
+            # Transport counters. 
             t = self.agent.transport
             st = getattr(t, "stats", None)
             if st is not None:
@@ -400,7 +356,8 @@ class AgentService:
 
         if self.running and self.agent is not None:
             # Live update: apply to the running controller without touching its
-            # integrators, so a scripted perturbation is an event, not a restart.
+            # integrators, so a scripted perturbation (like a link reconnection) 
+            # is an event, not a restart.
             self.agent.controller.set_params(assignment.to_controller_params())
             self.agent.config = AgentConfig(
                 node_id=assignment.node_id,
@@ -428,12 +385,7 @@ class AgentService:
         # The experiment epoch is a PER-RUN quantity and the hub owns it: every
         # node must be handed the same value or their timestamps share no origin
         # and one-way delay measures process launch order. It arrives with the
-        # trigger for the same reason the nRF's seed does -- the same
-        # configuration replayed on a new epoch is a new run.
-        #
-        # Applied before the RunLog is built, so `tx_time_us` on the first packet
-        # is already on the run's epoch, and before relay.start(), which reads the
-        # clock to fill the nRF's CONTROL frame.
+        # trigger for the same reason the nRF's seed does 
         epoch = args.get("epoch_unix_s")
         if epoch is not None:
             self.clock = WallClock(float(epoch))
@@ -489,16 +441,7 @@ class AgentService:
 
         Two timelines, and the row's primary one is **this host's**. The nRF has no
         synchronised clock, so its `t_us` counts from its own CONTROL arrival and is
-        not comparable with another node's. This host's clock is chrony-synchronised
-        and epoch-shared, so plotting against the arrival time puts a `ble` agent's
-        samples on the same axis as a `wifi` agent's without touching firmware.
-
-        The board's own reading is kept alongside as `device_timestamp`: their
-        difference is the serial transit plus scheduling, which is otherwise
-        indistinguishable from the board having been late.
-
-        With no arrival time the board's clock is used for both -- better than
-        fabricating a host time.
+        not comparable with another node's.
         """
         if self.runlog is None:
             return
@@ -515,15 +458,7 @@ class AgentService:
         """Push the run's clock into everything that cached a reference.
 
         Objects are built at `configure` and the epoch arrives at `start`, so every
-        holder of a clock is holding the launch-time one until this runs. Doing it
-        for some and not others is worse than not doing it at all: the relay's link
-        was fixed in isolation and the local agents were not, so `tx_time_us` and
-        `rx_time_us` ended up on two different origins and the one-way delays came
-        out at -10.5 s, +10.8 s and +20.9 s -- each one the difference between two
-        agents' start times, wearing the units of a delay.
-
-        Enumerated rather than patched case by case, so a new clock holder is one
-        line here instead of another wrong delay figure.
+        holder of a clock is holding the launch-time one until this runs. 
         """
         holders: list[Any] = [self.relay, self.link, self.agent]
         if self.agent is not None:
@@ -539,40 +474,20 @@ class AgentService:
 
     def _transport_meta(self) -> dict[str, Any]:
         """Transport counters, for the run's metadata at stop.
-
-        Recorded because a link that works and then stops is indistinguishable, in
-        the rows alone, from a link that was never there -- and the difference is
-        entirely in these counters.
         """
         if self.agent is None or self.agent.transport is None:
             return {}
         t = self.agent.transport
         out: dict[str, Any] = {"transport": t.name}
 
-        # Per-link delivery from SEQUENCE NUMBERS -- the only per-link figure that
-        # is comparable across media. `expected` is inferred from seq gaps, so it
-        # counts published values rather than transmissions: a BLE link that
-        # re-advertises each value twice scores a duplicate, not two deliveries,
-        # and a receiver sampling faster than the sender publishes cannot undercount
-        # it. The freshness column in the rows is a proxy for this and is affected
-        # by both -- it read 0.14 on a UDP link the counters show at 98%.
+        # Per-link delivery from SEQUENCE NUMBERS
         from dataclasses import asdict
         out["links"] = {
             str(nid): {k: v for k, v in asdict(st).items() if k != "delays_us"}
             | {"delivery_ratio": round(st.delivery_ratio, 4),
                "median_delay_us": st.median_delay_us,
-               # min as well as median. The minimum is the propagation floor --
-               # immune to queueing, so it separates "the link is slow" from "the
-               # link queues". And a NEGATIVE minimum is a direct measurement of
-               # residual clock skew between the two nodes, which is the cheapest
-               # check that chrony is actually working (CLOCK_MODEL.md).
                "min_delay_us": st.min_delay_us,
                "samples": len(st.delays_us),
-               # Percentiles, because min and median already showed the delay is a
-               # DISTRIBUTION and not a link property: 16 ms minimum against a
-               # 171 ms median on UDP. The shape is the diagnosis. A hard mode at a
-               # multiple of the AP's beacon interval is DTIM buffering of
-               # broadcast frames; a smooth heavy tail is contention.
                "delay_pctl_us": _percentiles(st.delays_us)}
             for nid, st in self.agent.neighbors.link_stats().items()
         }
@@ -663,12 +578,6 @@ def _percentiles(values: list[int],
 
 def _interpreter_provenance() -> dict[str, Any]:
     """What is running this agent, recorded with its data.
-
-    Not pedantry. Two Pis in one experiment turned out to be on 3.11.2 (the distro
-    package) and 3.11.8 (built from source, and missing `_bz2` because libbz2-dev
-    was absent at build time). That is a difference between hosts in an experiment
-    whose whole purpose is comparing hosts, and it is not reconstructable from the
-    data afterwards -- which is exactly what `environment` is for.
     """
     import platform
     import sys as _sys

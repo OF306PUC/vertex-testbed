@@ -15,7 +15,7 @@
  *
  *     NETWORK  'N'  >= 2 bytes   [enabled:1][node_id:1][neighbor_id:1 x n]
  *     ALGORITHM  'A'  36 bytes   [dt_ms:4][clock_ms:4][state_0:4][vstate_0:4]
- *                                [vartheta_0:4][counter_0:4][alpha:4][delta:4][eta:4]
+ *                                [vartheta_0:4][counter_0:4][gain_ij:4][delta:4][eta:4][alpha:4]
  *     DISTURBANCE  'D'  29 bytes [active:1][sine_amplitude:4][frequency:4][phase:4]
  *                                [noise_amplitude:4][noise_offset:4][beta:4][samples:4]
  *     CONTROL  'S'  5 bytes      [run:1][seed:4]
@@ -79,7 +79,8 @@ struct agent_params {
     int32_t vstate_0;
     int32_t vartheta_0;
     int32_t counter_0;
-    int32_t alpha;
+    int32_t gain_ij;        /* coupling gain, the paper's a_ij */
+    int32_t alpha;          /* sign-power EXPONENT, not a gain */
     int32_t delta;
     int32_t eta;
     uint32_t seed;              /* per-run PRNG seed */

@@ -56,8 +56,9 @@ class ControllerParams:
     """Controller configuration and initial conditions, in engineering units.
 
     Greek names are the paper's symbols and are kept deliberately: ``eta`` is the
-    adaptation rate, ``alpha`` the coordination gain, ``delta`` the adaptation
-    dead-band.
+    adaptation rate, ``delta`` the adaptation dead-band, and ``alpha`` the
+    EXPONENT of the sign-power coupling, not a gain. The coupling gain is
+    ``gain_ij``, after the paper's :math:`a_{ij}`.
     """
 
     dt_s: float = 0.2
@@ -65,7 +66,8 @@ class ControllerParams:
     vstate: float = 0.0
     vartheta: float = 0.0
     eta: float = 2e-6
-    alpha: float = 0.02
+    gain_ij: float = 0.02
+    alpha: float = 0.5
     delta: float = 0.01
     disturbance: DisturbanceParams = field(default_factory=DisturbanceParams)
 
