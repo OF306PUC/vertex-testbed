@@ -32,7 +32,13 @@ PIS="${PIS:-pi1 pi2 pi4 pi5 pi7 pi8 pi9 pi10 pi12 pi13}"
 RF="${RF:-1}"                        # capture rf_survey each cycle
 CAMPAIGN="${CAMPAIGN:-c$(date +%Y%m%d-%H%M)}"
 
-TOPOS=(dring ring4 clusters)
+# manifest:duration. Six arms: two rates x three topologies. dring gets longer
+# because lambda_2 = 0.022 makes it the slow one -- it was still descending at
+# 300 s in simulation while ring4 settled by 240.
+ARMS=(
+  "n30-dring-40hz:360"    "n30-ring4-40hz:240"    "n30-clusters-40hz:240"
+  "n30-dring-25hz:360"    "n30-ring4-25hz:240"    "n30-clusters-25hz:240"
+)
 LOG="$OUT/$CAMPAIGN/campaign.log"
 DRY=0; [ "${1:-}" = "--dry-run" ] && DRY=1
 
@@ -40,28 +46,30 @@ mkdir -p "$OUT/$CAMPAIGN/rf"
 say() { printf '%s  %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "$LOG"; }
 
 # ── the plan, before committing hours to it ─────────────────────────────────
-total=$(( CYCLES * 3 ))
-secs=$(( total * (DURATION + SETTLE + 20) ))
+total=$(( CYCLES * ${#ARMS[@]} ))
+secs=0
+for arm in "${ARMS[@]}"; do secs=$(( secs + CYCLES * (${arm##*:} + SETTLE + 25) )); done
 eta=$(printf '%dh%02dm' $((secs/3600)) $(((secs%3600)/60)))
-say "campaign $CAMPAIGN: $CYCLES cycles x 3 topologies = $total runs"
-say "  ${DURATION}s each, run-index $RUN_INDEX held fixed, ~$eta estimated"
+say "campaign $CAMPAIGN: $CYCLES cycles x ${#ARMS[@]} arms = $total runs"
+say "  run-index $RUN_INDEX held fixed, ~$eta estimated"
+for arm in "${ARMS[@]}"; do say "    ${arm%%:*}  ${arm##*:}s"; done
 say "  output $OUT/$CAMPAIGN, rf survey: $([ "$RF" = 1 ] && echo on || echo off)"
 
 # ── preflight: every node answers before anything long starts ───────────────
 preflight() {
     local bad=0
-    for t in "${TOPOS[@]}"; do
-        local m="experiments/n30-${t}-50hz.yaml"
+    for arm in "${ARMS[@]}"; do
+        local m="experiments/${arm%%:*}.yaml"
         [ -f "$m" ] || { say "MISSING manifest $m"; bad=1; }
     done
     say "checking all 30 agents respond"
-    if ! python3 -m vertex.hub status "experiments/n30-ring4-50hz.yaml" \
+    if ! python3 -m vertex.hub status "experiments/${ARMS[0]%%:*}.yaml" \
             --timeout "$TIMEOUT" 2>&1 | tee -a "$LOG" | grep -q "^  ok"; then
         say "FAIL: no agent answered; start them with scripts/agents.sh start"
         bad=1
     fi
     local down
-    down=$(python3 -m vertex.hub status "experiments/n30-ring4-50hz.yaml" \
+    down=$(python3 -m vertex.hub status "experiments/${ARMS[0]%%:*}.yaml" \
            --timeout "$TIMEOUT" 2>/dev/null | grep -c "^  FAIL" || true)
     [ "$down" -gt 0 ] && { say "WARNING: $down agent(s) not answering"; }
     return $bad
@@ -85,9 +93,9 @@ rf_survey() {
 
 # ── one run, with retries ───────────────────────────────────────────────────
 one_run() {
-    local topo=$1 cyc=$2
-    local name; name=$(printf 'n30-%s-50hz-c%02d' "$topo" "$cyc")
-    local manifest="experiments/n30-${topo}-50hz.yaml"
+    local base=$1 dur=$2 cyc=$3
+    local name; name=$(printf '%s-c%02d' "$base" "$cyc")
+    local manifest="experiments/${base}.yaml"
 
     if [ -d "$OUT/$CAMPAIGN/$name" ]; then
         say "  skip $name (already collected)"; return 0
@@ -95,10 +103,10 @@ one_run() {
     for attempt in $(seq 0 "$RETRIES"); do
         [ "$attempt" -gt 0 ] && say "  retry $attempt for $name"
         if [ "$DRY" = 1 ]; then
-            say "  DRY  $name  ($manifest, ${DURATION}s)"; return 0
+            say "  DRY  $name  ($manifest, ${dur}s)"; return 0
         fi
         if python3 -m vertex.hub run "$manifest" \
-                --duration "$DURATION" --run-index "$RUN_INDEX" \
+                --duration "$dur" --run-index "$RUN_INDEX" \
                 --run-name "$name" --out-dir "$OUT/$CAMPAIGN" \
                 --timeout "$TIMEOUT" >>"$LOG" 2>&1; then
             say "  ok   $name"
@@ -118,17 +126,19 @@ for ((c=0; c<CYCLES; c++)); do
     say "cycle $c/$((CYCLES-1))"
     [ "$RF" = 1 ] && [ "$DRY" = 0 ] && rf_survey "$c"
 
-    # rotate the order so no topology is permanently first
-    for k in 0 1 2; do
-        topo=${TOPOS[$(( (k + c) % 3 ))]}
-        one_run "$topo" "$c" && done_runs=$((done_runs+1)) || failed=$((failed+1))
+    # rotate the order so no arm is permanently first
+    n=${#ARMS[@]}
+    for k in $(seq 0 $((n - 1))); do
+        arm=${ARMS[$(( (k + c) % n ))]}
+        one_run "${arm%%:*}" "${arm##*:}" "$c" \
+            && done_runs=$((done_runs+1)) || failed=$((failed+1))
         [ "$DRY" = 1 ] || sleep "$SETTLE"
     done
 done
 
 say "campaign $CAMPAIGN finished: $done_runs ok, $failed failed"
 say "aggregate with:"
-for t in "${TOPOS[@]}"; do
-    say "  python3 tools/compare_runs.py '$OUT/$CAMPAIGN/n30-$t-50hz-c*'"
+for arm in "${ARMS[@]}"; do
+    say "  python3 tools/compare_runs.py '$OUT/$CAMPAIGN/${arm%%:*}-c*'"
 done
 [ "$failed" -eq 0 ]

@@ -47,7 +47,7 @@ BANDS = [("ble", 1), ("wifi", 11), ("bridge", 21)]
 #: A BOUND, not an intensity, so it does not scale with dt. That is what makes
 #: Theorem 2's condition h < eps/nu_0 comparable across rates: eps = delta =
 #: 0.01 and nu_0 = 0.015 give h < 0.667 s, satisfied at both 25 and 50 Hz.
-NU_0 = 0.015
+NU_0 = 0.05
 SINE_FRACTION = 0.70
 
 
@@ -155,7 +155,8 @@ TEST_SET = ("n4-noble", "n9-50hz",
 
 #: The campaign manifests. Written to experiments/ only when asked for, so a
 #: routine regeneration cannot quietly change what a 10-hour collection runs.
-CAMPAIGN_SET = ("n30-dring-40hz", "n30-ring4-40hz", "n30-clusters-40hz")
+CAMPAIGN_SET = ("n30-dring-40hz", "n30-ring4-40hz", "n30-clusters-40hz",
+                "n30-dring-25hz", "n30-ring4-25hz", "n30-clusters-25hz")
 
 OUT_TEST = OUT / "test"
 
@@ -1058,48 +1059,74 @@ def manifests() -> dict[str, dict]:
                     "set": {"enabled": True}}],
     }
 
-    # ── n30-ring4-25hz: the wide-dither arm ─────────────────────────────────
-    # Aimed at the bridge->ble failure, which is the dominant loss in the 50 Hz
-    # ring4 run: 0.335 mean against 0.794 nRF-to-nRF and 0.979 UDP, and the two
-    # worst links dark for 82% and 62% of the run at -45 to -48 dBm. Strong
-    # signal, binary on/off, tens of seconds at a time: an advertising phase that
-    # sits inside the receiving nRF's own advertising window and drifts out only
-    # as the two crystals separate. The 100-120 ms range fixed it at 18 agents
-    # and clearly under-dithers at 30.
+    # ── the campaign set: two rates x three topologies ──────────────────────
+    # Both rates are collected, because they differ in what they buy and the
+    # difference is the finding rather than a nuisance. See PLATFORM.md 5.13.
     #
-    # Four things change together relative to n30-ring4-50hz, so this is a
-    # configuration test rather than a controlled arm:
+    #   40 Hz / 8 Hz   pub 125 ms, adv mean 125 -> k = 1.00
+    #   25 Hz / 5 Hz   pub 200 ms, adv mean 125 -> k = 1.60
     #
-    #   adv 100-120 -> 100-150 ms   a 50 ms dither window instead of 20
-    #   publish 0.1 -> 0.2 s        k = T_pub/T_adv goes 0.9 -> 1.6, so each
-    #                               value is advertised more than once and a
-    #                               single lost advertisement is no longer a
-    #                               lost value. Also drops BLE duty 17.3 -> 13.8%
-    #   dt 0.02 -> 0.04 s           the multi-rate ratio stays at 5
-    #   scan 20/18 -> 20/20         100% duty; nRF receivers convert duty into
-    #                               delivery almost one-for-one (PLATFORM 5.4a)
+    # k is the number of advertising events carrying one published value, and
+    # measured delivery tracks it monotonically: ble->ble 0.639 at k = 0.91,
+    # 0.694 at k = 1.00, 0.947 at k = 1.60. The 40 Hz arm keeps the faster
+    # control update; the 25 Hz arm keeps the redundancy. Neither dominates.
     #
-    # If bridge->ble recovers, it will not say which of the four did it. That is
-    # accepted deliberately: the point is to find a configuration that works
-    # before spending 11 hours collecting with one that does not.
-    n30w = hosts_for(publish_period_s=0.2)
-    out["n30-ring4-25hz"] = {
-        "name": "n30-ring4-25hz",
-        "description": (
-            "G2 at 30 agents, 25 Hz dynamics, 5 Hz publish, advertising 100-150 ms "
-            "and scanning at 100% duty. The wide-dither arm against the "
-            "bridge->ble blackouts seen in n30-ring4-50hz, where the worst links "
-            "were dark for most of the run at -45 dBm. k = 1.6, so each published "
-            "value is advertised more than once; ~13.8% BLE duty over 20 "
-            "advertisers. Same controller in continuous-time terms as the 50 Hz "
-            "manifests, so trajectories remain comparable."
-        ),
-        "seed": 20260818,
-        "controller": CONTROLLER_25HZ,
-        "radio": radio_dithered(0.2),
-        "structure": {"generator": "ring", "params": {"k": 2, "ids": BAND_ORDER}},
-        "nodes": n30w,
-    }
+    # Scanning 20 ms at 95% duty in both: 1 ms of every window left for the
+    # node's own ~1.2 ms advertising event, without giving up the reception that
+    # 90% costs.
+    for rate_tag, dt_s, pub_s in (("40hz", 0.025, 0.125), ("25hz", 0.04, 0.2)):
+        controller = CONTROLLER_40HZ if rate_tag == "40hz" else CONTROLLER_25HZ
+        radio = radio_dithered(pub_s, scan_duty=0.95)
+        k = pub_s * 1000.0 / (ADV_FLOOR_MS + (radio["adv_interval_max_ms"]
+                                              - ADV_FLOOR_MS) / 2.0)
+        rate_desc = (f"{1/dt_s:.0f} Hz dynamics, {1/pub_s:.0f} Hz publish "
+                     f"({pub_s*1000:.0f} ms), advertising "
+                     f"{radio['adv_interval_ms']:.0f}-"
+                     f"{radio['adv_interval_max_ms']:.0f} ms and scanning 20 ms "
+                     f"at 95% duty. k = {k:.2f}")
+
+        for tag, gen, params, desc in [
+            ("dring", "ring", {"directed": True, "ids": BAND_ORDER},
+             "G1: directed cycle, in-degree 1. The sparsest strongly connected "
+             "graph and the slowest convergence of the three -- lambda_2 = 0.022, "
+             "so this arm needs a longer run than the other two."),
+            ("ring4", "ring", {"k": 2, "ids": BAND_ORDER},
+             "G2: undirected ring of degree 4, the densest ring the "
+             "microcontroller can serve. Paired with G1 on everything but the "
+             "edge set."),
+        ]:
+            out[f"n30-{tag}-{rate_tag}"] = {
+                "name": f"n30-{tag}-{rate_tag}",
+                "description": f"{desc} 30 agents, {rate_desc}.",
+                "seed": 20260818,
+                "controller": controller,
+                "radio": radio,
+                "structure": {"generator": gen, "params": params},
+                "nodes": hosts_for(publish_period_s=pub_s),
+            }
+
+        clustered = hosts_for(publish_period_s=pub_s)
+        for n in clustered:
+            n["neighbors"] = CLUSTER_EDGES[n["id"]]
+            if n["id"] in CLUSTER_DISABLED:
+                n["enabled"] = False
+        out[f"n30-clusters-{rate_tag}"] = {
+            "name": f"n30-clusters-{rate_tag}",
+            "description": (
+                f"G3(t): three clusters joined only through bridges 21 and 30, "
+                f"which start disabled and are enabled at t = "
+                f"{CLUSTER_MERGE_AT_S:g} s. 30 agents, {rate_desc}. The merge "
+                f"transient rather than the steady state is the quantity of "
+                f"interest."
+            ),
+            "seed": 20260818,
+            "controller": controller,
+            "radio": radio,
+            "nodes": clustered,
+            "events": [{"at_s": CLUSTER_MERGE_AT_S,
+                        "nodes": sorted(CLUSTER_DISABLED),
+                        "set": {"enabled": True}}],
+        }
 
     # G3 is declared edge by edge rather than generated: it is irregular by
     # design, and 21 and 30 are the cut-points that join the BLE and Wi-Fi

@@ -13,11 +13,11 @@ controller:
   delta: 0.01
   disturbance:
     enabled: true
-    sine_amplitude: 0.0105
+    sine_amplitude: 0.035
     sine_frequency_hz: 2.0
-    noise_amplitude: 0.006
+    noise_amplitude: 0.02
     noise_offset: 0.5
-    beta: 0.0015
+    beta: 0.005
     period_samples: 7500
 radio:
   adv_interval_ms: 400.0

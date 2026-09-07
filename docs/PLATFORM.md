@@ -667,6 +667,56 @@ replicates before they carry error bars. The threshold at which the CYW43455 sto
 honouring the window is also unmeasured; this pair brackets it between 56.25% and
 100% and says nothing about where inside that range it lies.
 
+### 5.5a Why the publish rate changes delivery: k, the advertising redundancy
+
+Slowing the publish rate improves BLE delivery, substantially and monotonically.
+The quantity that explains it is
+
+    k = T_pub / T_adv
+
+the number of advertising events that carry one published value. Advertising is a
+fixed cadence set by the controller; the application only rewrites the payload.
+So `k > 1` means each value is radiated more than once and a single lost
+advertisement is no longer a lost value, while `k < 1` means values are
+overwritten before they are ever transmitted.
+
+Measured at 30 agents, one run per point, same topology and hosts:
+
+| publish | adv range | mean adv | k | ble→ble | ble→bridge |
+|---|---|---|---|---|---|
+| 100 ms | 100-120 | 110 ms | 0.91 | 0.639 | 0.545 |
+| 125 ms | 100-150 | 125 ms | 1.00 | 0.694 | 0.611 |
+| 200 ms | 100-150 | 125 ms | 1.60 | **0.947** | **0.793** |
+
+Monotone in `k`, and the last step is the large one.
+
+**It is more than independent redundancy.** If each advertising event were lost
+independently with probability `1-p`, delivery would be `1-(1-p)^k`. Taking
+`p = 0.694` from the `k = 1` point predicts 0.850 at `k = 1.6`; the measurement is
+0.947. The excess is consistent with the second mechanism: a repeated event at a
+*dithered* interval gets another chance to fall outside the receiving nRF's own
+advertising window, which is the blanking that §5.10's blackouts come from. So
+raising `k` buys both redundancy against ordinary loss and additional draws
+against the phase collision, and the two compound.
+
+**What it costs.** Publishing at 5 Hz rather than 8 or 10 Hz halves or better the
+information rate, and the steady-state error follows: final spread 0.0018 at
+125 ms against 0.0051 and 0.0067 at 200 ms, on the runs above. Delivery and
+control performance therefore pull in opposite directions across this parameter,
+which is why the campaign collects **both** rates rather than choosing:
+
+| rate | k | keeps |
+|---|---|---|
+| 40 Hz / 8 Hz, pub 125 ms | 1.00 | the faster control update |
+| 25 Hz / 5 Hz, pub 200 ms | 1.60 | the advertising redundancy |
+
+**125 ms is also where the two radio constraints stop competing.** The dither
+wants a wide advertising window; the ceiling `min(1, T_pub/mean_adv)` wants the
+mean interval at or below the publish period. At 125 ms with a 100-150 ms range
+the mean *is* 125, so the full 50 ms window costs no ceiling at all. At a 100 ms
+publish only a 5 ms window is affordable, which is why the 50 Hz configurations
+either dithered barely or paid a 9% ceiling.
+
 ### 5.5 The completed publish-rate sweep: airtime is not the variable
 
 *(2026-08-25. Four points x 10 repeats x 120 s, 39 of 40 runs usable, identical
