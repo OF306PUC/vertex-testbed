@@ -35,6 +35,42 @@ HOSTS = ["10.6.5.1", "10.6.5.2", "10.6.5.4", "10.6.5.5",
 #: that join the BLE and Wi-Fi subnets.
 BANDS = [("ble", 1), ("wifi", 11), ("bridge", 21)]
 
+#: The disturbance, identical in every controller block.
+#:
+#:     nu(t) = A*(U - 0.5) + beta + M*sin(2*pi*f*t + phase)
+#:
+#: so the bound is nu_0 = M + A/2 + |beta|. Set to 0.015 with the sinusoid at
+#: 70% of it, and the remaining 30% split 20/10 between the uniform term and the
+#: constant bias -- the proportions of the published parameter set, whose
+#: 7.5e-4 / 2.5e-4 / 1e-4 is 68/23/9.
+#:
+#: A BOUND, not an intensity, so it does not scale with dt. That is what makes
+#: Theorem 2's condition h < eps/nu_0 comparable across rates: eps = delta =
+#: 0.01 and nu_0 = 0.015 give h < 0.667 s, satisfied at both 25 and 50 Hz.
+NU_0 = 0.015
+SINE_FRACTION = 0.70
+
+
+def disturbance_for(dt_s: float, run_s: float = 300.0) -> dict:
+    """The disturbance block for a given step size.
+
+    Only `period_samples` depends on dt: the counter wraps modulo it, so it has
+    to span the longest run or the disturbance repeats inside one and correlates
+    the run with itself.
+    """
+    return {
+        "enabled": True,
+        "sine_amplitude": round(SINE_FRACTION * NU_0, 8),          # 70%
+        "sine_frequency_hz": 2.0,
+        "noise_amplitude": round(2 * 0.20 * NU_0, 8),              # half-width 20%
+        "noise_offset": 0.5,                                       # centres the uniform term
+        "beta": round(0.10 * NU_0, 8),                             # 10%
+        "period_samples": int(round(run_s / dt_s)),
+        # sine_phase_s omitted: each node derives a distinct reproducible phase
+        # from `seed`, so the fleet is not disturbed in lockstep.
+    }
+
+
 CONTROLLER = {
     "name": "finite_time_adaptive",
     "dt_s": 0.2,
@@ -46,17 +82,7 @@ CONTROLLER = {
     "gain_ij": 0.1,                     # was 0.02 per step
     "alpha": 0.5,
     "delta": 0.01,
-    "disturbance": {
-        "enabled": True,
-        "noise_amplitude": 2.5e-3,
-        "noise_offset": 0.5,
-        "beta": 5e-4,
-        "sine_amplitude": 3.75e-3,
-        "sine_frequency_hz": 2.0,
-        "period_samples": 1000,
-        # sine_phase_s omitted: each node derives a distinct reproducible phase
-        # from `seed`, so the fleet is not disturbed in lockstep.
-    },
+    "disturbance": disturbance_for(0.2),
 }
 
 
@@ -88,20 +114,7 @@ CONTROLLER_FAST = {
     "gain_ij": 0.5,                     # was 0.02 per step (/dt)
     "alpha": 0.5,
     "delta": 0.01,                      # unchanged: a threshold, not a rate
-    "disturbance": {
-        "enabled": True,
-        "noise_amplitude": 5.5902e-3,   # 2.5e-3 * sqrt(5)
-        "noise_offset": 0.5,
-        "beta": 5e-4,                   # dt-invariant
-        "sine_amplitude": 3.75e-3,      # dt-invariant
-        "sine_frequency_hz": 11.0,
-        # 3000 * 0.04 s = 120 s, so the disturbance does not repeat inside a
-        # 120 s run. At the old 1000 it would cycle every 40 s and repeat three
-        # times, correlating the run with its own disturbance.
-        "period_samples": 3000,
-        # sine_phase_s omitted: each node derives a distinct reproducible phase
-        # from `seed`, so the fleet is not disturbed in lockstep.
-    },
+    "disturbance": disturbance_for(0.04),
 }
 
 
@@ -129,6 +142,22 @@ CONTROLLER_FAST = {
 #: parameters" (opcode 0x2006). Bluetooth 4.x required it; 5.0 dropped it; this
 #: controller kept it. Measured with `scripts/adv_floor.py`, after it cost 10 runs.
 ADV_FLOOR_MS = 100.0
+
+
+#: What a bare run writes. Small, fast to validate, and enough to exercise every
+#: code path: the no-nRF pair, the validated 9-agent rate configuration, and the
+#: publish-rate sweep. Written under experiments/test/ because they are
+#: instrument checks rather than experiments, and because 22 files in
+#: experiments/ made it impossible to see which manifests a campaign actually
+#: uses.
+TEST_SET = ("n4-noble", "n9-50hz",
+            "sweep-p040", "sweep-p080", "sweep-p200", "sweep-p400")
+
+#: The campaign manifests. Written to experiments/ only when asked for, so a
+#: routine regeneration cannot quietly change what a 10-hour collection runs.
+CAMPAIGN_SET = ("n30-dring-40hz", "n30-ring4-40hz", "n30-clusters-40hz")
+
+OUT_TEST = OUT / "test"
 
 
 def radio_for(publish_period_s: float, *, adv_interval_ms: float | None = None,
@@ -227,6 +256,34 @@ def ceiling_for(publish_period_s: float) -> float:
 #:
 #: Choosing a disturbance frequency requires checking it against the SLOWER of the
 #: two rates. The publish rate is the one that reaches the control law.
+CONTROLLER_40HZ = {
+    "name": "finite_time_adaptive",
+    "dt_s": 0.025,                      # 40 Hz
+    # Identical to CONTROLLER_25HZ and CONTROLLER_50HZ. Since the recursion is
+    # x += dt*(u+nu), gain_ij and eta are rates and carry across dt unchanged, so
+    # all three are the same continuous-time system sampled at different speeds.
+    "eta": 2.5e-3,
+    "gain_ij": 0.5,
+    "alpha": 0.5,
+    "delta": 0.01,
+    "disturbance": disturbance_for(0.025),
+}
+
+CONTROLLER_25HZ = {
+    "name": "finite_time_adaptive",
+    "dt_s": 0.04,                       # 25 Hz
+    # The same continuous-time system as CONTROLLER_50HZ, and this is the first
+    # block where that is true by construction rather than by arithmetic: since
+    # 2026-09-04 the recursion is x += dt*(u+nu), so gain_ij and eta are RATES
+    # and carry over unchanged across dt. CONTROLLER_FAST, written before that,
+    # has eta half of this -- an artefact of rescaling by dt instead of dt^2.
+    "eta": 2.5e-3,
+    "gain_ij": 0.5,
+    "alpha": 0.5,
+    "delta": 0.01,
+    "disturbance": disturbance_for(0.04),
+}
+
 CONTROLLER_50HZ = {
     "name": "finite_time_adaptive",
     "dt_s": 0.02,                       # 50 Hz
@@ -239,15 +296,7 @@ CONTROLLER_50HZ = {
     "gain_ij": 0.5,                     # was 0.01 per step (/dt)
     "alpha": 0.5,
     "delta": 0.01,
-    "disturbance": {
-        "enabled": True,
-        "noise_amplitude": 7.9057e-3,   # 5.5902e-3 * sqrt(2)
-        "noise_offset": 0.5,
-        "beta": 5e-4,
-        "sine_amplitude": 3.75e-3,
-        "sine_frequency_hz": 2.0,       # see the note above: 11 Hz folds to 1 Hz
-        "period_samples": 6000,         # 6000 * 0.02 s = 120 s
-    },
+    "disturbance": disturbance_for(0.02),
 }
 
 
@@ -263,6 +312,52 @@ CONTROLLER_50HZ = {
 #: and needs no exception.
 def n6_pair() -> list[str]:
     return HOSTS[1:3] if len(HOSTS) >= 3 else HOSTS[:2]
+
+
+#: The radio block for every experiment.
+#:
+#: Advertising 100-150 ms: a 50 ms dither window, because a fixed interval lets
+#: an advertiser's phase sit inside a receiving nRF's own advertising window and
+#: drift out only as the two crystals separate. Scanning 20/20 ms, so the channel
+#: is revisited five times per advertising interval at 100% duty -- nRF receivers
+#: convert duty into delivery almost one-for-one (PLATFORM 5.4a).
+#:
+#: The ceiling this implies depends on the publish period, and 125 ms is the MEAN
+#: advertising interval:
+#:
+#:     publish 200 ms -> k = 1.60, ceiling 1.000   (each value advertised twice)
+#:     publish 100 ms -> k = 0.80, ceiling 0.800   (values overwritten unradiated)
+#:
+#: So a 100 ms publish needs a NARROWER dither to stay near ceiling 1. Use
+#: `radio_dithered(publish_period_s)`, which sizes the window from the period
+#: rather than fixing it, and says what it chose.
+ADV_DITHER_MS = 50.0
+
+#: How much delivery ceiling a dither may cost. A 100 ms publish against the
+#: 100 ms floor leaves no room for a window at all under a strict `mean <= T_pub`
+#: rule, and a zero-width dither is what the blackouts came from -- so buy the
+#: window with a bounded loss instead of refusing it. 2.5% is enough for a 5 ms
+#: window at a 100 ms period, and the ceiling is reported either way.
+CEILING_FLOOR = 0.975
+
+
+def radio_dithered(publish_period_s: float, *, scan_duty: float = 1.0) -> dict:
+    """Advertising range and 100% duty scanning, sized from the publish period.
+
+    The mean advertising interval sets the delivery ceiling, `min(1, T_pub/mean)`.
+    The window is the widest that keeps the ceiling at or above CEILING_FLOOR,
+    capped at ADV_DITHER_MS, so a slow publish gets the full 50 ms and a fast one
+    gets whatever it can afford rather than nothing.
+    """
+    pub_ms = publish_period_s * 1000.0
+    widest = max(0.0, 2.0 * (pub_ms / CEILING_FLOOR - ADV_FLOOR_MS))
+    width = min(ADV_DITHER_MS, widest)
+    if not 0.0 < scan_duty <= 1.0:
+        raise ValueError(f"scan_duty={scan_duty} must be in (0, 1]")
+    return radio_for(publish_period_s,
+                     adv_interval_max_ms=ADV_FLOOR_MS + round(width, 1),
+                     scan_interval_ms=20.0,
+                     scan_window_ms=round(20.0 * scan_duty, 4))
 
 
 def hosts_for(n_per_band: int = 10, publish_period_s: float = 1.0,
@@ -363,6 +458,10 @@ def manifests() -> dict[str, dict]:
         node["neighbors"] = n4_edges[node["id"]]
     out["n4-noble"] = {
         "name": "n4-noble",
+        # Explicit, like every other experiment: without it the manifest inherited
+        # RadioSpec's defaults (100/100/100, no dither) rather than the
+        # configuration everything else runs.
+        "radio": radio_dithered(1.0),
         "description": (
             "4 agents on 2 hosts, wifi + bridge only: no nRF, no firmware, no "
             "serial link. The smallest manifest that isolates the medium -- "
@@ -437,7 +536,7 @@ def manifests() -> dict[str, dict]:
         ),
         "seed": 20260818,
         "controller": CONTROLLER_50HZ,
-        "radio": radio_for(0.1),
+        "radio": radio_dithered(0.1),
         "nodes": n650,
     }
 
@@ -558,7 +657,7 @@ def manifests() -> dict[str, dict]:
             ),
             "seed": 20260818,
             "controller": CONTROLLER_50HZ,
-            "radio": radio_for(0.1),
+            "radio": radio_dithered(0.1),
             "nodes": n950,
         }
 
@@ -671,7 +770,12 @@ def manifests() -> dict[str, dict]:
             # the advertising interval, which costs k=1 redundancy at the two
             # slow points. That is the trade the sweep was for. New manifests
             # should take radio_for's default (the floor) instead.
-            "radio": radio_for(pub, adv_interval_ms=max(ADV_FLOOR_MS, pub * 1000)),
+            # The advertising interval is the swept variable and stays explicit.
+            # Scanning is NOT the variable, so it takes the standard 20 ms at
+            # 100% duty rather than tracking the advertising interval -- which
+            # previously made two things move at once.
+            "radio": radio_for(pub, adv_interval_ms=max(ADV_FLOOR_MS, pub * 1000),
+                               scan_interval_ms=20.0, scan_window_ms=20.0),
             "nodes": sw,
         }
 
@@ -731,8 +835,7 @@ def manifests() -> dict[str, dict]:
             # instead of once, so a single blanked window no longer costs the
             # whole 100 ms; and on the Pi the receive front-end request falls
             # from continuous to 56%, which is the exposure that loses to WLAN.
-            "radio": radio_for(0.1, adv_interval_max_ms=120.0,
-                               scan_interval_ms=20.0, scan_window_ms=11.25),
+            "radio": radio_dithered(0.1),
             "nodes": n1850,
         }
 
@@ -775,8 +878,7 @@ def manifests() -> dict[str, dict]:
             ),
             "seed": 20260818,
             "controller": CONTROLLER_50HZ,
-            "radio": radio_for(0.1, adv_interval_max_ms=120.0,
-                               scan_interval_ms=20.0, scan_window_ms=20.0),
+            "radio": radio_dithered(0.1),
             "nodes": n1850s,
         }
     else:
@@ -872,8 +974,6 @@ def manifests() -> dict[str, dict]:
     # Neighbour counts sit at or below the firmware's limit of four: in-degree 1
     # for the directed cycle, 4 for the degree-4 ring, and 4 at the two cut-points
     # of the clustered graph.
-    RADIO_50HZ_N30 = radio_for(0.1, adv_interval_max_ms=120.0,
-                               scan_interval_ms=20.0, scan_window_ms=18.0)
 
     for name, gen, params, desc in [
         ("n30-dring-50hz", "ring", {"directed": True, "ids": BAND_ORDER},
@@ -891,10 +991,115 @@ def manifests() -> dict[str, dict]:
         out[name] = {
             "name": name, "description": desc, "seed": 20260818,
             "controller": CONTROLLER_50HZ,
-            "radio": RADIO_50HZ_N30,
+            "radio": radio_dithered(0.1),
             "structure": {"generator": gen, "params": params},
             "nodes": hosts_for(publish_period_s=0.1),
         }
+
+    # ── the campaign set: 40 Hz dynamics, 125 ms publish ────────────────────
+    # 125 ms is the period at which the two constraints stop fighting. The
+    # dither wants a wide window; the ceiling min(1, T_pub/mean_adv) wants the
+    # mean advertising interval at or below the publish period. At 125 ms with
+    # adv 100-150 the mean IS 125, so the full 50 ms window costs nothing:
+    # k = 1.000 and ceiling = 1.000, where a 100 ms publish could only afford a
+    # 5 ms window and a 200 ms publish wasted the ceiling headroom.
+    #
+    # Scanning 20 ms at 90% duty. The 2 ms left unscanned in every window is for
+    # the node's own ~1.2 ms advertising event, which otherwise has to preempt
+    # the scan -- the same scan-versus-advertise contention the dither exists to
+    # break. 13.8% BLE duty over 20 advertisers.
+    #
+    # Rates are 5 local updates per publish, as at every other rate, and the
+    # controller is the same continuous-time system as the 25 and 50 Hz blocks.
+    RADIO_40HZ = radio_dithered(0.125, scan_duty=0.90)
+
+    for tag, gen, params, desc in [
+        ("dring", "ring", {"directed": True, "ids": BAND_ORDER},
+         "G1: directed cycle, in-degree 1. The sparsest strongly connected graph "
+         "and the slowest convergence of the three."),
+        ("ring4", "ring", {"k": 2, "ids": BAND_ORDER},
+         "G2: undirected ring of degree 4, the densest ring the microcontroller "
+         "can serve. Paired with G1 on everything but the edge set."),
+    ]:
+        out[f"n30-{tag}-40hz"] = {
+            "name": f"n30-{tag}-40hz",
+            "description": (
+                f"{desc} 30 agents, 40 Hz dynamics, 125 ms publish, advertising "
+                f"100-150 ms and scanning 20 ms at 90% duty. The mean advertising "
+                f"interval equals the publish period, so the delivery ceiling is "
+                f"1.0 with the full dither window."
+            ),
+            "seed": 20260818,
+            "controller": CONTROLLER_40HZ,
+            "radio": RADIO_40HZ,
+            "structure": {"generator": gen, "params": params},
+            "nodes": hosts_for(publish_period_s=0.125),
+        }
+
+    clustered40 = hosts_for(publish_period_s=0.125)
+    for n in clustered40:
+        n["neighbors"] = CLUSTER_EDGES[n["id"]]
+        if n["id"] in CLUSTER_DISABLED:
+            n["enabled"] = False
+    out["n30-clusters-40hz"] = {
+        "name": "n30-clusters-40hz",
+        "description": (
+            "G3(t): three clusters joined only through bridges 21 and 30, which "
+            "start disabled and are enabled at t = 60 s. 30 agents, 40 Hz "
+            "dynamics, 125 ms publish. The merge transient rather than the steady "
+            "state is the quantity of interest."
+        ),
+        "seed": 20260818,
+        "controller": CONTROLLER_40HZ,
+        "radio": RADIO_40HZ,
+        "nodes": clustered40,
+        "events": [{"at_s": CLUSTER_MERGE_AT_S,
+                    "nodes": sorted(CLUSTER_DISABLED),
+                    "set": {"enabled": True}}],
+    }
+
+    # ── n30-ring4-25hz: the wide-dither arm ─────────────────────────────────
+    # Aimed at the bridge->ble failure, which is the dominant loss in the 50 Hz
+    # ring4 run: 0.335 mean against 0.794 nRF-to-nRF and 0.979 UDP, and the two
+    # worst links dark for 82% and 62% of the run at -45 to -48 dBm. Strong
+    # signal, binary on/off, tens of seconds at a time: an advertising phase that
+    # sits inside the receiving nRF's own advertising window and drifts out only
+    # as the two crystals separate. The 100-120 ms range fixed it at 18 agents
+    # and clearly under-dithers at 30.
+    #
+    # Four things change together relative to n30-ring4-50hz, so this is a
+    # configuration test rather than a controlled arm:
+    #
+    #   adv 100-120 -> 100-150 ms   a 50 ms dither window instead of 20
+    #   publish 0.1 -> 0.2 s        k = T_pub/T_adv goes 0.9 -> 1.6, so each
+    #                               value is advertised more than once and a
+    #                               single lost advertisement is no longer a
+    #                               lost value. Also drops BLE duty 17.3 -> 13.8%
+    #   dt 0.02 -> 0.04 s           the multi-rate ratio stays at 5
+    #   scan 20/18 -> 20/20         100% duty; nRF receivers convert duty into
+    #                               delivery almost one-for-one (PLATFORM 5.4a)
+    #
+    # If bridge->ble recovers, it will not say which of the four did it. That is
+    # accepted deliberately: the point is to find a configuration that works
+    # before spending 11 hours collecting with one that does not.
+    n30w = hosts_for(publish_period_s=0.2)
+    out["n30-ring4-25hz"] = {
+        "name": "n30-ring4-25hz",
+        "description": (
+            "G2 at 30 agents, 25 Hz dynamics, 5 Hz publish, advertising 100-150 ms "
+            "and scanning at 100% duty. The wide-dither arm against the "
+            "bridge->ble blackouts seen in n30-ring4-50hz, where the worst links "
+            "were dark for most of the run at -45 dBm. k = 1.6, so each published "
+            "value is advertised more than once; ~13.8% BLE duty over 20 "
+            "advertisers. Same controller in continuous-time terms as the 50 Hz "
+            "manifests, so trajectories remain comparable."
+        ),
+        "seed": 20260818,
+        "controller": CONTROLLER_25HZ,
+        "radio": radio_dithered(0.2),
+        "structure": {"generator": "ring", "params": {"k": 2, "ids": BAND_ORDER}},
+        "nodes": n30w,
+    }
 
     # G3 is declared edge by edge rather than generated: it is irregular by
     # design, and 21 and 30 are the cut-points that join the BLE and Wi-Fi
@@ -918,7 +1123,7 @@ def manifests() -> dict[str, dict]:
         ),
         "seed": 20260818,
         "controller": CONTROLLER_50HZ,
-        "radio": RADIO_50HZ_N30,
+        "radio": radio_dithered(0.1),
         "nodes": clustered50,
         "events": [{"at_s": CLUSTER_MERGE_AT_S,
                     "nodes": sorted(CLUSTER_DISABLED),
@@ -929,7 +1134,8 @@ def manifests() -> dict[str, dict]:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
-        description="Regenerate the experiment manifests.")
+        description="Regenerate experiment manifests. Writes the test set under "
+                    "experiments/test/ unless told otherwise.")
     ap.add_argument(
         "--hosts", default=os.environ.get("VERTEX_HOSTS"),
         help="comma-separated host addresses, replacing the built-in HOSTS. The "
@@ -937,7 +1143,16 @@ def main(argv: list[str] | None = None) -> int:
              "changes when a Pi is re-imaged or swapped -- so it belongs here "
              "rather than in a hand-edit of a generated file, which the next run "
              "of this script would silently revert. Also VERTEX_HOSTS.")
+    ap.add_argument("--campaign", action="store_true",
+                    help=f"also write the campaign manifests into {OUT}/: "
+                         f"{', '.join(CAMPAIGN_SET)}")
+    ap.add_argument("--all", action="store_true",
+                    help="write every defined manifest into experiments/, "
+                         "including the historical ones. Rarely what you want.")
+    ap.add_argument("--only", metavar="NAME[,NAME]",
+                    help="write just these, by name, into experiments/")
     args = ap.parse_args(argv)
+
     if args.hosts:
         hosts = [h.strip() for h in args.hosts.split(",") if h.strip()]
         if not hosts:
@@ -947,22 +1162,57 @@ def main(argv: list[str] | None = None) -> int:
         FIRST_RUN_HOSTS[:] = hosts[:3]
         print(f"hosts: {', '.join(HOSTS)}")
 
-    OUT.mkdir(exist_ok=True)
+    built = manifests()
+
+    # destination per manifest: the test set is an instrument check, everything
+    # else is an experiment
+    wanted: dict[str, Path] = {}
+    if args.only:
+        for n in (x.strip() for x in args.only.split(",") if x.strip()):
+            if n not in built:
+                print(f"unknown manifest {n!r}; known: {', '.join(sorted(built))}",
+                      file=sys.stderr)
+                return 2
+            wanted[n] = OUT_TEST if n in TEST_SET else OUT
+    elif args.all:
+        wanted = {n: (OUT_TEST if n in TEST_SET else OUT) for n in built}
+    else:
+        wanted = {n: OUT_TEST for n in TEST_SET if n in built}
+        if args.campaign:
+            wanted.update({n: OUT for n in CAMPAIGN_SET if n in built})
+
+    missing = [n for n in wanted if n not in built]
+    if missing:
+        print(f"not built with {len(HOSTS)} hosts: {', '.join(missing)}",
+              file=sys.stderr)
+
+    for d in {*wanted.values()}:
+        d.mkdir(parents=True, exist_ok=True)
+
     failures = 0
-    for name, doc in manifests().items():
+    for name, dest in sorted(wanted.items()):
+        doc = built[name]
         rep = check(load_manifest(doc))
         status = "ok" if rep.ok else "INVALID"
         if not rep.ok:
             failures += 1
-        path = OUT / f"{name}.yaml"
+        path = dest / f"{name}.yaml"
         with path.open("w", encoding="utf-8") as fh:
-            fh.write(f"# Generated by tools/make_manifests.py -- edit that, not this.\n")
+            fh.write("# Generated by tools/make_manifests.py -- edit that, not this.\n")
             yaml.safe_dump(doc, fh, sort_keys=False, width=100)
-        print(f"{status:8} {path.name:24} nodes={rep.n_nodes} edges={rep.n_edges} "
-              f"lambda2={rep.algebraic_connectivity if rep.algebraic_connectivity is None else round(rep.algebraic_connectivity,4)} "
-              f"warnings={len(rep.warnings)}")
+        rel = path.relative_to(OUT.parent)
+        lam = (rep.algebraic_connectivity if rep.algebraic_connectivity is None
+               else round(rep.algebraic_connectivity, 4))
+        print(f"{status:8} {str(rel):34} nodes={rep.n_nodes} edges={rep.n_edges} "
+              f"lambda2={lam} warnings={len(rep.warnings)}")
         for e in rep.errors:
             print(f"         ERROR {e}")
+
+    skipped = sorted(set(built) - set(wanted))
+    if skipped:
+        print(f"\nnot written ({len(skipped)}): {', '.join(skipped)}")
+        print("  --campaign for the campaign set, --all for everything, "
+              "--only NAME for one")
     return failures
 
 

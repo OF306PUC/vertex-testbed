@@ -28,6 +28,9 @@ run "firmware symbols"                 python3 test/common/check_firmware_symbol
 # PROTO_CONTROL_LEN grew on the host and on nordic while both peers stayed at the
 # old length, and checking one firmware could not see it.
 run "serial layout: nordic"            python3 test/common/check_proto_layout.py firmware/nordic
+# STATS runs board -> host, the opposite direction, so the layout check above
+# cannot see it. A reordering there keeps the length identical.
+run "stats layout: nordic"             python3 test/common/check_stats_layout.py firmware/nordic
 run "serial layout: loopback a"        python3 test/common/check_proto_layout.py test/loopback-uart-ble-a/firmware
 run "serial layout: loopback b"        python3 test/common/check_proto_layout.py test/loopback-uart-ble-b/firmware
 

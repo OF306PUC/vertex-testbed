@@ -24,6 +24,21 @@
  *
  * @return 0, or -EINVAL if min is zero or exceeds max.
  */
+/** Sentinel for `granted_tx_power` before the vendor command has answered. */
+#define BROADCASTER_TX_POWER_UNKNOWN  (-128)
+
+/** Advertising parameters in force, and the Tx power the controller GRANTED.
+ *
+ *  The granted value is the one worth recording: it differed from the requested
+ *  one on every board until CONFIG_BT_CTLR_TX_PWR_DYNAMIC_CONTROL was set.
+ */
+struct broadcaster_stats {
+	uint16_t adv_interval_min, adv_interval_max;   /* 0.625 ms units */
+	int8_t   granted_tx_power;                     /* dBm, or the sentinel */
+};
+
+const struct broadcaster_stats *broadcaster_stats(void);
+
 int broadcaster_set_adv_params(uint16_t interval_min, uint16_t interval_max);
 
 /** @brief Start advertising @p pkt. Idempotent-safe: returns 0 if the advertiser

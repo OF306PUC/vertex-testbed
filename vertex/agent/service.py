@@ -219,6 +219,23 @@ class AgentService:
         a = assignment if assignment is not None else self.assignment
         return dict(a.radio) if a is not None and a.radio else {}
 
+    def _board_meta(self) -> dict[str, Any]:
+        """What the nRF says about itself, for the run's environment.
+
+        The manifest records what the board was ASKED for. This records what it
+        reports back: the granted transmit power, the advertising and scan
+        parameters in force, and the observer counters. `nrf_stats_source` says
+        which, so a run whose board is on older firmware is distinguishable from
+        one where the query was never attempted.
+        """
+        if self.relay is None:
+            return {}
+        st = getattr(self.relay, "board_stats", None)
+        if st is None:
+            return {"nrf_stats_source": "unavailable",
+                    "nrf_stats_error": getattr(self.relay, "_last_stats_error", None)}
+        return {"nrf_stats_source": "board", "nrf": st}
+
     def _radio_meta(self, assignment: AgentAssignment) -> dict[str, Any]:
         """The radio block for ``RunMeta.environment``.
         """
@@ -404,6 +421,7 @@ class AgentService:
                 # `vertex.analysis.units` normalises on read.
                 units="scaled_int" if self.is_relay else "engineering",
                 environment={**self.environment, **self._radio_meta(a),
+                             **self._board_meta(),
                              **_interpreter_provenance(),
                              "epoch_unix_s": getattr(self.clock, "epoch_unix_s", None)},
             ),

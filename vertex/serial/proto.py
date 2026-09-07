@@ -460,6 +460,28 @@ def decode_ack(payload: bytes) -> tuple[int, int]:
     return payload[0], struct.unpack("<b", payload[1:2])[0]
 
 
+#: Layout version byte of the coordination firmware's STATS payload.
+STATS_V1 = 1
+
+#: The coordination firmware's layout: counters AND the radio state in force.
+#: Must match the ``PROTO_T_STATS_REQ`` handler in firmware/nordic/src/control.c;
+#: test/common/check_stats_layout.py compares the two.
+#:
+#: `granted_tx_power` is the value the controller SELECTED, not the one requested.
+#: Those differed on every board until CONFIG_BT_CTLR_TX_PWR_DYNAMIC_CONTROL was
+#: set, and -128 means the vendor command has not answered yet.
+STATS_V1_COUNTERS = (
+    "devices", "ours", "foreign", "wrong_size",
+    "malformed", "legacy_v0", "unknown_node", "queue_drops",
+    "tx_frames", "tx_dropped", "rx_overrun_bytes", "rx_stopped",
+    "rx_partial_flushes", "rx_full_flushes",
+    "frames_ok", "crc_errors", "len_errors", "resyncs", "timeouts",
+)
+STATS_V1_RADIO = ("adv_interval_min", "adv_interval_max",
+                  "scan_interval", "scan_window")
+STATS_V1_LEN = 1 + 4 * len(STATS_V1_COUNTERS) + 2 * len(STATS_V1_RADIO) + 2
+TX_POWER_UNKNOWN = -128
+
 #: Counter order must match the ``PROTO_T_STATS_REQ`` handler in main.c.
 STATS_FIELDS = (
     "reports", "queue_dropped", "oversize",
@@ -493,7 +515,36 @@ class PeerStats:
 
 
 def decode_stats(payload: bytes) -> PeerStats:
+    """Decode a STATS dump from either firmware.
+
+    Two layouts share the frame type. They are told apart by length, and the
+    coordination firmware's also carries a leading version byte, so a future
+    layout can be added without guessing:
+
+    * 48 bytes -- the loopback peer's twelve counters, unversioned. Specific to a
+      transparent bridge; none of the coordination firmware's interesting
+      counters map onto it, which is why it was not reused.
+    * 87 bytes -- the coordination firmware's v1: nineteen counters plus the
+      advertising and scan parameters in force and the GRANTED transmit power.
+    """
     n = len(STATS_FIELDS)
-    if len(payload) != 4 * n:
-        raise ProtoError(f"stats payload must be {4 * n} bytes, got {len(payload)}")
-    return PeerStats(dict(zip(STATS_FIELDS, struct.unpack(f"<{n}I", payload))))
+    if len(payload) == 4 * n:
+        return PeerStats(dict(zip(STATS_FIELDS, struct.unpack(f"<{n}I", payload))))
+
+    if len(payload) == STATS_V1_LEN:
+        if payload[0] != STATS_V1:
+            raise ProtoError(f"stats layout version {payload[0]}, expected "
+                             f"{STATS_V1}; the firmware is newer than this host")
+        c = len(STATS_V1_COUNTERS)
+        vals = dict(zip(STATS_V1_COUNTERS,
+                        struct.unpack_from(f"<{c}I", payload, 1)))
+        off = 1 + 4 * c
+        vals.update(zip(STATS_V1_RADIO,
+                        struct.unpack_from(f"<{len(STATS_V1_RADIO)}H", payload, off)))
+        off += 2 * len(STATS_V1_RADIO)
+        vals["granted_tx_power"] = struct.unpack_from("<b", payload, off)[0]
+        vals["scan_active"] = payload[off + 1]
+        return PeerStats(vals)
+
+    raise ProtoError(f"stats payload is {len(payload)} bytes; expected "
+                     f"{4 * n} (peer) or {STATS_V1_LEN} (coordination v1)")

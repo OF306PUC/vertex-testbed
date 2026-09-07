@@ -32,6 +32,7 @@ static struct {
 	uint32_t queue_drops;   /* a pending snapshot overwritten before it was read */
 } counters;
 
+
 static neighbor_info_type      neighbor_info;
 static struct agent           *agent;       /* read-only; bound by observer_bind() */
 static bool                    scanning;
@@ -162,24 +163,12 @@ int observer_init(void)
 	}
 	struct bt_le_scan_param scan_param = {
 		.type     = scan_active ? BT_LE_SCAN_TYPE_ACTIVE : BT_LE_SCAN_TYPE_PASSIVE,
-		/* Duplicate filtering OFF, matching the Pi-side scanner (2026-08-25).
+		/* Duplicate filtering OFF, matching the Pi-side scanner.
 		 *
 		 * A suppressed duplicate is indistinguishable from a lost packet, which
 		 * is the number being measured, so the two receive paths must apply the
-		 * same rule. It was ON here and OFF on the Pi until now.
-		 *
-		 * Measured before changing it: enabling it on the Pi took BLE-only
-		 * delivery from 0.768 to 0.331 (PLATFORM.md 6.8), so the two controllers
-		 * implement very different behaviour under one name and matching the
-		 * FLAG was never the same as matching the BEHAVIOUR. Turning it off on
-		 * both is the only setting that makes the rule identical: report
-		 * everything, and let the host decide what is a repeat.
-		 *
-		 * It is also the leading suspect for the run-start collapses: the links
-		 * that go silent for tens of seconds are consistently `bridge -> ble`,
-		 * i.e. the nRF receiving from a Pi, which is exactly where this filter
-		 * acts. PLATFORM.md 6.10.
-		 *
+		 * same rule.
+		 * 
 		 * Cost: the observer now sees every advertising event rather than one per
 		 * distinct payload, so `on_device_found` runs more often. It writes into a
 		 * depth-1 mailbox that is overwritten by design, so nothing queues up --
@@ -260,4 +249,29 @@ int observer_stop(void)
 	 * host reads them before and after a run and subtracts. */
 	memset(&neighbor_info, 0, sizeof(neighbor_info));
 	return 0;
+}
+
+/* Reported, not just logged: with duplicate filtering off the
+ * observer sees every advertising event rather than one per distinct payload, so
+ * `queue_drops` is the counter that says whether the depth-1 mailbox is keeping
+ * up. `foreign` and `unknown_node` are what separate "heard nothing" from "heard
+ * plenty, none of it ours". See control.c's STATS handler. */
+static struct observer_stats reported;
+
+const struct observer_stats *observer_stats(void)
+{
+	reported = (struct observer_stats){
+		.devices = counters.devices,
+		.ours = counters.ours,
+		.foreign = counters.foreign,
+		.wrong_size = counters.wrong_size,
+		.malformed = counters.malformed,
+		.legacy_v0 = counters.legacy_v0,
+		.unknown_node = counters.unknown_node,
+		.queue_drops = counters.queue_drops,
+		.scan_interval = scan_interval,
+		.scan_window = scan_window,
+		.scan_active = scan_active,
+	};
+	return &reported;
 }

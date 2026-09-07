@@ -11,8 +11,9 @@ from typing import Callable
 
 from ..numeric import quantize
 from ..serial import (FrameType, StateReport, build_frame, decode_ack,
-                      decode_state, encode_algorithm, encode_control,
-                      encode_disturbance, encode_network, encode_radio)
+                      decode_state, decode_stats, encode_algorithm,
+                      encode_control, encode_disturbance, encode_network,
+                      encode_radio)
 from .assignment import AgentAssignment
 
 __all__ = ["RelayError", "RelayCounters", "assignment_to_frames",
@@ -30,6 +31,7 @@ class RelayCounters:
     rejected: int = 0
     frames_sent: int = 0
     untimed: int = 0            # reports that arrived with no host receive time
+    stats_unavailable: int = 0  # 'Q' unanswered: firmware older than 2026-09-07
 
     def summary(self) -> str:
         return (f"reports={self.reports} malformed={self.malformed} "
@@ -126,6 +128,9 @@ class BleRelay:
         #: Host clock at the last report's arrival, on the experiment epoch. This is
         #: the timeline the log plots against; see runlog's module docstring.
         self.last_rx_time_us: int | None = None
+        #: The board's own account of itself, refreshed at each configure.
+        self.board_stats: dict | None = None
+        self._last_stats_error: str | None = None
         self._t0: float | None = None
 
         # Subscribed here, not in start(): the nRF logs on boot and on reset, so a
@@ -157,6 +162,28 @@ class BleRelay:
         if radio is not None:
             self._send(*radio)
         self.assignment = assignment
+        self.board_stats = self.read_stats()
+
+    def read_stats(self) -> dict | None:
+        """The board's counters and the radio state it actually applied.
+
+        Asked rather than assumed. Until this existed the run metadata recorded
+        what the manifest REQUESTED of the nRF and nothing about what the nRF
+        granted -- and those differed on every board for months, because the Tx
+        power vendor command was not compiled in and every one silently
+        advertised at 0 dBm.
+
+        Best effort: a board on older firmware does not answer 'Q' at all, so a
+        timeout returns None rather than failing the configure. The absence is
+        itself informative and is recorded as such.
+        """
+        try:
+            frame = self.link.request(FrameType.STATS_REQ, timeout=self.timeout)
+            return dict(decode_stats(frame.payload).values)
+        except Exception as exc:
+            self.counters.stats_unavailable += 1
+            self._last_stats_error = repr(exc)
+            return None
 
     def start(self) -> None:
         """Trigger the run. Latches initial conditions on the nRF."""

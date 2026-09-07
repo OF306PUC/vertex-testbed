@@ -92,6 +92,50 @@ void control_on_frame(uint8_t type, const uint8_t *payload, uint16_t len, void *
         return;                         /* PONG is the reply; no ACK */
     }
 
+    case PROTO_T_STATS_REQ: {
+        /* Counters and the radio state actually in force.*/
+        const struct observer_stats    *o = observer_stats();
+        const struct broadcaster_stats *b = broadcaster_stats();
+        const struct uart_link_stats   *u = uart_link_stats();
+        const struct proto_stats       *r = uart_link_proto_stats();
+        uint8_t p[PROTO_STATS_V1_LEN];
+        size_t  n = 0;
+
+        p[n++] = PROTO_STATS_V1;
+
+        proto_st_u32(&p[n], o->devices);            n += 4;
+        proto_st_u32(&p[n], o->ours);               n += 4;
+        proto_st_u32(&p[n], o->foreign);            n += 4;
+        proto_st_u32(&p[n], o->wrong_size);         n += 4;
+        proto_st_u32(&p[n], o->malformed);          n += 4;
+        proto_st_u32(&p[n], o->legacy_v0);          n += 4;
+        proto_st_u32(&p[n], o->unknown_node);       n += 4;
+        proto_st_u32(&p[n], o->queue_drops);        n += 4;
+
+        proto_st_u32(&p[n], u->tx_frames);          n += 4;
+        proto_st_u32(&p[n], u->tx_dropped);         n += 4;
+        proto_st_u32(&p[n], u->rx_overrun_bytes);   n += 4;
+        proto_st_u32(&p[n], u->rx_stopped);         n += 4;
+        proto_st_u32(&p[n], u->rx_partial_flushes); n += 4;
+        proto_st_u32(&p[n], u->rx_full_flushes);    n += 4;
+
+        proto_st_u32(&p[n], r->frames_ok);          n += 4;
+        proto_st_u32(&p[n], r->crc_errors);         n += 4;
+        proto_st_u32(&p[n], r->len_errors);         n += 4;
+        proto_st_u32(&p[n], r->resyncs);            n += 4;
+        proto_st_u32(&p[n], r->timeouts);           n += 4;
+
+        proto_st_u16(&p[n], b->adv_interval_min);   n += 2;
+        proto_st_u16(&p[n], b->adv_interval_max);   n += 2;
+        proto_st_u16(&p[n], o->scan_interval);      n += 2;
+        proto_st_u16(&p[n], o->scan_window);        n += 2;
+        p[n++] = (uint8_t)b->granted_tx_power;      /* int8 on the wire */
+        p[n++] = o->scan_active ? 1u : 0u;
+
+        (void)uart_link_send(PROTO_T_STATS, p, (uint16_t)n);
+        return;                         /* the dump is the reply; no ACK */
+    }
+
     default:
         rc = AGENT_ERR_TYPE;
         break;

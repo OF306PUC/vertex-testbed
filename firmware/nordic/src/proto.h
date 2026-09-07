@@ -69,6 +69,16 @@
 #define PROTO_PING_LEN          0u
 #define PROTO_STATS_REQ_LEN     0u
 
+/** STATS payload layout for THIS firmware, version 1.
+ *
+ *  [version:1][observer 8 x u32][uart 6 x u32][proto 5 x u32]
+ *  [adv_min:2][adv_max:2][scan_int:2][scan_win:2][tx_power:1][scan_active:1]
+ *
+ *  The loopback peer sends a different, unversioned 48-byte layout; the host
+ *  tells them apart by length and, for this one, by the leading version byte. */
+#define PROTO_STATS_V1          1u
+#define PROTO_STATS_V1_LEN      (1u + (8u * 4u) + (6u * 4u) + (5u * 4u) + 8u + 2u)
+
 enum proto_state {
     PROTO_WAIT_SOF = 0,
     PROTO_WAIT_TYPE,

@@ -19,6 +19,10 @@ LOG_MODULE_REGISTER(Module_Broadcaster, LOG_LEVEL_INF);
 
 /* Host-supplied advertising interval, 0.625 ms units. Zero means "not set", in
  * which case BT_LE_ADV_NCONN's default applies. */
+/** Tx power the controller actually selected, dBm. BROADCASTER_TX_POWER_UNKNOWN
+ *  until the vendor command has answered once. */
+static int8_t granted_tx_power = BROADCASTER_TX_POWER_UNKNOWN;
+
 static uint16_t adv_interval_min;
 static uint16_t adv_interval_max;
 
@@ -60,8 +64,13 @@ static void set_tx_power(uint8_t handle_type, uint16_t handle, int8_t tx_pwr_lvl
 	}
 
 	rp = (void *)rsp->data;
-	/* Logged, not stored: the controller need not grant what was asked for -- the
-	 * nRF52832 on the DK caps at +4 dBm -- */
+	/* Stored as of 2026-09-07, not merely logged. The controller need not grant
+	 * what was asked for -- the nRF52832 on the DK caps at +4 dBm, and before
+	 * CONFIG_BT_CTLR_TX_PWR_DYNAMIC_CONTROL was set this command was not compiled
+	 * in at all and every board silently advertised at 0 dBm. "Requested" and
+	 * "granted" are therefore different measurements, and the run metadata needs
+	 * the second one. Reported through the STATS frame; see control.c. */
+	granted_tx_power = rp->selected_tx_power;
 	if (rp->selected_tx_power != tx_pwr_lvl) {
 		LOG_WRN("Tx power %d dBm requested, %d dBm selected",
 			tx_pwr_lvl, rp->selected_tx_power);
@@ -184,4 +193,15 @@ int broadcaster_stop(void)
 	advertising = false;
 	LOG_INF("Advertising stopped");
 	return 0;
+}
+
+const struct broadcaster_stats *broadcaster_stats(void)
+{
+	static struct broadcaster_stats out;
+	out = (struct broadcaster_stats){
+		.adv_interval_min = adv_interval_min,
+		.adv_interval_max = adv_interval_max,
+		.granted_tx_power = granted_tx_power,
+	};
+	return &out;
 }

@@ -1346,6 +1346,35 @@ vertex/
 
 #### The list
 
+**A4. Host-side receive drops are unmeasured on the Pi, unlike on the nRF.**
+The nRF reports `queue_drops` through the STATS frame (§6.x), so a delivery ratio
+can be told apart from a report the board discarded internally. The Pi has no
+equivalent, and cannot have the same one: `BleTransport` uses
+`loop.add_reader` + `recv()`, so there is no application mailbox to overflow --
+the queue is the kernel socket buffer.
+
+Transmit is already covered and clean. Publishing is a synchronous HCI command,
+so a failure is refused rather than buffered, and `BleStats.send_errors`,
+`send_timeouts` and `MultiStats.per_medium_errors` have read zero on every run.
+
+What is missing is the receive side, and it needs the kernel:
+
+* `SO_RXQ_OVFL` (constant 40; Python does not export it) gives a cumulative drop
+  count as an ancillary message on `recvmsg`. Verified settable on both a UDP and
+  an AF_BLUETOOTH HCI socket; whether `hci_sock_recvmsg` actually *populates* the
+  cmsg is untested and needs one bench check.
+* `/proc/net/udp` carries `rx_queue` and `drops` per socket, so the UDP transport
+  can be measured with no code in the hot path. Match on local port 3010.
+* `FIONREAD` is NOT usable here: on a datagram socket it returns the size of the
+  next datagram, not the backlog.
+
+**Deliberately deferred (2026-09-07).** The dominant loss is `bridge -> ble`,
+where the *nRF* fails to receive the *Pi's* advertisements -- 0.335 mean against
+0.794 for nRF-to-nRF and 0.979 for UDP, with blackouts covering 82% of a run on
+the worst link. That is a failure at the nRF's receiver, not in the Pi's receive
+path, so this instrumentation would not have diagnosed it. Worth adding before
+any claim that a delivery figure is airtime-limited; not worth adding first.
+
 **A3. The two paths advertise different AD, so their airtime differs.** The nRF
 sends a name element the Pi does not, and the Pi sends a flags element the nRF does
 not:
@@ -1405,8 +1434,10 @@ advertisement does not. Preserved deliberately: dropping it changes what every
 so nothing is soliciting those responses today. Worth removing before the next
 collection, together with A0.
 
-**A0. The nRF scans with duplicate filtering ON.** `observer_init()` sets
-`BT_LE_SCAN_OPT_FILTER_DUPLICATE`. The Pi-side scanner deliberately does the
+**A0. The nRF scans with duplicate filtering ON. RESOLVED 2026-08-26** --
+`observer_init()` now sets `BT_LE_SCAN_OPT_NONE`, matching the Pi. The paragraph
+below is kept because it states why the two must agree. Historical:
+`observer_init()` set `BT_LE_SCAN_OPT_FILTER_DUPLICATE`. The Pi-side scanner deliberately does the
 opposite, because a suppressed duplicate is indistinguishable from a lost packet —
 which is the number being measured. Whatever the controller keys its filter on,
 the two receive paths are then measuring loss under different rules, across

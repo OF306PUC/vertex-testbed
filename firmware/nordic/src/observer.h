@@ -70,4 +70,18 @@ int observer_stop(void);
  */
 int observer_set_scan_params(uint16_t interval, uint16_t window, bool active);
 
+/** Observer counters and the scan parameters actually in force.
+ *
+ *  Reported to the host through the STATS frame, so a delivery ratio can be
+ *  told apart from a report the board dropped internally.
+ */
+struct observer_stats {
+	uint32_t devices, ours, foreign, wrong_size;
+	uint32_t malformed, legacy_v0, unknown_node, queue_drops;
+	uint16_t scan_interval, scan_window;   /* 0.625 ms units, as commanded */
+	bool     scan_active;
+};
+
+const struct observer_stats *observer_stats(void);
+
 #endif // OBSERVER_H_
