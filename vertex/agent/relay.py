@@ -107,18 +107,6 @@ class BleRelay:
     `link` is anything with `request(type, payload, timeout) -> Frame` and
     `on_state(callback)` -- `vertex.serial.SerialLink`. Injected rather than
     constructed so the relay is testable without a port.
-
-    The relay registers itself for STATE frames in `__init__`. That registration
-    is the entire reporting path, and it was missing: `handle_frame` had no caller
-    anywhere and `on_state` appeared only in this docstring. A `ble` agent would
-    configure the nRF, start the run and log **zero samples**, while `status()`
-    reported `running: true`. The end-to-end check did not catch it because the
-    check called `handle_frame` itself -- supplying the wiring it was meant to be
-    testing.
-
-    `test/common/peer.py` does NOT satisfy this contract: it routes replies and
-    advertising reports only, with no STATE path. It is a loopback harness, not a
-    stand-in for the link.
     """
 
     def __init__(self, link, *,
@@ -175,12 +163,6 @@ class BleRelay:
         if self.assignment is None:
             raise RelayError("configure() before start()")
         self._t0 = time.monotonic()
-        # Push the run's clock down to the link BEFORE the first report can
-        # arrive. The link stamps rx_time_us in its reader thread and was handed
-        # whatever clock existed at configure time -- the agent's launch clock, not
-        # the run's. That put a `ble` agent's host timeline on its own process
-        # uptime: measured at 85.285 s instead of 0 on the first two-host run,
-        # silently, because an offset timeline still looks like a timeline.
         if self.clock is not None and hasattr(self.link, "clock"):
             self.link.clock = self.clock
         # Read as late as possible: everything between this line and the nRF
@@ -200,11 +182,8 @@ class BleRelay:
         """Feed an inbound frame. Returns the report if it was one.
 
         Accepts a :class:`~vertex.serial.link.TimedFrame` -- the link stamps the
-        arrival instant in its reader thread, and that stamp is the timeline the log
-        plots against. A bare frame is accepted too, with no arrival time; the row
-        then falls back to the board's own clock, which is the only honest thing to
-        do when the host's is unknown.
-
+        arrival instant in its reader thread.
+        
         A malformed report is counted and dropped, never raised: the nRF logs on
         boot and reset.
         """

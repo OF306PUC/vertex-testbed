@@ -26,9 +26,9 @@ OUT = Path(__file__).resolve().parent.parent / "experiments"
 #: agents. These are the current lab addresses; they change when a host is
 #: re-imaged or moved to a different interface, and they are the ONLY part of a
 #: manifest that is not derivable.
-HOSTS = ["10.6.5.1", "10.6.5.2", "10.6.5.3", "10.6.5.4", 
-         "10.6.5.5", "10.6.5.6", "10.6.5.7", "10.6.5.8",
-         "10.6.5.9", "10.6.5.10"]
+HOSTS = ["10.6.5.1", "10.6.5.2", "10.6.5.4", "10.6.5.5", 
+         "10.6.5.7", "10.6.5.8", "10.6.5.9", "10.6.5.10",
+         "10.6.5.12", "10.6.5.13"]
 
 #: Ids 1-10 are BLE agents, 11-20 Wi-Fi, 21-30 bridges; agent k of each band
 #: lives on HOSTS[k]. Bridges carry both radios, which is why they are the ones
@@ -38,8 +38,12 @@ BANDS = [("ble", 1), ("wifi", 11), ("bridge", 21)]
 CONTROLLER = {
     "name": "finite_time_adaptive",
     "dt_s": 0.2,
-    "eta": 2e-6,
-    "gain_ij": 0.02,
+    # Rates, not per-step increments: the recursion is x += dt*(u+nu), so a gain
+    # means the same thing at any dt. Rescaled 2026-09-04 from the per-step form
+    # by gain/dt and eta/dt^2, which preserves every previously measured
+    # trajectory exactly.
+    "eta": 5e-5,                        # was 2e-6 per step
+    "gain_ij": 0.1,                     # was 0.02 per step
     "alpha": 0.5,
     "delta": 0.01,
     "disturbance": {
@@ -80,8 +84,8 @@ CONTROLLER_FAST = {
     # 0.5 /s against n6-ring's 0.1 /s. This configuration converges ~5x faster in
     # wall-clock terms and is NOT the same continuous-time experiment as n6-ring
     # -- deliberate, but the two are no longer directly comparable.
-    "eta": 2e-6,
-    "gain_ij": 0.02,
+    "eta": 1.25e-3,                     # was 2e-6 per step (/dt^2)
+    "gain_ij": 0.5,                     # was 0.02 per step (/dt)
     "alpha": 0.5,
     "delta": 0.01,                      # unchanged: a threshold, not a rate
     "disturbance": {
@@ -128,6 +132,9 @@ ADV_FLOOR_MS = 100.0
 
 
 def radio_for(publish_period_s: float, *, adv_interval_ms: float | None = None,
+              adv_interval_max_ms: float | None = None,
+              scan_interval_ms: float | None = None,
+              scan_window_ms: float | None = None,
               scan_ratio: float = 1.0) -> dict:
     """RadioSpec for a publish rate. Defaults to advertising AS FAST AS ALLOWED.
 
@@ -156,11 +163,23 @@ def radio_for(publish_period_s: float, *, adv_interval_ms: float | None = None,
                          f"controller floor; see scripts/adv_floor.py")
     if adv_ms > 10240.0:
         raise ValueError(f"adv_interval_ms={adv_ms} exceeds the 10240 ms maximum")
-    return {
+    si = adv_ms if scan_interval_ms is None else float(scan_interval_ms)
+    sw = (round(si * scan_ratio, 4) if scan_window_ms is None
+          else float(scan_window_ms))
+    if sw > si:
+        raise ValueError(f"scan_window_ms={sw} exceeds scan_interval_ms={si}")
+    out = {
         "adv_interval_ms": adv_ms,
-        "scan_interval_ms": adv_ms,
-        "scan_window_ms": round(adv_ms * scan_ratio, 4),
+        "scan_interval_ms": si,
+        "scan_window_ms": sw,
     }
+    if adv_interval_max_ms is not None:
+        amax = float(adv_interval_max_ms)
+        if amax < adv_ms:
+            raise ValueError(f"adv_interval_max_ms={amax} is below "
+                             f"adv_interval_ms={adv_ms}")
+        out["adv_interval_max_ms"] = amax
+    return out
 
 
 def ceiling_for(publish_period_s: float) -> float:
@@ -211,8 +230,13 @@ def ceiling_for(publish_period_s: float) -> float:
 CONTROLLER_50HZ = {
     "name": "finite_time_adaptive",
     "dt_s": 0.02,                       # 50 Hz
-    "eta": 1e-6,                        # 2e-6 * 0.5
-    "gain_ij": 0.01,                     # 0.02  * 0.5
+    # NOTE the eta relationship to CONTROLLER_FAST is NOT 1:1. In the per-step
+    # form eta was halved with the dt ratio when preserving the continuous rate
+    # needed a quartering, so the 50 Hz configuration has always adapted twice as
+    # fast as the 25 Hz one. These values preserve that, deliberately: changing
+    # it would invalidate every 50 Hz run collected so far. See PLATFORM.md.
+    "eta": 2.5e-3,                      # was 1e-6 per step (/dt^2)
+    "gain_ij": 0.5,                     # was 0.01 per step (/dt)
     "alpha": 0.5,
     "delta": 0.01,
     "disturbance": {
@@ -652,6 +676,113 @@ def manifests() -> dict[str, dict]:
         }
 
 
+    # ── n18-50hz: six hosts, 18 agents, at n6/n9-50hz's rates ───────────────
+    # Six Pis, three agents each: ble 1..6, wifi 11..16, bridge 21..26.
+    #
+    # An 18-cycle, and the order is constrained rather than chosen. Every edge
+    # must cross hosts (an intra-host link never reaches the radio) and must not
+    # join `ble` to `wifi` (no shared medium). Within a band, consecutive ids are
+    # already on consecutive hosts, so each band contributes a legal chain; the
+    # bridges are what splice the three chains into one cycle:
+    #
+    #   1-2-3-4-5-6  21  12-13-14-15-16-11  22-23-24-25-26  -> back to 1
+    #
+    # Degree 2 everywhere, well inside the firmware's 4-neighbour limit, and
+    # lambda_2 = 0.1206. All five link classes appear, which is what makes the
+    # per-class delivery table complete: ble-ble x5, wifi-wifi x5, bridge-bridge
+    # x4, ble-bridge x2 (6-21, 26-1) and bridge-wifi x2 (21-12, 11-22).
+    if len(HOSTS) >= 6:
+        N18_ORDER = [1, 2, 3, 4, 5, 6, 21, 12, 13, 14, 15, 16, 11,
+                     22, 23, 24, 25, 26]
+        n1850 = hosts_for(6, hosts=HOSTS[:6])
+        n1850_edges = ring(ids=N18_ORDER)
+        for node in n1850:
+            node["neighbors"] = n1850_edges[node["id"]]
+            node["publish_period_s"] = 0.1
+        out["n18-50hz"] = {
+            "name": "n18-50hz",
+            "description": (
+                "18 agents on 6 hosts at n6/n9-50hz's rates: 50 Hz dynamics, "
+                "10 Hz publish, advertising at the 100 ms floor so the delivery "
+                "ceiling is 1.0. Same controller and seed as n9-50hz, so the "
+                "three sizes form a scaling series on per-link delivery. 18-cycle, "
+                "degree 2, lambda_2 = 0.1206. Twelve advertisers at 10 Hz put "
+                "~10.4% BLE duty on the band, twice n9-50hz's ~5.2%, so a "
+                "delivery drop against n9-50hz at the same rates is an airtime "
+                "effect rather than a rate effect."
+            ),
+            "seed": 20260818,
+            "controller": CONTROLLER_50HZ,
+            # Advertising RANGE, not a fixed interval, and a 56.25% scan duty.
+            #
+            # The range is the fix for the run-start collapses. The nRF's
+            # controller applies the spec's random advDelay to every advertising
+            # event, so two nRFs never hold a relative phase; the CYW43455
+            # appears not to, so a bridge presents a steady phase and can sit
+            # inside an nRF's own advertising window -- which blanks its
+            # receiver -- for as long as the two crystals take to drift apart.
+            # Measured in n18-50hz-0 without the range: 26->1 delivered 7 of
+            # ~1200 packets with 41 s gaps at -53 dBm, while 1->26 over the same
+            # pair was steady, and 21->6 ran perfectly for 96 s and then stopped.
+            # A 100-120 ms range dithers the phase so no pair can lock.
+            #
+            # Scanning drops from 100% to 56.25% duty (11.25 of 20 ms). A shorter
+            # interval revisits the channel five times per advertising interval
+            # instead of once, so a single blanked window no longer costs the
+            # whole 100 ms; and on the Pi the receive front-end request falls
+            # from continuous to 56%, which is the exposure that loses to WLAN.
+            "radio": radio_for(0.1, adv_interval_max_ms=120.0,
+                               scan_interval_ms=20.0, scan_window_ms=11.25),
+            "nodes": n1850,
+        }
+
+        # ── n18-50hz-scan100: the same run at 100% scan duty ────────────────
+        # Paired with n18-50hz and differing ONLY in scan_window_ms, so the
+        # difference between the two is the receive duty cycle alone. Both keep
+        # the 100-120 ms advertising dither and the 20 ms scan interval, so
+        # neither phase locking nor channel-rotation rate is a variable here.
+        #
+        # Two things it should separate, which n18-50hz cannot on its own
+        # because the dither and the duty changed together:
+        #
+        #   delivery -- 56.25% duty cannot receive more than 56% of events, and
+        #     n18-50hz measured 0.457/0.465 nRF->Pi against a predicted
+        #     0.909 x 0.5625 = 0.511. At 100% duty the prediction is 0.909, set
+        #     by the dither's mean interval alone. If the measurement lands
+        #     there, per-link delivery is duty-limited and nothing else.
+        #   coexistence -- on the Pi, scan duty IS the front-end exposure that
+        #     loses arbitration to WLAN (PLATFORM.md 6.4). 100% duty restores
+        #     the ~83x transmit/receive asymmetry that 56.25% reduces to ~56x,
+        #     so this arm is also the one to run under wlan_load.sh.
+        #
+        # The nRF has nothing to arbitrate against, so it pays only its own ~1%
+        # advertising blanking either way. The cost of raising duty is entirely
+        # on the bridge, which is why the two arms exist rather than one choice.
+        n1850s = hosts_for(6, hosts=HOSTS[:6])
+        for node in n1850s:
+            node["neighbors"] = n1850_edges[node["id"]]
+            node["publish_period_s"] = 0.1
+        out["n18-50hz-scan100"] = {
+            "name": "n18-50hz-scan100",
+            "description": (
+                "n18-50hz at 100% scan duty: 11.25 ms window -> 20 ms window, "
+                "everything else identical. Paired with n18-50hz, so the "
+                "difference between them is the receive duty cycle alone -- on "
+                "delivery, where 56.25% duty caps reception, and on coexistence, "
+                "where continuous scanning is the front-end request that loses to "
+                "WLAN on the bridge. Same 100-120 ms advertising dither, so no "
+                "pair can phase lock in either arm."
+            ),
+            "seed": 20260818,
+            "controller": CONTROLLER_50HZ,
+            "radio": radio_for(0.1, adv_interval_max_ms=120.0,
+                               scan_interval_ms=20.0, scan_window_ms=20.0),
+            "nodes": n1850s,
+        }
+    else:
+        print(f"skip     n18-50hz                 needs 6 hosts, "
+              f"{len(HOSTS)} declared")
+
     if len(HOSTS) < 10:
         print(f"skip     n30-*                    need 10 hosts, "
               f"{len(HOSTS)} declared")
@@ -716,6 +847,83 @@ def manifests() -> dict[str, dict]:
             "structure": {"generator": gen, "params": params},
             "nodes": hosts_for(),
         }
+
+    # ── the three paper topologies at the 50 Hz / 10 Hz rates ───────────────
+    # G1, G2 and G3 as run at 6, 9 and 18 agents, now at the full 30. Same
+    # controller, radio block and seed as n18-50hz, so the four sizes form one
+    # series and topology is the only variable within this group of three.
+    #
+    # The advertising RANGE matters more here than anywhere else: 20 advertisers is
+    # the largest population the platform has run, and a fixed 100 ms interval lets
+    # any pair phase-lock against a scanner's own advertising window (measured at
+    # 18 agents: one link delivered 7 of ~1200 packets for a whole run). 20
+    # advertisers at 10 Hz is ~17.3% BLE duty, so these are also the
+    # airtime-heaviest manifests in the set.
+    #
+    # Scanning at 90% duty (18 of 20 ms), not n18-50hz's 56.25% and not 100%.
+    # The 18-agent pair measured what duty buys: nRF receivers convert it almost
+    # one-for-one (0.34-0.41 at 56.25% -> 0.67-0.82 at 100%), so at lambda_2 =
+    # 0.0219 for the directed cycle the delivery is worth having. The 10% left
+    # unscanned is deliberate rather than a rounding: a node's own advertising
+    # event needs the radio for ~1.2 ms, and leaving a 2 ms gap in every 20 ms
+    # window lets it slot in without preempting the scan -- which is the same
+    # scan-versus-advertise contention the advertising range exists to break.
+    #
+    # Neighbour counts sit at or below the firmware's limit of four: in-degree 1
+    # for the directed cycle, 4 for the degree-4 ring, and 4 at the two cut-points
+    # of the clustered graph.
+    RADIO_50HZ_N30 = radio_for(0.1, adv_interval_max_ms=120.0,
+                               scan_interval_ms=20.0, scan_window_ms=18.0)
+
+    for name, gen, params, desc in [
+        ("n30-dring-50hz", "ring", {"directed": True, "ids": BAND_ORDER},
+         "G1 at 30 agents, 50 Hz dynamics, 10 Hz publish: directed cycle, each "
+         "agent reads only its predecessor. In-degree 1, the sparsest strongly "
+         "connected graph and therefore the slowest convergence of the three. "
+         "Ordered over BAND_ORDER so a bridge sits at each ble/wifi boundary."),
+        ("n30-ring4-50hz", "ring", {"k": 2, "ids": BAND_ORDER},
+         "G2 at 30 agents, 50 Hz dynamics, 10 Hz publish: undirected ring of "
+         "degree 4, the densest ring the microcontroller can serve. Paired with "
+         "n30-dring-50hz on everything but the edge set, so the difference "
+         "between them is connectivity alone -- transmitted and received airtime "
+         "are both O(1) in the degree on a broadcast medium, and neither moves."),
+    ]:
+        out[name] = {
+            "name": name, "description": desc, "seed": 20260818,
+            "controller": CONTROLLER_50HZ,
+            "radio": RADIO_50HZ_N30,
+            "structure": {"generator": gen, "params": params},
+            "nodes": hosts_for(publish_period_s=0.1),
+        }
+
+    # G3 is declared edge by edge rather than generated: it is irregular by
+    # design, and 21 and 30 are the cut-points that join the BLE and Wi-Fi
+    # subnets. They start disabled, so the three clusters coordinate separately,
+    # and the scheduled event brings them up mid-run. Statically the graph has no
+    # path between clusters and cannot reach agreement; the merge transient is
+    # the measurement.
+    clustered50 = hosts_for(publish_period_s=0.1)
+    for n in clustered50:
+        n["neighbors"] = CLUSTER_EDGES[n["id"]]
+        if n["id"] in CLUSTER_DISABLED:
+            n["enabled"] = False
+    out["n30-clusters-50hz"] = {
+        "name": "n30-clusters-50hz",
+        "description": (
+            "G3(t) at 30 agents, 50 Hz dynamics, 10 Hz publish: three clusters "
+            "joined only through bridges 21 and 30, which start disabled and are "
+            "enabled at t = 60 s. Time-varying by construction, so the merge "
+            "transient rather than the steady state is the quantity of interest. "
+            "Degree 2 to 4; the two cut-points carry four neighbours each."
+        ),
+        "seed": 20260818,
+        "controller": CONTROLLER_50HZ,
+        "radio": RADIO_50HZ_N30,
+        "nodes": clustered50,
+        "events": [{"at_s": CLUSTER_MERGE_AT_S,
+                    "nodes": sorted(CLUSTER_DISABLED),
+                    "set": {"enabled": True}}],
+    }
     return out
 
 

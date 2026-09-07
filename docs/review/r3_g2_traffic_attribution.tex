@@ -1,0 +1,159 @@
+% Reviewer response: the G2 degradation attributed to "heavier communication
+% traffic and coexistence effects".
+%
+% Written after auditing the 174 collected run directories. The short version:
+% the traffic half of the attribution does not survive the move from HTTP pull to
+% broadcast, and the platform can support a different, stronger explanation that
+% needs no new measurement. The coexistence half is supportable but weak.
+%
+% Numbers below are from runs/{n650,n950,n18-50hz,n18-50hz-scan100}-* and from
+% the manifests in experiments/. Nothing here requires a run that does not exist,
+% except where explicitly marked as a proposed addition.
+
+\item The degraded performance under $\mathcal{G}_2$ is attributed to heavier
+communication traffic and coexistence effects. Please provide quantitative
+evidence for this attribution.
+
+\textbf{Response:} The audit prompted by this question changed our explanation.
+The traffic argument was inherited from the previous version of the platform and
+does not hold on the current one; we replace it with a mechanism we can compute
+and, in part, measure.
+
+\textbf{1. Transmitted airtime does not depend on the degree.} On the revised
+platform both media are broadcast, so an agent transmits its state once per
+publication period irrespective of how many neighbours read it: airtime per node
+is $O(1)$ in the degree rather than $O(|\mathcal{N}_i|)$. This is measured
+directly, as the per-node transmit count over identical 120~s runs:
+
+\begin{center}
+\begin{tabular}{lccc}
+\hline
+run & agents & advertisers & transmissions per node \\
+\hline
+\texttt{n650}   &  6 &  4 & 1200 \\
+\texttt{n950}   &  9 &  6 & 1201 \\
+\texttt{n18-50hz} & 18 & 12 & 1201 \\
+\hline
+\end{tabular}
+\end{center}
+
+The count equals $T_\mathrm{run}/T_\mathrm{pub}$ in every case. The previous
+version of the platform retrieved each neighbour's state with a separate HTTP
+request per neighbour per tick, so its traffic genuinely scaled with the degree
+and the original attribution was sound for that implementation. Under broadcast it
+is not.
+
+\textbf{2. Received airtime does not depend on the degree either.} A BLE scanner
+is promiscuous: it occupies the antenna for
+$W_\mathrm{scan}/T_\mathrm{scan}$ of the time and reports whatever arrives, so its
+receive occupancy is a configuration constant and is the same for a degree-2 and a
+degree-4 node in the same manifest. The degree changes which fraction of what was
+already received is useful, not how long the receiver listens. The controller
+counters show the receiver is saturated by ambient traffic well before ours
+arrives:
+
+\begin{center}
+\begin{tabular}{lcccc}
+\hline
+run & advertisers & total reports & foreign & decoded as ours \\
+\hline
+\texttt{n650}   &  4 & 15561 & 13471 & 2090 \\
+\texttt{n950}   &  6 & 18376 & 14797 & 3579 \\
+\texttt{n18-50hz-scan100} & 12 & 18087 & 12743 & 5344 \\
+\hline
+\end{tabular}
+\end{center}
+
+Tripling the number of participating advertisers leaves the total report count
+essentially unchanged, because the majority of received advertisements are from
+unrelated devices in the same band throughout. Consequently the coexistence
+exposure discussed above is also independent of the degree: on the Raspberry
+Pi it is $W_\mathrm{scan}/T_\mathrm{scan}$ plus the $\approx\!1\%$ advertising
+duty, and neither term contains $|\mathcal{N}_i|$.
+
+\textbf{3. What the degree does change.} Three quantities, of which the second is
+the one we now advance as the explanation.
+
+\emph{(a) Compounded staleness.} The coordination input is evaluated from the last
+value received from each neighbour. If a link delivers a fraction $\rho$ of
+published values, and neighbours are treated as independent, the probability that
+at least one of $d$ neighbours failed to update within a given publication
+interval is $1-\rho^{\,d}$:
+
+\begin{center}
+\begin{tabular}{lccc}
+\hline
+measured $\rho$ & source & $d=2$ & $d=4$ \\
+\hline
+0.79 & nRF receivers, 100\% scan duty    & 0.376 & 0.610 \\
+0.60 & nRF$\rightarrow$Pi, saturated     & 0.640 & 0.870 \\
+0.40 & nRF receivers, 56.25\% scan duty  & 0.840 & 0.974 \\
+\hline
+\end{tabular}
+\end{center}
+
+The same links therefore yield a coupling term built on stale data far more often
+at degree 4 than at degree 2, with no change in traffic. The independence
+assumption is optimistic: correlated loss would make the degree-4 column worse,
+not better.
+
+\emph{(b) The stability margin tightens with the degree.} The multi-rate
+condition of the Modeling subsection is $5a_{ij} < 2/\lambda_{\max}(L)$, and
+$\lambda_{\max}$ is a property of the graph. With the gain held at
+$a_{ij}=0.01$ across all three topologies, as it was:
+
+\begin{center}
+\begin{tabular}{lcccccc}
+\hline
+topology & degree & $\lambda_2$ & $\lambda_{\max}$ & $2/\lambda_{\max}$ & $5a_{ij}$ & margin \\
+\hline
+$\mathcal{G}_1$ directed ring & 2 & 0.0437 & 4.000 & 0.500 & 0.100 & $5.0\times$ \\
+$\mathcal{G}_2$ ring, degree 4 & 4 & 0.2166 & 6.236 & 0.321 & 0.100 & $3.2\times$ \\
+$\mathcal{G}_3$ clustered & 2--4 & 0.1392 & 5.618 & 0.356 & 0.100 & $3.6\times$ \\
+\hline
+\end{tabular}
+\end{center}
+
+$\mathcal{G}_2$ raises $\lambda_{\max}$ by 56\% relative to $\mathcal{G}_1$, so
+the admissible gain falls by the same factor while the gain in use does not. The
+denser topology is therefore run at $1.56\times$ the effective aggressiveness of
+the sparser one, purely as a consequence of its spectrum. This predicts the
+reported signature specifically: finite-time convergence still attained, but a
+larger error while disagreements and hence the coupling term are large, which is
+early in the run. It requires no radio measurement and is computable from the
+manifests.
+
+\emph{(c) Host-side work} scales with the degree (report parsing, neighbour-table
+update, the coupling sum), but this is processor time rather than antenna time and
+is far from any observed limit at these rates.
+
+\textbf{4. What the present data cannot show.} All 174 collected runs use
+degree-2 topologies, so we have no hardware comparison of $\mathcal{G}_1$ against
+$\mathcal{G}_2$ on the revised platform; the reported $\mathcal{G}_2$ result
+belongs to the previous version. Items 1 and 2 above are measured, item 3(a) is
+an extrapolation from measured $\rho$, and item 3(b) is computed from the graphs.
+We therefore state the traffic explanation as \emph{excluded} rather than
+replaced by a measured alternative, and we identify the spectral mechanism as the
+leading candidate rather than a demonstrated cause.
+
+The decisive experiment is inexpensive and we propose to add it: a degree-4 arm at
+18 agents on the same six hosts, same rates, same seed and same radio
+configuration, differing from the existing degree-2 manifest in the edge set
+alone. It sits exactly at the four-neighbour limit of the microcontroller
+implementation, and it tests 3(a) and 3(b) simultaneously, since the two predict
+different signatures: compounded staleness degrades the steady-state error
+uniformly, whereas a reduced stability margin degrades the early transient.
+
+% ---------------------------------------------------------------------------
+% Caveats to resolve before any of the above is quoted, both recording gaps
+% rather than measurement errors:
+%
+% * The offered WLAN load is not in the metadata of any load run. n950, n9load5
+%   and n9load10 carry no load-related key; the value survives only in the
+%   directory name. scripts/wlan_load.sh prints "RECORD THIS with the run" and
+%   nothing does.
+% * n950 and n950f are not an A/B pair. Their only difference is
+%   filter_duplicates recorded as None versus False, which is the same behaviour
+%   differently recorded, so those twenty runs are twenty replicates of one
+%   condition.
+% ---------------------------------------------------------------------------

@@ -58,8 +58,8 @@ class ControllerSpec(BaseModel):
 
     name: str = "finite_time_adaptive"
     dt_s: float = Field(default=0.2, gt=0, description="Control period, seconds")
-    eta: float = Field(default=2e-6, description="Adaptation rate")
-    gain_ij: float = Field(default=0.02, description="Coupling gain, the paper's a_ij")
+    eta: float = Field(default=5e-5, description="Adaptation RATE, per second")
+    gain_ij: float = Field(default=0.1, description="Coupling gain (rate), the paper's a_ij")
     #: Exponent of the sign-power coupling: v_i = -sum sign(z_i - z_j) |z_i - z_j|^alpha.
     #: 1/2 is the finite-time case and is what every run before 2026-08-28
     #: used, when it was a hard-coded square root.

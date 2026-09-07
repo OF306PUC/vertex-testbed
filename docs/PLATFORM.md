@@ -566,8 +566,9 @@ all. That part of the original argument stands.
 
 Corollary, and it is testable: shortening `scan_window` below `scan_interval` cuts
 the receive-side exposure proportionally, at the cost of missing advertisements
-that fall outside the window. The platform has always run at 100% scan duty, so
-this has never been varied.
+that fall outside the window. **Varied for the first time in §5.4a, which finds the
+corollary only half right: cutting the window cuts reception on both radios, but
+raising it raises reception only on the nRF.**
 
 The RSSI distributions localise it to the Pi's receive path. Geometry is fixed and
 the transmitter is the same board in each pair, so a spread difference is a
@@ -597,6 +598,74 @@ every point, while `nRF→Pi` sits below both and the gap widens 0.03 → 0.23. 
 *level* is the advertising ceiling; the *asymmetry* is the Pi's receive path. Any
 claim that falling delivery under load is "coexistence" needs §8.2's experiment,
 because `nRF→nRF` — no CYW43455 at either end — fell just as far.
+
+### 5.4a Scan duty is granted, not requested: the two BLE modules have different gain
+
+`n18-50hz` and `n18-50hz-scan100` differ in one field, `scan_window_ms` (11.25 vs
+20.0 against a 20 ms interval, so 56.25% vs 100% receive duty). Same 18-cycle, same
+seed, same controller, same 100-120 ms advertising dither in both arms, so neither
+advertising phase locking nor channel-rotation rate is a variable. Raising the window is
+a **1.78x increase in the requested receive duty**. What each receiver actually got:
+
+| receiver | metric | 56.25% | 100% | ratio |
+|---|---|---|---|---|
+| nRF52840, 8 links | raw arrivals | 3707 | 7363 | **1.99x** |
+| CYW43455, bridge 21 | HCI advertising reports | 17762 | 18087 | **1.02x** |
+| CYW43455, bridge 26 | HCI advertising reports | 16615 | 19054 | 1.15x |
+| UDP, 22 links | delivery | 0.769-0.983 | 0.769-0.995 | 1.03x |
+
+The nRF converts the request into reception one-for-one: 1.78x asked, 1.99x
+received. The CYW43455 does not. Bridge 21 saw **2% more advertising reports for a
+78% larger window**, and per-link delivery follows: nRF receivers went 0.34-0.41 ->
+0.67-0.82 (mean 1.98x) while Pi receivers went 0.457/0.465 -> 0.546/0.598
+(1.20x/1.29x).
+
+**The extra window was requested and not granted, which is why UDP is untouched.**
+This is the reading the null supports. Had BLE actually held the front-end for
+78% longer, WLAN would have contended for it and UDP delivery would have moved;
+it did not move (1.03x over 22 links, and the clean links sit at 0.98 in both
+arms). So BT never got the antenna for longer. PTA gives WLAN priority and hands
+BLE scanning whatever is left, largely independent of the window the host asks
+for.
+
+That refines §5.4 rather than contradicting it. §5.4's exposure argument explains
+which direction *loses* an arbitration; it does not predict that the losing side's
+request is ignored. On the Pi, `scan_window` is close to advisory above some
+threshold this pair does not locate.
+
+**Consequence for the platform: the two modules have different delivery-vs-duty
+gain**, so BLE reception is not one number.
+
+| receiver | limited by | behaviour |
+|---|---|---|
+| nRF52840 (single-protocol) | the requested duty | scales ~linearly; at 100% it lands near the 0.909 dither ceiling |
+| CYW43455 (shared front-end) | the arbiter | saturates; `nRF→Pi` sits at ~0.6 regardless |
+
+The `nRF→Pi` saturation is stable across configurations: 0.647 in the undithered
+100%-scan baseline, 0.546/0.598 here at 100% scan with dither. Duty does not lift
+it, which is consistent with §5.4's RSSI evidence localising the limit to the
+CYW43455's receive path rather than to airtime.
+
+The BLE network is therefore asymmetric in **both** directions of a link, for two
+unrelated hardware reasons. On transmit, the nRF's controller applies the spec's
+random `advDelay` to every advertising event and the CYW43455 appears not to, so a
+Pi advertiser presents a steady phase and can sit inside an nRF's own advertising
+window -- which blanks its receiver -- for as long as the two crystals take to
+drift apart. Measured in the undithered `n18-50hz-0`: `26→1` delivered 7 of ~1200
+packets with 41 s gaps at -53 dBm while `1→26` over the same pair was steady, and
+`21→6` ran perfectly for 96 s and then stopped; a 100-120 ms range removes both.
+On receive, the asymmetry is the one above. Neither is a property of the medium,
+and both are invisible in an aggregate delivery figure.
+
+**What this does not settle.** Both arms converged: final spread 4.68e-4 at 56.25%
+and 5.57e-4 at 100%, against a dead-band of 0.01 -- twenty times inside the band,
+so accuracy was never delivery-limited here and the difference between those two
+numbers is noise. What 100% duty buys is convergence *rate* through the middle of
+the run (spread at t=60 s: 0.488 vs 0.725, ~1.5x). n=1 against n=1, and measured
+run-to-run spread on delivery is several points, so the ratios above need
+replicates before they carry error bars. The threshold at which the CYW43455 stops
+honouring the window is also unmeasured; this pair brackets it between 56.25% and
+100% and says nothing about where inside that range it lies.
 
 ### 5.5 The completed publish-rate sweep: airtime is not the variable
 

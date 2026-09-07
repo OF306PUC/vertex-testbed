@@ -92,8 +92,11 @@ class ControlClient:
             blob = b""
             if resp.kind == "blob":
                 try:
-                    blob = await asyncio.wait_for(
-                        read_blob(self._reader, resp.n_bytes), self.timeout)
+                    # self.timeout bounds the gap between chunks, not the whole
+                    # transfer: a 2 MB rows file over a shared WLAN takes longer
+                    # than any sane per-command timeout and is not a failure.
+                    blob = await read_blob(self._reader, resp.n_bytes,
+                                           stall_timeout=self.timeout)
                 except (asyncio.TimeoutError, ProtocolError) as exc:
                     await self.close()
                     raise ControlError(

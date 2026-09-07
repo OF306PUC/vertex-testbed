@@ -49,6 +49,11 @@ __all__ = ["NodeOutcome", "RunReport", "ExperimentRunner"]
 #: unreadable, so a truncated collection should still leave something interpretable.
 ARTIFACTS = ("meta", "rows")
 
+#: How many nodes to fetch from at once. The rows files are megabytes and the
+#: fleet shares one wireless link, so concurrency past a handful buys nothing
+#: and costs every transfer its throughput.
+COLLECT_CONCURRENCY = 4
+
 
 @dataclass
 class NodeOutcome:
@@ -111,6 +116,7 @@ class RunReport:
             "duration_s": self.duration_s,
             "trigger_spread_s": self.trigger_spread_s,
             "ok": self.ok,
+            "notes": self.notes,
             "nodes": {str(k): {
                 "node_id": v.node_id, "node_type": v.node_type,
                 "address": v.address, "configured": v.configured,
@@ -142,6 +148,8 @@ class ExperimentRunner:
         self.out_dir = Path(out_dir)
         self.timeout = timeout
         self.run_index = run_index
+        #: Per-event failures, moved into RunReport.notes by run().
+        self._event_failures: list[str] = []
         self.assignments: dict[int, AgentAssignment] = assignments_for(
             manifest, run_index)
         self._clients: dict[int, ControlClient] = {}
@@ -199,13 +207,21 @@ class ExperimentRunner:
                 continue
             self.assignments[nid] = a.model_copy(update=dict(ev.set))
             try:
-                await self._client(nid).configure(self.assignments[nid])
+                # Keyword arguments, exactly as _configure_one sends them:
+                # ControlClient.configure(**params) validates them into an
+                # AgentAssignment on the far side. Passing the object itself
+                # raised a TypeError that this except clause then swallowed, so
+                # every scheduled event silently did nothing.
+                await self._client(nid).configure(
+                    **self.assignments[nid].model_dump(mode="json"))
                 done.append(nid)
             except Exception as exc:
                 # An event that fails is a different experiment, so it must be
                 # visible -- but the run is already in flight and stopping it
                 # would lose the data collected so far.
                 self.assignments[nid] = a
+                self._event_failures.append(
+                    f"t={ev.at_s:g}s FAILED on node {nid}: {exc!r}")
                 print(f"warning: event at {ev.at_s}s failed on node {nid}: {exc}",
                       file=sys.stderr)
         return done
@@ -320,9 +336,14 @@ class ExperimentRunner:
             remaining = ev.at_s - (time.monotonic() - t0)
             if remaining > 0:
                 await asyncio.sleep(remaining)
+            self._event_failures = []
             applied = await self._apply_event(ev, ids)
+            wanted = [i for i in ev.nodes if i in ids]
             report.notes.append(
-                f"t={ev.at_s:g}s applied {ev.set} to {applied}")
+                f"t={ev.at_s:g}s applied {ev.set} to {applied}"
+                + ("" if applied == wanted
+                   else f" -- WANTED {wanted}, MISSED {sorted(set(wanted) - set(applied))}"))
+            report.notes.extend(self._event_failures)
         await asyncio.sleep(max(0.0, duration_s - (time.monotonic() - t0)))
 
         # 4. stop before fetching: a fetch mid-run reads a file still being
@@ -334,8 +355,17 @@ class ExperimentRunner:
         run_dir = self.out_dir / run_name
         run_dir.mkdir(parents=True, exist_ok=True)
         report.out_dir = run_dir
-        await asyncio.gather(*(self._collect_one(i, run_name, report.nodes[i], run_dir)
-                               for i in ids))
+        # Bounded, not a 30-way stampede. Every transfer shares one 2.4 GHz
+        # WLAN, so fetching all of them at once makes each one slow and none of
+        # them finish sooner; a handful at a time run at link speed and the
+        # total wall clock is no worse.
+        sem = asyncio.Semaphore(COLLECT_CONCURRENCY)
+
+        async def collect(i: int) -> None:
+            async with sem:
+                await self._collect_one(i, run_name, report.nodes[i], run_dir)
+
+        await asyncio.gather(*(collect(i) for i in ids))
 
         (run_dir / "run.json").write_text(
             json.dumps(report.to_dict(), indent=2), encoding="utf-8")

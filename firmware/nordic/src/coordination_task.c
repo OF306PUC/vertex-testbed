@@ -48,9 +48,6 @@ float v_i(const struct agent *a)
                 z - (float)a->vars.neighbor_vstates[j] * INV_SCALE_FACTOR;
             /* sign(0) == 0, so a neighbour already in agreement contributes
              * nothing -- the same convention as vertex/numeric.py::sign. */
-            /* alpha = 1/2 recovers the square root this replaced. powf is
-             * several times the cost of VSQRT, which the 5 Hz control
-             * period absorbs; see PLATFORM.md before raising the rate. */
             vi += -1.0f * sign(diff) * powf(fabsf(diff), alpha);
         }
     }
@@ -87,7 +84,9 @@ void discrete_step(struct agent *a)
     const float gain  = (float)a->params.gain_ij * INV_SCALE_FACTOR;
     const float delta = (float)a->params.delta * INV_SCALE_FACTOR;
 
-    const float nu    = disturbance(a) * dt;
+    /* Euler with the step size explicit, so gains carry their continuous-time
+     * meaning and do not silently rescale when dt changes. */
+    const float nu    = disturbance(a);
     const float sigma = x - z;
     const float grad  = sign(sigma);
 
@@ -96,9 +95,9 @@ void discrete_step(struct agent *a)
     const float u       = gi - vartheta * grad;
     const float dvtheta = (fabsf(sigma) > delta) ? 1.0f : 0.0f;
 
-    a->vars.state_f    = sanitize_f(x + u + nu);
-    a->vars.vstate_f   = sanitize_f(z + gi);
-    a->vars.vartheta_f = sanitize_f(vartheta + eta * dvtheta);
+    a->vars.state_f    = sanitize_f(x + dt * (u + nu));
+    a->vars.vstate_f   = sanitize_f(z + dt * gi);
+    a->vars.vartheta_f = sanitize_f(vartheta + dt * eta * dvtheta);
 
     a->vars.state    = quantize_f(a->vars.state_f);
     a->vars.vstate   = quantize_f(a->vars.vstate_f);

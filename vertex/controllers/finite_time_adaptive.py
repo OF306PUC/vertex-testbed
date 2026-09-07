@@ -119,7 +119,8 @@ class FiniteTimeAdaptiveController(Controller):
         """Discrete-time update."""
         self._sanitize()
 
-        nu = self.disturbance(self.step_count * self.dt) * self.dt
+        # Raw rate: dt is applied once, below, to u and nu together.
+        nu = self.disturbance(self.step_count * self.dt)
 
         self.gi = self.gain_ij * self._consensus_term(neighbor_vstates,
                                                       neighbor_enabled)
@@ -129,9 +130,9 @@ class FiniteTimeAdaptiveController(Controller):
         u = self.gi - self._vartheta * self.grad
         dvtheta = 1.0 if abs(self.sigma) > self.delta else 0.0
 
-        self._state = self._state + u + nu
-        self._vstate = self._vstate + self.gi
-        self._vartheta = self._vartheta + self.eta * dvtheta
+        self._state = self._state + self.dt * (u + nu)
+        self._vstate = self._vstate + self.dt * self.gi
+        self._vartheta = self._vartheta + self.dt * self.eta * dvtheta
 
         self.step_count = (self.step_count + 1) % self.period_samples
         return self._emit()

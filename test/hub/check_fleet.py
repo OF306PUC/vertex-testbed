@@ -439,6 +439,23 @@ async def main(manifest_path: str) -> int:
     return 1 if fails else 0
 
 
+def _default_manifest() -> str:
+    """Any manifest that exists, preferring the smallest useful one.
+
+    Not a fixed filename: the manifest set is generated and gets pruned, and a
+    hardcoded default turns that into a failing check with a FileNotFoundError
+    traceback rather than a result.
+    """
+    for name in ("n9-ring", "n9-50hz", "n6-ring", "n6-50hz", "n4-noble"):
+        p = ROOT / "experiments" / f"{name}.yaml"
+        if p.exists():
+            return str(p)
+    found = sorted((ROOT / "experiments").glob("*.yaml"))
+    if not found:
+        sys.exit("no manifests in experiments/; run tools/make_manifests.py")
+    return str(found[0])
+
+
 if __name__ == "__main__":
-    path = sys.argv[1] if len(sys.argv) > 1 else str(ROOT / "experiments/n9-ring.yaml")
+    path = sys.argv[1] if len(sys.argv) > 1 else _default_manifest()
     sys.exit(asyncio.run(main(path)))

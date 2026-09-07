@@ -65,8 +65,8 @@ class ControllerParams:
     state: float = 0.0
     vstate: float = 0.0
     vartheta: float = 0.0
-    eta: float = 2e-6
-    gain_ij: float = 0.02
+    eta: float = 5e-5               # rate per second, not per step
+    gain_ij: float = 0.1
     alpha: float = 0.5
     delta: float = 0.01
     disturbance: DisturbanceParams = field(default_factory=DisturbanceParams)

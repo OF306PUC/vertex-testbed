@@ -9,8 +9,9 @@ seed: 20260818
 controller:
   name: finite_time_adaptive
   dt_s: 0.02
-  eta: 1.0e-06
-  alpha: 0.01
+  eta: 0.0025
+  gain_ij: 0.5
+  alpha: 0.5
   delta: 0.01
   disturbance:
     enabled: true

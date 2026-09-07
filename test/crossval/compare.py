@@ -53,14 +53,23 @@ DIST = DisturbanceParams(enabled=True, noise_amplitude=0.1, noise_offset=0.5,
 STEPS = 400
 DT_MS = 200
 STATE0, VSTATE0, VARTHETA0 = 22.3, 22.3, 0.0
-GAIN_IJ, DELTA, ETA = 0.02, 0.01, 2e-6
+GAIN_IJ, DELTA, ETA = 0.1, 0.01, 5e-5      # rates; dt=0.2 in this harness
 ALPHA = 0.5           # sign-power exponent
 SEED, NODE = 12345, 3
 NEIGHBOURS = [21.0, 23.0]
 
-# One LSB is 1e-6 in engineering units, so this is a 5e-5 tolerance on a state of
-# ~22 -- about 2 ppm, the order of the float32 quantum at that magnitude.
-TOL_LSB = 50
+# One LSB is 1e-6 in engineering units, so this is a tolerance on a state of ~22
+# of a few ppm, the order of the float32 quantum at that magnitude.
+#
+# Raised 50 -> 80 on 2026-09-04, when the recursion became x += dt*(u+nu) rather
+# than x += u + dt*nu. That adds three float32 multiplies per update, and the
+# measured worst case moved 45 -> 52 LSB: a 1.16x growth where one extra rounding
+# per step allows up to sqrt(2). The relative error, 2.3e-6, sits at the float32
+# random-walk floor for 400 steps (1.2e-6), and vstate and vartheta were
+# unaffected at 8 and 0 LSB -- so this is precision, not a structural
+# disagreement. If `state` ever exceeds this while vstate and vartheta stay
+# tight, suspect a real one-sided edit rather than raising the number again.
+TOL_LSB = 80
 
 
 def build() -> None:
