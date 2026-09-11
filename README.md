@@ -28,18 +28,9 @@ run and what gets recorded during it.
 
 ## ⚙️ System Overview
 
-<!-- <p align="center">
-  <img src="docs/diagrams/vertex-node.svg" width="40%">
-</p> -->
-
-```
-  hub (laptop)  ──control plane, TCP──►  agents on each node
-        │                                      │
-        │  configure → trigger → collect       │
-        ▼                                      ▼
-   runs/<name>/                        node = Raspberry Pi + nRF52840-DK
-                                       up to 3 agents per node
-```
+<p align="center">
+  <img src="docs/diagrams/vertex-node.svg" width="50%">
+</p> 
 
 ### The pieces
 
