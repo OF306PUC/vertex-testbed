@@ -60,8 +60,7 @@ int air_wire_encode_v1(const state_packet_type *p, uint8_t *out, size_t cap)
 	st_u16(&v[4], p->seq);
 	st_u32(&v[6], (uint32_t)p->vstate);
 	/* uint48: the top 16 bits of tx_time_us are dropped, which is 8.9 years of
-	 * microseconds. Masked rather than rejected -- a run does not fail because a
-	 * timestamp wrapped. */
+	 * microseconds. */
 	st_u48(&v[10], p->tx_time_us);
 	return (int)AIR_WIRE_AD_VALUE_SIZE;
 }
@@ -103,8 +102,6 @@ static int decode_v0(const uint8_t *v, state_packet_type *out)
 	out->enabled        = (v[0] == AIR_WIRE_V0_FLAG_ENABLED);
 	out->disturbance_on = false;
 	out->vstate         = (int32_t)ld_u32(&v[2]);
-	/* v0 carries neither. Zeroed *and* flagged: a consumer that reads these
-	 * without checking gets 0, and 0 is a legitimate timestamp. */
 	out->seq              = 0u;
 	out->tx_time_us       = 0u;
 	out->has_seq_and_time = false;

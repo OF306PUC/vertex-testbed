@@ -12,7 +12,17 @@
 # when the agents are stopped; everything else works either way.
 set -uo pipefail
 IFC="${IFC:-wlan0}"
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+# Piped over ssh as `bash -s`, BASH_SOURCE is unset and the repo is not the cwd,
+# so neither may be assumed. Both were: the campaign's surveys died on the first
+# line under `set -u` and reported nothing but the hostname.
+cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." 2>/dev/null || true
+
+# iw, hciconfig and iwconfig live in /usr/sbin, which a non-interactive ssh shell
+# does not always have. Without this every radio field reads "?" while the host
+# fields read correctly -- which is exactly how the first campaign's surveys came
+# back.
+PATH="/usr/sbin:/sbin:$PATH"
 
 echo "== host"
 printf '  %-22s %s\n' "hostname" "$(hostname)"

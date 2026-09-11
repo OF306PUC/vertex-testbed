@@ -20,11 +20,6 @@
  *
  * ## tx_time_us is on the *host's* epoch, not this board's uptime
  *
- * ## v0 on receive
- *
- * Transmit is v1 only. Receive accepts v0 as well, mirroring the host's
- * `decode_any()`: a bench where half the boards are reflashed and half are not
- * should degrade to missing timestamps, not to a silent blackout.
  */
 
 #ifndef AIR_WIRE_H_
@@ -65,8 +60,7 @@ typedef struct {
 	int32_t  vstate;            /* scaled by 1e6 */
 	uint64_t tx_time_us;        /* experiment epoch; uint48 on the wire */
 	/** Set by the decoder: false when the packet was v0, which carries no
-	 *  sequence number and no timestamp. Those fields then read 0, and a consumer
-	 *  must not treat that as "sent at time zero". */
+	 *  sequence number and no timestamp. */
 	bool     has_seq_and_time;
 } state_packet_type;
 

@@ -32,13 +32,39 @@ PIS="${PIS:-pi1 pi2 pi4 pi5 pi7 pi8 pi9 pi10 pi12 pi13}"
 RF="${RF:-1}"                        # capture rf_survey each cycle
 CAMPAIGN="${CAMPAIGN:-c$(date +%Y%m%d-%H%M)}"
 
-# manifest:duration. Six arms: two rates x three topologies. dring gets longer
-# because lambda_2 = 0.022 makes it the slow one -- it was still descending at
-# 300 s in simulation while ring4 settled by 240.
-ARMS=(
-  "n30-dring-40hz:360"    "n30-ring4-40hz:240"    "n30-clusters-40hz:240"
-  "n30-dring-25hz:360"    "n30-ring4-25hz:240"    "n30-clusters-25hz:240"
-)
+# manifest:duration. Six arms: two rates x three topologies.
+#
+# Duration is uniform WITHIN a rate, so the three topologies at one rate differ
+# only in the edge set and their convergence times are directly comparable. The
+# rates differ from each other because 25 Hz publishes at 5 Hz against 40 Hz's
+# 8 Hz: fewer updates per second means a longer wall clock to the same place.
+#
+# ARMS is overridable so a subset can be re-run on its own, which is needed
+# whenever a manifest changes for one rate but not the other. The 2026-09-10
+# advertising-max fix touched only the 40 Hz manifests, so the 25 Hz replicates
+# already collected stay valid and only the 40 Hz arms want repeating:
+#
+#   ARMS="n30-dring-40hz:300 n30-ring4-40hz:300 n30-clusters-40hz:300" \
+#     CYCLES=20 bash scripts/campaign.sh
+#
+# Runs under a changed manifest are NOT replicates of runs under the old one.
+# Give them a fresh CAMPAIGN rather than resuming into an existing directory.
+if [ -n "${ARMS:-}" ]; then
+  read -ra ARMS <<< "$ARMS"
+else
+  # G1 gets a longer run than the other two, deliberately breaking the
+  # uniform-duration-within-a-rate rule. It converges at 230 s (40 Hz) and 259 s
+  # (25 Hz) with a spread of 26 to 33 s, so 300/360 s left only 2.7 and 3.1
+  # standard deviations of margin: a slow realisation nearly ran out of run.
+  # 420/480 s puts it at 7.2 and 6.7. The other two arms converge at 59 to 199 s
+  # and already have 85 to 241 sd of margin, so lengthening them buys nothing
+  # and costs 8 hours over a 60-cycle campaign. Convergence time is measured
+  # from t=0 and does not depend on run length, so the arms stay comparable.
+  ARMS=(
+    "n30-dring-40hz:420"    "n30-ring4-40hz:300"    "n30-clusters-40hz:300"
+    "n30-dring-25hz:480"    "n30-ring4-25hz:360"    "n30-clusters-25hz:360"
+  )
+fi
 LOG="$OUT/$CAMPAIGN/campaign.log"
 DRY=0; [ "${1:-}" = "--dry-run" ] && DRY=1
 
@@ -79,7 +105,13 @@ preflight() {
 # Read-only and needs no sudo. The BLE transmit-power line stays blank while the
 # agents hold the HCI user channel; everything else is filled in either way.
 rf_survey() {
-    local cyc=$1 dir="$OUT/$CAMPAIGN/rf/cycle-$(printf %02d "$cyc")"
+    # Separate statements on purpose: `local a=$1 b=$(... $a ...)` cannot see `a`
+    # yet, so under `set -u` the substitution failed and every cycle wrote into
+    # one directory named "cycle-", each overwriting the last. The first campaign
+    # kept one survey out of twenty.
+    local cyc=$1
+    local dir
+    dir="$OUT/$CAMPAIGN/rf/cycle-$(printf '%02d' "$cyc")"
     mkdir -p "$dir"
     for pi in $PIS; do
         timeout 30 ssh -o BatchMode=yes -o ConnectTimeout=5 "$pi" \
@@ -124,7 +156,16 @@ one_run() {
 failed=0; done_runs=0
 for ((c=0; c<CYCLES; c++)); do
     say "cycle $c/$((CYCLES-1))"
-    [ "$RF" = 1 ] && [ "$DRY" = 0 ] && rf_survey "$c"
+    # Skip the survey for a cycle whose runs are already collected: on a resume
+    # it would otherwise overwrite an earlier cycle's ambient conditions with
+    # today's, silently mislabelling the covariate.
+    done_cycle=1
+    for arm in "${ARMS[@]}"; do
+        [ -d "$OUT/$CAMPAIGN/$(printf '%s-c%02d' "${arm%%:*}" "$c")" ] || done_cycle=0
+    done
+    if [ "$RF" = 1 ] && [ "$DRY" = 0 ] && [ "$done_cycle" = 0 ]; then
+        rf_survey "$c"
+    fi
 
     # rotate the order so no arm is permanently first
     n=${#ARMS[@]}

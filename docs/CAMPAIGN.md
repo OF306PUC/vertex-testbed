@@ -1,7 +1,7 @@
 # Running the 30-agent campaign
 
 Fifty replicates of **six arms** — G₁, G₂ and G₃(t) at 30 agents, at **two
-rates** — driven by `scripts/campaign.sh`. About **26 hours** and **10 GB**.
+rates** — driven by `scripts/campaign.sh`. About **30 hours** and **12 GB**.
 
 ---
 
@@ -27,14 +27,38 @@ one published value, and measured delivery tracks it monotonically — ble→ble
 error moves the other way, 0.0018 at 125 ms against 0.0051–0.0067 at 200 ms. See
 PLATFORM.md §5.5a.
 
-All six share advertising **100–150 ms**, scanning **20/19 ms (95% duty)**,
+All six share scanning **20/19 ms (95% duty)**, Wi-Fi transmit power
+**12 dBm** (`tx_power_dbm`, new 2026-09-11: previously unset, reading back
+as the untrusted `brcmfmac` placeholder, which left the medium comparison
+with an uncontrolled term), advertising **100–113.6 ms** at 40 Hz and
+**100–150 ms** at 25 Hz (the max is the interval the Pi's radio actually
+uses, so it is sized to keep k > 1 on both radios; see PLATFORM 5.5b),
 ν₀ = **0.05** with the sinusoid at 70% and 2 Hz, seed 20260818, and gains
 `gain_ij = 0.5`, `eta = 2.5e-3` — identical across the rates, because the
 recursion is `x += dt*(u+nu)` and the gains are rates.
 
-**Durations differ by arm**: 360 s for G₁, 240 s for G₂ and G₃. G₁'s λ₂ = 0.022
-leaves it still descending at 300 s in simulation while G₂ settles by 240; G₃
-needs 60 s of separation plus the merge transient.
+**Duration is per arm, not uniform within a rate** (changed 2026-09-11):
+
+| arm | 40 Hz | 25 Hz | converges at | margin |
+|---|---|---|---|---|
+| G1 dring | **420 s** | **480 s** | 230 s / 259 s (sd 26 / 33) | 7.2 / 6.7 sd |
+| G2 ring4 | 300 s | 360 s | 59 s / 66 s | 241 / 24 sd |
+| G3 clusters | 300 s | 360 s | 190 s / 199 s | 85 / 16 sd |
+
+G1 was previously uniform with the others at 300/360 s, which left it only 2.7
+and 3.1 standard deviations of margin: a slow realisation nearly ran out of run
+before converging. The other two arms converge four times faster and already had
+far more margin than they needed, so lengthening them would have added 8 hours
+to a 60-cycle campaign for nothing. Convergence time is measured from t = 0 and
+does not depend on run length, so the arms remain directly comparable; what
+differs is the length of the steady-state window, and G1's is now the longest
+rather than the shortest. The rates differ from
+each other because 25 Hz publishes at 5 Hz against 40 Hz's 8 Hz, and fewer
+updates per second means a longer wall clock to the same place.
+
+Note that ϑ takes roughly 130 s to latch in simulation, so a steady-state window
+should start no earlier than ~150 s. For G₃ the merge at t = 60 s leaves 240 s
+(40 Hz) or 300 s (25 Hz) of merged evolution.
 
 **Run index is held fixed at 0.** Initial conditions and every node's disturbance
 stream are then identical across all 50 replicates, so the network realisation is
@@ -51,7 +75,7 @@ Batching would put all 50 G₂ runs in one four-hour window and all 50 G₁ runs
 different one, making time of day a between-topology confound. That is not a
 theoretical worry here: a bridge decodes roughly 13,500 foreign advertisements
 against 2,100 of ours in a two-minute run, so ambient 2.4 GHz activity dominates
-the receivers and it varies with building occupancy across a 26-hour campaign.
+the receivers and it varies with building occupancy across a 30-hour campaign.
 
 Interleaving makes every topology sample the same conditions. Rotating the order
 within each cycle additionally prevents any topology from always being the first
@@ -78,7 +102,7 @@ Without this the campaign still runs, but every RF survey file will read
 **2. Fix the two suspect nodes.** Node 9's nRF on `10.6.5.12` refused frame
 `0x4E` during a previous configure, and bridge 21's links to nodes 9 and 10 were
 the two worst in the fleet at 0.10 and 0.12 delivery. Reflash those boards and
-confirm before committing 26 hours:
+confirm before committing 30 hours:
 
 ```bash
 ssh pi12 'bash scripts/agents.sh stop'
@@ -121,7 +145,7 @@ CYCLES=20 bash scripts/campaign.sh          # shorter
 tail -f runs/c<date>/campaign.log           # from another terminal
 ```
 
-Run it under `tmux` or `nohup` — 26 hours outlives an ssh session.
+Run it under `tmux` or `nohup` — 30 hours outlives an ssh session.
 
 ```bash
 tmux new -s campaign 'bash scripts/campaign.sh'
@@ -169,17 +193,17 @@ runs/<campaign>/
   ...
 ```
 
-| arm | rows/s | per node | per run | × 50 |
-|---|---|---|---|---|
-| dring-40hz (deg 1, 360 s) | 40 | 1.04 MB | 31 MB | 1.6 GB |
-| ring4-40hz (deg 4, 240 s) | 40 | 1.61 MB | 48 MB | 2.4 GB |
-| clusters-40hz (deg ~3, 240 s) | 40 | 1.31 MB | 39 MB | 2.0 GB |
-| dring-25hz (deg 1, 360 s) | 25 | 0.65 MB | 19 MB | 1.0 GB |
-| ring4-25hz (deg 4, 240 s) | 25 | 1.01 MB | 30 MB | 1.5 GB |
-| clusters-25hz (deg ~3, 240 s) | 25 | 0.82 MB | 25 MB | 1.2 GB |
+| arm | rate | run | per node | per run | × 50 |
+|---|---|---|---|---|---|
+| dring-40hz (deg 1) | 40 Hz | 300 s | 0.86 MB | 26 MB | 1.3 GB |
+| ring4-40hz (deg 4) | 40 Hz | 300 s | 2.02 MB | 60 MB | 3.0 GB |
+| clusters-40hz (deg ~3) | 40 Hz | 300 s | 1.63 MB | 49 MB | 2.4 GB |
+| dring-25hz (deg 1) | 25 Hz | 360 s | 0.65 MB | 19 MB | 1.0 GB |
+| ring4-25hz (deg 4) | 25 Hz | 360 s | 1.51 MB | 45 MB | 2.3 GB |
+| clusters-25hz (deg ~3) | 25 Hz | 360 s | 1.22 MB | 37 MB | 1.8 GB |
 
 Row width is `5 + 4·degree` columns of 8 bytes, so degree and sample rate both
-drive the size. ~9.6 GB total.
+drive the size. **~11.8 GB total.**
 
 ---
 
@@ -247,7 +271,7 @@ drove ϑ to 2.6, 14.4 and 59.7 against a disturbance of 0.05 and never entered t
 band at all, where the configured 2.5e-3 entered it at 129 s with ϑ = 0.47. The
 current value is the best of those tried.
 
-**Fifty per arm is 300 runs and 26 hours.** Measured run-to-run spread is a few
-points on delivery, so 20 replicates already resolve differences of a point or
-two; `CYCLES=20` finishes in about 10.5 hours. The script resumes, so running 20
+**Fifty per arm is 300 runs, 30 hours and 12 GB.** Measured run-to-run spread is
+a few points on delivery, so 20 replicates already resolve differences of a point
+or two; `CYCLES=20` finishes in about 12 hours. The script resumes, so running 20
 first and extending is strictly better than committing to 50 up front.

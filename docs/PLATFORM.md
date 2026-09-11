@@ -690,14 +690,30 @@ Measured at 30 agents, one run per point, same topology and hosts:
 
 Monotone in `k`, and the last step is the large one.
 
-**It is more than independent redundancy.** If each advertising event were lost
-independently with probability `1-p`, delivery would be `1-(1-p)^k`. Taking
-`p = 0.694` from the `k = 1` point predicts 0.850 at `k = 1.6`; the measurement is
-0.947. The excess is consistent with the second mechanism: a repeated event at a
-*dithered* interval gets another chance to fall outside the receiving nRF's own
-advertising window, which is the blanking that §5.10's blackouts come from. So
-raising `k` buys both redundancy against ordinary loss and additional draws
-against the phase collision, and the two compound.
+**It is ordinary independent redundancy, and the campaign is what established
+that.** If each advertising event is lost independently with probability `1-p`,
+delivery is `1-(1-p)^k`. The single-run points above appear to beat that: taking
+`p = 0.694` from `k = 1` predicts 0.850 at `k = 1.6` against a measured 0.947, a
+10-point excess, and an earlier version of this section attributed the excess to
+a second mechanism (a repeated event at a *dithered* interval getting another
+draw against the receiving nRF's own advertising blanking, §5.10).
+
+**The 20-replicate campaign does not support that.** On the BLE agents of
+`n30-campaign` (originally `c20260907-1253`), `p = 0.697` at `k = 1` predicts
+0.852 at `k = 1.6` against a
+measured 0.835, and the degree-4 arm gives 0.831 predicted against 0.818. The
+model is now accurate to under two points and slightly *optimistic*, not
+pessimistic.
+
+Note where the two datasets disagree. Their `k = 1` points are the same number,
+0.694 and 0.697. It is the `k = 1.6` point that moved, 0.947 down to 0.835. The
+pilot's `k = 1.6` run was one run, and per §5.10 the fraction of link-time lost
+to blackouts ranges 7.2% to 39.6% across identical configurations, so a single
+run cannot resolve a 10-point effect. This is exactly the failure mode the
+campaign was built to remove, and it is worth remembering the next time a
+one-run-per-point sweep suggests a mechanism.
+
+So `k` buys redundancy, and redundancy alone accounts for it.
 
 **What it costs.** Publishing at 5 Hz rather than 8 or 10 Hz halves or better the
 information rate, and the steady-state error follows: final spread 0.0018 at
@@ -716,6 +732,298 @@ mean interval at or below the publish period. At 125 ms with a 100-150 ms range
 the mean *is* 125, so the full 50 ms window costs no ceiling at all. At a 100 ms
 publish only a 5 ms window is affordable, which is why the 50 Hz configurations
 either dithered barely or paid a 9% ceiling.
+
+### 5.5b What the degree actually costs: neighbourhood completeness
+
+Under broadcast the degree is free in airtime and not free in reception. This
+section states the mechanism and gives the measurement, from 120 runs of the
+campaign now merged into `runs/n30-campaign`, six arms of 20 replicates each.
+The merged set carries 60 cycles per arm; these tables predate the merge and are
+due for regeneration against it.
+
+#### The quantity that is NOT degree-dependent
+
+Transmission is `O(1)`: an agent broadcasts once per publication period whatever
+its degree, and the per-node transmit counts confirm it. Reception is `O(1)` too,
+which is the less obvious half: a BLE scanner is promiscuous, occupying the
+antenna for `W_scan/T_scan` and reporting whatever lands, so its receive
+occupancy is a configuration constant. Coexistence exposure on the Pi is that
+same duty plus the advertising duty, and neither term contains the degree.
+
+So per-link capture probability `rho` should not depend on the degree, and it
+does not:
+
+| arm | d | rho |
+|---|---|---|
+| dring-40hz | 1 | 0.620 ± 0.109 |
+| ring4-40hz | 4 | 0.633 ± 0.128 |
+| dring-25hz | 1 | 0.764 ± 0.111 |
+| ring4-25hz | 4 | 0.756 ± 0.111 |
+
+At each rate, degree 1 and degree 4 agree well inside the spread. This is the
+premise the rest depends on, and it is the first thing to re-check if the
+mechanism ever stops predicting.
+
+#### The quantity that IS degree-dependent
+
+The coordination input is not a function of one link. It is evaluated over the
+whole neighbourhood, so within one publication interval the receiver must capture
+`d` separate advertisements from `d` transmitters that are coordinated neither
+with each other nor with it -- **there is no scheduler**; every agent advertises
+on its own interval and its own dithered phase. If the captures were independent
+the probability of a fully refreshed neighbourhood would be `rho^d`.
+
+Measured, binning each node's samples by publication interval and asking whether
+every neighbour arrived in that window:
+
+| arm | d | P_complete | rho^d | ratio |
+|---|---|---|---|---|
+| dring-40hz | 1 | 0.6196 | 0.6196 | 1.00 |
+| ring4-40hz | 4 | **0.3849** | 0.1601 | 2.40 |
+| dring-25hz | 1 | 0.7636 | 0.7636 | 1.00 |
+| ring4-25hz | 4 | **0.5570** | 0.3272 | 1.70 |
+
+Going from degree 1 to degree 4 at unchanged `rho`, unchanged airtime and
+unchanged duty cycle costs **38% of complete neighbourhoods at 40 Hz** and 27% at
+25 Hz. The `d = 1` rows return exactly 1.00 by construction and serve as the
+arithmetic check.
+
+#### The within-run sweep, which removes every cross-run confound
+
+`n30-clusters` is irregular by design and carries degrees 2, 3 and 4 in one run,
+so the decline can be measured in a single fleet at a single instant under one
+ambient-traffic condition:
+
+| arm | d=2 | d=3 | d=4 | fitted slope | implied rho |
+|---|---|---|---|---|---|
+| clusters-40hz | 0.5475 | 0.4612 | 0.3256 | −0.2598 | 0.771 |
+| clusters-25hz | 0.7014 | 0.6273 | 0.5142 | −0.1553 | 0.856 |
+
+Monotone in the degree, with no cross-run comparison anywhere in it.
+
+#### Correlated capture: rho^d is a LOWER bound, not an upper one
+
+Measured completeness is **1.7x to 2.4x better** than `rho^d`, and the within-run
+fit implies a `rho` well above the measured one (0.771 against 0.66; 0.856
+against 0.78). Both say the same thing: captures are positively correlated.
+
+The reason is physical and worth stating, because the intuition runs the other
+way. The dominant loss on these links is receiver-side and common-mode -- the
+scanner is blanked by its own advertising, or is inside one of the `bridge -> ble`
+blackouts of §5.10. While that lasts it misses *every* neighbour; while it does
+not, it catches *every* neighbour. Losses therefore cluster in time rather than
+spreading independently across links, which makes complete neighbourhoods more
+frequent than independence predicts, not less.
+
+An earlier draft of the reviewer response asserted the opposite. The measurement
+corrects it: `rho^d` is the pessimistic bound, and the excess over it is a
+measure of how common-mode the loss is.
+
+#### The excess is not spread evenly: it is one medium
+
+The tables above pool all 30 nodes, and the three node kinds do not behave the
+same way. Split by `node_type`, over all 60 cycles of `runs/n30-campaign`
+(n = 590 to 600 node-runs per cell, 120 to 360 in the clusters sweep):
+
+| arm | medium | d | rho | P_complete | rho^d | ratio |
+|---|---|---|---|---|---|---|
+| dring-40hz | ble | 1 | 0.713 | 0.7128 | 0.7128 | 1.00 |
+| dring-40hz | bridge | 1 | 0.616 | 0.6158 | 0.6158 | 1.00 |
+| dring-40hz | wifi | 1 | 0.519 | 0.5191 | 0.5191 | 1.00 |
+| ring4-40hz | ble | 4 | 0.691 | 0.2430 | 0.2276 | **1.07** |
+| ring4-40hz | bridge | 4 | 0.627 | 0.3989 | 0.1546 | 2.58 |
+| ring4-40hz | wifi | 4 | 0.529 | 0.4691 | 0.0784 | **5.98** |
+| dring-25hz | ble | 1 | 0.840 | 0.8402 | 0.8402 | 1.00 |
+| ring4-25hz | ble | 4 | 0.824 | 0.4767 | 0.4615 | **1.03** |
+| ring4-25hz | bridge | 4 | 0.765 | 0.5711 | 0.3416 | 1.67 |
+| ring4-25hz | wifi | 4 | 0.660 | 0.6092 | 0.1893 | 3.22 |
+
+And the within-run sweep, which holds the instant fixed:
+
+| arm | medium | d=2 | d=3 | d=4 |
+|---|---|---|---|---|
+| clusters-40hz | ble | 1.01 | 1.01 | n/a |
+| clusters-40hz | bridge | 1.32 | 1.85 | 1.26 |
+| clusters-40hz | wifi | 1.78 | 2.49 | n/a |
+| clusters-25hz | ble | 1.00 | 1.01 | n/a |
+| clusters-25hz | bridge | 1.14 | 1.37 | 1.14 |
+| clusters-25hz | wifi | 1.46 | 1.85 | n/a |
+
+**On BLE, `rho^d` is exact.** The ratio is 1.00, 1.01, 1.01, 1.08 across degrees
+one to four, and 1.00 to 1.03 at 25 Hz. Captures on the uncoordinated medium
+really are independent, and
+equation `P_complete = rho^d` is not an idealisation there.
+
+**On Wi-Fi it is a large underestimate, and the AP is the reason.** The access
+point buffers broadcast and multicast frames and releases them at DTIM
+boundaries (100 TU beacon x DTIM 3 = 307.2 ms here), so a receiver's neighbours
+arrive in a batch or not at all. That is positive correlation by construction:
+complete neighbourhoods are 6.0x more frequent at degree 4 than independence
+predicts. **The AP is the central scheduler BLE does not have**, and buying that
+scheduling is what removes most of the degree penalty on that medium.
+
+Bridges sit between the two, as they should: they receive over BLE from their
+nRF and over UDP from the Wi-Fi agents.
+
+#### Within BLE, all the heterogeneity is on the bridge path
+
+Splitting a BLE receiver's links by which radio TRANSMITTED them, over four
+cycles of `ring4-40hz` (160 links, 2399 publication windows each):
+
+| transmitter | n | rho | sd | overdispersion | split-half r | acf(1) | acf(8) | dead |
+|---|---|---|---|---|---|---|---|---|
+| nRF52840 (ble) | 136 | **0.728** | 0.027 | 2.9x | +0.24 | +0.134 | +0.057 | 0 (0%) |
+| CYW43455 (bridge) | 24 | **0.345** | 0.166 | 17.1x | +0.59 | +0.089 | +0.116 | 9 (37.5%) |
+
+"Overdispersion" is the spread across links divided by the spread one single
+coin would produce at that rate; "dead" counts links below rho = 0.30.
+
+**nRF to nRF is one coin.** sd 0.027 at rho 0.728, no dead links, weak
+short-range burstiness that decays with lag. There is essentially no per-link
+structure to explain: every pair performs the same, so the 27% loss there is the
+fleet-wide term (duty plus contention), not anything about the pair.
+
+**Bridge to nRF is where every pathology lives.** 17x overdispersed, split-half
+r = 0.59 so a link's quality persists across the run, and the autocorrelation
+*rises* from lag 1 to lag 8, which is long-timescale structure rather than
+burstiness. 37.5% of these links sit below rho 0.30, dark for continuous
+stretches of 50 to 300 s. This is §5.10's blackout, localised: it is not a BLE
+problem, it is a CYW43455-as-transmitter problem.
+
+The blend checks out: (136 x 0.728 + 24 x 0.345)/160 = 0.671 against 0.670
+measured, so these two populations fully account for the BLE aggregate.
+
+**Resolved: the two radios honour the advertising range differently.**
+
+Autocorrelating the raw `rx_` flags on the 25 ms sample grid reads each
+transmitter's advertising period straight off the air. Both were configured
+`adv_interval_ms = 100`, `adv_interval_max_ms = 150`:
+
+| transmitter | autocorrelation peaks | interval it actually uses |
+|---|---|---|
+| nRF52840 | 100, 200, ~425, ~525 ms (drifting) | **~100 ms**, the range MIN, lightly dithered |
+| CYW43455 | 150, 300, 450, 600 ms (exact harmonics) | **150 ms fixed**, the range MAX, no dither |
+
+The nRF's peaks smear as the lag grows, which is what a dithered interval does.
+The Pi's stay on exact multiples of 150 ms for at least four harmonics, which is
+what a fixed one does. So the CYW43455 takes `interval_max` as *the* interval
+and ignores the range.
+
+**Why that is fatal at 125 ms and harmless at 200 ms.** `k = T_pub/T_adv` is the
+number of advertising events carrying one published value (§5.5a):
+
+| rate | T_pub | nRF k | Pi k | Pi ceiling |
+|---|---|---|---|---|
+| 40 Hz | 125 ms | 1.25 | **0.83** | **0.833** |
+| 25 Hz | 200 ms | 2.00 | 1.33 | 1.00 |
+
+At 40 Hz the Pi is at `k < 1`: one published value in six is overwritten before
+its radio ever transmits it, capping bridge->ble at 0.833 before any loss on the
+air. Worse, a *fixed* 150 ms interval beats against the 125 ms publication grid
+with period `1/|1/0.150 - 1/0.125| = 0.75 s`, and that beat is directly visible
+as autocorrelation peaks at 0.75, 1.38, 2.12, 2.88 and 3.50 s on the binned
+series. A dithered transmitter has no fixed frequency and shows no such beat,
+which is why nRF-sourced links do not.
+
+**The 25 Hz arm is the controlled experiment, and it is decisive.** Same fleet,
+same radios, same configuration, only `T_pub` differs, which moves the Pi from
+`k = 0.83` to `k = 1.33`:
+
+| rate | bridge->ble rho | dead links |
+|---|---|---|
+| 40 Hz (Pi k = 0.83) | 0.345 +- 0.166 | **9/24  (37.5%)** |
+| 25 Hz (Pi k = 1.33) | 0.592 +- 0.111 | **0/24  (0%)** |
+
+Every blackout disappears. §5.10's "bridge -> ble blackout lottery" was never a
+lottery and never a coexistence effect: it is `k < 1` on a fixed-interval
+transmitter, and it is fully determined by the ratio of two configured numbers.
+
+**Root cause in the generator.** `radio_dithered()` in `tools/make_manifests.py`
+sizes the range so the ceiling stays above `CEILING_FLOOR`, and its docstring
+says "the mean advertising interval sets the delivery ceiling,
+`min(1, T_pub/mean)`". That is right for the nRF and wrong for the Pi, which
+uses the max. The fix is to size the ceiling on `adv_interval_max_ms` rather
+than the mean, which for `T_pub = 125 ms` means a max at or below about 120 ms.
+Note this removes most of the dither at 40 Hz; the dither was introduced to
+break phase locking, and the measurement above shows the Pi was never applying
+it anyway.
+
+**Confirmed by pilot, `runs/pilot-advfix`, 2 cycles of ring4-40hz.** The
+manifests were regenerated with `adv_interval_max_ms` 150 -> 113.6 and the fleet
+re-run. Measured, against the 60-cycle baseline under the old configuration:
+
+| quantity | old (adv max 150) | new (adv max 113.6) |
+|---|---|---|
+| Pi advertising period, off the air | 150 ms exactly | **112.5 ms** |
+| bridge -> ble rho | 0.345 +- 0.166 | **0.633 +- 0.065** |
+| bridge -> ble dead links | **9/24 (37.5%)** | **0/12 (0%)** |
+| ble -> ble rho (control) | 0.728 +- 0.027 | 0.738 +- 0.027 |
+| BLE receivers, rho at d = 4 | 0.691 | 0.722 |
+| BLE receivers, P_complete at d = 4 | 0.2430 | **0.2772** |
+| BLE measured / rho^d | 1.07 | **1.02** |
+
+Four things worth reading off that table. The CYW43455 followed `interval_max`
+down, which is what the change assumed and what the pilot existed to test.
+Every dead link is gone. The nRF path is unharmed, so narrowing its dither from
+50 ms to 13.6 ms cost nothing, which was the risk in making a global change to
+fix one direction. And the excess over `rho^d` fell from 1.07 to 1.02: the
+blackouts were the correlated component, so removing them leaves BLE capture
+almost exactly independent, which tightens the argument of this section rather
+than weakening it.
+
+Caveat on the size of the gain. Two cycles against sixty, and the wifi cells
+moved the other way over the same pilot (rho 0.529 -> 0.509), so ambient
+conditions differed and part of the BLE gain may be that. The dead-link
+elimination and the measured period shift are structural and do not depend on
+the comparison.
+
+**What fixing it is worth.** If bridge-sourced links matched nRF-sourced ones,
+per-link rho on BLE receivers would go 0.671 -> 0.728 and P_complete at d = 4
+would go 0.243 -> 0.281, a 16% relative gain, with no change to the radio
+configuration or the control rate. That is larger than anything available from
+the scan schedule, and it is a defect rather than a physical limit.
+
+This split is the most useful single result in the section, because it isolates
+the variable. Same law, same degrees, same fleet, same instant, differing only
+in whether anything sequences the transmitters. Channel load cannot distinguish
+those cases; absence of coordination can.
+
+Reproduce with `node_capture()` grouped by the `node_type` field of each
+`<nid>.meta.json`; `tools/capture_analysis.py` does not split by medium yet.
+
+#### What it costs the control law
+
+Two consequences, both measured. The expected number of stale terms in the
+coupling sum is `d(1-rho)`, and it tracks that: 0.694, 1.017, 1.136 at degrees 2,
+3 and 4 in `clusters-40hz`. And the error this puts into the coupling term --
+comparing what each node computed from held values against what it would have
+computed from its neighbours' true values at the same instant, reconstructed from
+their own logs on the shared epoch -- rises with the degree:
+
+| arm | d | mean \|v_held − v_true\| |
+|---|---|---|
+| dring-40hz | 1 | 0.067 |
+| ring4-40hz | 4 | **0.167** |
+| dring-25hz | 1 | 0.065 |
+| ring4-25hz | 4 | **0.140** |
+
+Degree 4 costs 2.5x the coupling-term error of degree 1 at 40 Hz and 2.1x at
+25 Hz, at identical `rho` and identical airtime.
+
+#### How to reproduce
+
+    python3 tools/capture_analysis.py runs/<campaign> --plot results/capture
+
+Measurements 0 and 1 are the two tables above, 2 is the within-run sweep, 3 is
+the coupling error. The figure is `results/capture/capture_completeness.png`.
+
+#### What this does not settle
+
+The comparison that would tie completeness to the control outcome is confounded:
+`G1` and `G2` differ in lambda_2 by a factor of ten, which pushes convergence the
+opposite way and dominates it. Separating them needs each arm compared against
+its own zero-loss simulation, so that lambda_2 is held by construction; that
+measurement has not been run.
 
 ### 5.5 The completed publish-rate sweep: airtime is not the variable
 

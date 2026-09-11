@@ -195,6 +195,29 @@ class RadioSpec(BaseModel):
                     "receive window.",
     )
 
+    #: Wi-Fi transmit power to enforce on the wireless interface, in dBm.
+    #:
+    #: Declared here because it is otherwise an UNCONTROLLED variable. The nRF
+    #: reports a granted +8 dBm in its STATS, but `iw` reports 31.00 dBm on a Pi,
+    #: which is the brcmfmac placeholder and not a measurement (vertex/net.py).
+    #: So every run collected before 2026-09-11 has a known BLE transmit power
+    #: and an unknown Wi-Fi one, which leaves the BLE-versus-Wi-Fi comparison
+    #: with an uncontrolled term in it.
+    #:
+    #: Setting it is verified to work: 800 mBm reads back +8.0 dBm
+    #: (PLATFORM.md 8.x, scripts/wifi_txpower.sh). It does NOT survive a reboot
+    #: and nothing else re-asserts it, which is why it belongs in the manifest
+    #: rather than in an operator's shell history.
+    #:
+    #: `None` means "do not touch", preserving the behaviour of every manifest
+    #: written before this field existed.
+    tx_power_dbm: float | None = Field(
+        default=None, ge=0.0, le=30.0,
+        description="Wi-Fi transmit power to set on the interface, in dBm. None "
+                    "leaves the driver default, which reports as an untrusted "
+                    "placeholder and is therefore unknown.",
+    )
+
     @model_validator(mode="after")
     def _adv_range_ordered(self) -> "RadioSpec":
         if (self.adv_interval_max_ms is not None

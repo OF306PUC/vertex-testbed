@@ -13,8 +13,7 @@
  *
  * `coordination_mutex` guards the agent between them. The Bluetooth RX thread is
  * deliberately not a third writer: the observer hands its findings over through a
- * message queue and the network thread applies them under the mutex. See
- * observer.h.
+ * message queue and the network thread applies them under the mutex.
  */
 
 #include <string.h>
@@ -174,13 +173,8 @@ static state_packet_type on_air_packet(int64_t uptime_us)
 /**
  * --- CONTROL LOOP --- every `dt`
  *
- * Absorb whatever the observer has heard, then take one step. Deliberately no
- * I/O: this is the thread whose period the experiment depends on, and an HCI
- * round trip or a UART write here shows up as jitter in the control period.
+ * Absorb whatever the observer has heard, then take one step. 
  *
- * Absorbing at `dt` rather than at `clock` is what makes this symmetric with a Pi
- * agent, which folds a packet in the moment it arrives. Absorbing at `clock` meant
- * the law took `clock/dt` steps against neighbour values up to a full second old.
  */
 static void dynamics_thread(void)
 {
@@ -214,11 +208,6 @@ static void absorb_neighbors(const neighbor_info_type *info)
     }
     memcpy(agent.vars.neighbor_vstates, info->vstates, sizeof(info->vstates));
     memcpy(agent.params.neighbors_enabled, info->enabled, sizeof(info->enabled));
-    /* The sender's sequence number and the received signal strength. Both were
-     * already captured by the observer and dropped here: seq is what makes
-     * per-link delivery derivable for a link INTO an nRF (4 of 12 links in
-     * n6-fast had no delivery statistics at all), and rssi is what separates
-     * interference from load. */
     memcpy(agent.vars.neighbor_seq, info->seq, sizeof(info->seq));
     memcpy(agent.vars.neighbor_rssi, info->rssi, sizeof(info->rssi));
 
@@ -281,7 +270,7 @@ static void network_fetching_thread(void)
             observer_init();
             k_timer_start(&dynamics_timer, K_MSEC(0), K_MSEC(dt_ms));
             /* Both loops tick at `dt`. Publishing is every `publish_every`-th tick
-             * of this one, so `clock` still sets the publish period -- see below. */
+             * of this one, so `clock` still sets the publish period. */
             k_timer_start(&network_timer, K_MSEC(dt_ms), K_MSEC(dt_ms));
             publish_every = (dt_ms > 0) ? (uint32_t)(clock_ms / dt_ms) : 1u;
             if (publish_every == 0u) {
@@ -298,17 +287,9 @@ static void network_fetching_thread(void)
         k_mutex_unlock(&coordination_mutex);
 
         /* REPORT every `dt`, matching a Pi agent, which logs a sample per control
-         * step. Reporting at `clock` made the ble trajectory `clock/dt` times
-         * coarser than the wifi one in the same run -- a resolution difference
-         * across the axis being compared. At 25 Hz with four neighbours this is
-         * ~1.3 kB/s against 11.5 kB/s of UART. */
+         * step. */
         report_state(&log_data_copy);
 
-        /* PUBLISH every `clock`, matching a Pi agent's publish loop. It used to
-         * happen once per control step, so an nRF put `clock/dt` times more
-         * traffic on the air than a Pi did -- more airtime, and more chances to
-         * get past a receiver's duplicate filter, which is the leading suspect
-         * for the 0.65 freshness on the one bridge-to-nRF link. */
         if (++tick >= publish_every) {
             tick = 0u;
             state_packet_type pkt;
@@ -316,9 +297,6 @@ static void network_fetching_thread(void)
 
             k_mutex_lock(&coordination_mutex, K_FOREVER);
             if (agent.params.running && agent.params.enabled) {
-                /* Incremented per PUBLISH, never per step. A sequence number that
-                 * advanced per step while only every Nth packet went out would
-                 * read at the receiver as (N-1)/N of the traffic lost. */
                 agent.vars.tx_seq++;
                 pkt = on_air_packet(k_ticks_to_us_floor64(k_uptime_ticks()));
                 publish = true;

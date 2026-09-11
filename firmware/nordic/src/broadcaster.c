@@ -64,12 +64,6 @@ static void set_tx_power(uint8_t handle_type, uint16_t handle, int8_t tx_pwr_lvl
 	}
 
 	rp = (void *)rsp->data;
-	/* Stored as of 2026-09-07, not merely logged. The controller need not grant
-	 * what was asked for -- the nRF52832 on the DK caps at +4 dBm, and before
-	 * CONFIG_BT_CTLR_TX_PWR_DYNAMIC_CONTROL was set this command was not compiled
-	 * in at all and every board silently advertised at 0 dBm. "Requested" and
-	 * "granted" are therefore different measurements, and the run metadata needs
-	 * the second one. Reported through the STATS frame; see control.c. */
 	granted_tx_power = rp->selected_tx_power;
 	if (rp->selected_tx_power != tx_pwr_lvl) {
 		LOG_WRN("Tx power %d dBm requested, %d dBm selected",
@@ -100,8 +94,7 @@ int broadcaster_set_adv_params(uint16_t interval_min, uint16_t interval_max)
  * A function, not a macro: v1 has to be *encoded* rather than memcpy'd, because
  * its uint48 timestamp has no C type to lay out.
  *
- * Name(2+7) + manufacturer(2+18) = 29 of the 31 available. v0 used 19, so those
- * two spare bytes are now the entire margin -- no further element fits.
+ * Name(2+7) + manufacturer(2+18) = 29 of the 31 available. 
  *
  * @p value must outlive the bt_le_adv_* call: BT_DATA stores the pointer, it does
  * not copy the bytes.
@@ -117,7 +110,7 @@ static int build_ad(const state_packet_type *pkt, uint8_t *value, size_t cap,
 	 * it and nothing read it -- every receiver filters on the company id
 	 * (air_wire_decode_any here, find_manufacturer on the Pi). It cost 9 of 31 AD
 	 * bytes and 144 us of TX airtime per advertising event relative to a `bridge`
-	 * agent, which sends no name. See PLATFORM.md 8b.A3. */
+	 * agent, which sends no name. */
 	ad[0] = (struct bt_data)BT_DATA(BT_DATA_MANUFACTURER_DATA, value, (uint8_t)n);
 	return 0;
 }
@@ -146,11 +139,6 @@ int broadcaster_init(const state_packet_type *pkt)
 		param.interval_max = adv_interval_max;
 	}
 
-	/* NULL scan-response data. Passing it made Zephyr advertise ADV_SCAN_IND
-	 * instead of ADV_NONCONN_IND, so the board was scannable and an active
-	 * scanner would exchange SCAN_REQ/SCAN_RSP with it -- TX airtime on both
-	 * sides, and the exact mechanism this platform measures. It also carried
-	 * nothing the advertisement did not. See PLATFORM.md 8b.A1. */
 	int err = bt_le_adv_start(&param, ad, 1, NULL, 0);
 	if (err) {
 		LOG_ERR("Advertising failed to start (err %d)", err);

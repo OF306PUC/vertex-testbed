@@ -202,6 +202,7 @@ def radio_for(publish_period_s: float, *, adv_interval_ms: float | None = None,
         "adv_interval_ms": adv_ms,
         "scan_interval_ms": si,
         "scan_window_ms": sw,
+        "tx_power_dbm": WIFI_TX_POWER_DBM,
     }
     if adv_interval_max_ms is not None:
         amax = float(adv_interval_max_ms)
@@ -341,6 +342,32 @@ ADV_DITHER_MS = 50.0
 #: window at a 100 ms period, and the ceiling is reported either way.
 CEILING_FLOOR = 0.975
 
+#: Smallest k the SLOWEST transmitter may run at. The two radios read the
+#: advertising range differently: the nRF sits near interval_min and dithers,
+#: the CYW43455 takes interval_max as the interval and does not (PLATFORM 5.5b).
+#: So the max, not the mean, is what sets the Pi's ceiling, and sizing on the
+#: mean is what put the bridges at k = 0.83 with 37.5% of their links dark.
+#: 1.1 leaves every transmitter radiating each published value at least once
+#: with margin. Raising it narrows the dither; lowering it toward 1.0 locks the
+#: Pi's fixed interval to the publication grid, which is the phase lock the
+#: dither exists to prevent.
+K_MIN = 1.1
+
+#: Wi-Fi transmit power every manifest declares, in dBm.
+#:
+#: Until 2026-09-11 this was not set at all: `iw` reported the brcmfmac
+#: placeholder of 31.00 dBm, flagged untrusted, so the Wi-Fi transmit power was
+#: simply unknown in every run collected. The nRF meanwhile reports a granted
+#: +8 dBm in its STATS. A headline result of this platform is the comparison
+#: between the two media, and it cannot be called controlled while one of them
+#: has an unknown transmit power.
+#:
+#: 12 dBm is inside the CYW43455's range and well inside the 2.4 GHz regulatory
+#: limit, and setting it is verified to take effect (scripts/wifi_txpower.sh,
+#: PLATFORM.md). Changing this value invalidates comparison with runs collected
+#: at a different one, so treat it as fixed for the life of a campaign.
+WIFI_TX_POWER_DBM = 12.0
+
 
 def radio_dithered(publish_period_s: float, *, scan_duty: float = 1.0) -> dict:
     """Advertising range and 100% duty scanning, sized from the publish period.
@@ -349,9 +376,26 @@ def radio_dithered(publish_period_s: float, *, scan_duty: float = 1.0) -> dict:
     The window is the widest that keeps the ceiling at or above CEILING_FLOOR,
     capped at ADV_DITHER_MS, so a slow publish gets the full 50 ms and a fast one
     gets whatever it can afford rather than nothing.
+
+    Sized on the MAX, since 2026-09-10. Sizing on the mean was right for the
+    nRF and wrong for the Pi. Autocorrelating raw rx_ flags shows the
+    nRF advertising at ~100 ms, the range min, lightly dithered, while the
+    CYW43455 sits on exact 150 ms harmonics: it takes interval_max as THE
+    interval and ignores the range. So at T_pub = 125 ms the Pi runs at
+    k = 125/150 = 0.83, one published value in six never reaching the air, and
+    its fixed period beats against the publication grid at 0.75 s. That is the
+    whole of the "bridge -> ble blackout" of PLATFORM 5.10: 37.5% of those links
+    dead at 40 Hz against 0% at 25 Hz, where the Pi reaches k = 1.33.
+
+    So the width is now max <= T_pub / K_MIN. It costs most of the dither at
+    40 Hz, which is acceptable: the Pi was never applying the dither anyway,
+    and the nRF keeps 13.6 ms of spread, still ~36x a PDU. At T_pub = 100 ms
+    the width goes to zero and the Pi lands at exactly k = 1.0, phase-locked to
+    the publication grid: with a 100 ms advertising floor there is no setting
+    that gives a 10 Hz publish a working Pi transmit path. See PLATFORM 5.5b.
     """
     pub_ms = publish_period_s * 1000.0
-    widest = max(0.0, 2.0 * (pub_ms / CEILING_FLOOR - ADV_FLOOR_MS))
+    widest = max(0.0, pub_ms / K_MIN - ADV_FLOOR_MS)
     width = min(ADV_DITHER_MS, widest)
     if not 0.0 < scan_duty <= 1.0:
         raise ValueError(f"scan_duty={scan_duty} must be in (0, 1]")
@@ -1077,13 +1121,17 @@ def manifests() -> dict[str, dict]:
     for rate_tag, dt_s, pub_s in (("40hz", 0.025, 0.125), ("25hz", 0.04, 0.2)):
         controller = CONTROLLER_40HZ if rate_tag == "40hz" else CONTROLLER_25HZ
         radio = radio_dithered(pub_s, scan_duty=0.95)
-        k = pub_s * 1000.0 / (ADV_FLOOR_MS + (radio["adv_interval_max_ms"]
-                                              - ADV_FLOOR_MS) / 2.0)
+        # Two k values, because the two radios use different ends of the
+        # range. The Pi's is the binding one; a mean-based k hid the k = 0.83
+        # that darkened 37.5% of bridge links. See PLATFORM 5.5b.
+        k_nrf = pub_s * 1000.0 / radio["adv_interval_ms"]
+        k_pi = pub_s * 1000.0 / radio["adv_interval_max_ms"]
         rate_desc = (f"{1/dt_s:.0f} Hz dynamics, {1/pub_s:.0f} Hz publish "
                      f"({pub_s*1000:.0f} ms), advertising "
                      f"{radio['adv_interval_ms']:.0f}-"
                      f"{radio['adv_interval_max_ms']:.0f} ms and scanning 20 ms "
-                     f"at 95% duty. k = {k:.2f}")
+                     f"at 95% duty. k = {k_pi:.2f} on the Pi (interval max), "
+                     f"{k_nrf:.2f} on the nRF (interval min)")
 
         for tag, gen, params, desc in [
             ("dring", "ring", {"directed": True, "ids": BAND_ORDER},

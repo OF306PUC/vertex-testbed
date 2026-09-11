@@ -26,7 +26,7 @@ from ..control.server import ControlServer
 from ..controllers.base import create
 from ..net import (CONTROL_PORTS, STATE_PORT, AgentType, InterfaceError,
                    broadcast_address, interface_broadcast, interface_for_ip,
-                   interface_prefixlen, wlan_state)
+                   interface_prefixlen, set_wlan_txpower, wlan_state)
 from ..transports.base import Transport
 from ..transports.ble import BleTransport
 from ..transports.multi import MultiTransport
@@ -168,10 +168,19 @@ class AgentService:
         if iface:
             self.environment.setdefault("interface_used", iface)
             self.environment.setdefault("prefixlen", interface_prefixlen(iface))
+            # Set transmit power BEFORE reading the interface back, so the
+            # recorded wlan_txpower_dbm is what this run actually transmitted at
+            # rather than what the driver happened to hold beforehand. Declaring
+            # it in the manifest is what makes it a controlled variable: the
+            # setting does not survive a reboot and nothing else re-asserts it.
+            want = self._radio_settings().get("tx_power_dbm")
+            if want is not None:
+                for k, v in set_wlan_txpower(iface, float(want)).items():
+                    self.environment[k] = v
             # power_save especially: it turns a ~1 ms link into a ~170 ms one, and
             # nothing else in the log would show it.
             for k, v in wlan_state(iface).items():
-                self.environment.setdefault(k, v)
+                self.environment[k] = v
         return UdpTransport(node_id, self.clock,
                             send_to=(target, self.state_port),
                             bind_port=self.state_port, broadcast=True)

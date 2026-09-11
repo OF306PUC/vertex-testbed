@@ -12,8 +12,7 @@
 #include "common.h"
 #include "air_wire.h"
 
-/** Requested TX power in dBm. The nRF52832 on the DK tops out at +4, so the
- *  vendor command selects the nearest supported level rather than failing. */
+/** Requested TX power in dBm. */
 #define TX_POWER_LEVEL_BLE    8
 
 /**

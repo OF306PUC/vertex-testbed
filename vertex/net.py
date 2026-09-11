@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import fcntl
 import ipaddress
+import os
 import socket
 import struct
 from enum import StrEnum
@@ -12,7 +13,7 @@ from enum import StrEnum
 __all__ = ["AgentType", "HUB_PORT", "STATE_PORT", "CONTROL_PORTS",
            "DEFAULT_INTERFACE", "AGENT_MEDIA", "InterfaceError", "list_interfaces",
            "interface_broadcast", "interface_prefixlen", "interface_for_ip",
-           "wlan_state",
+           "wlan_state", "set_wlan_txpower",
            "SIOCGIFBRDADDR",
            "resolve_local_ip", "control_endpoint", "state_endpoint",
            "broadcast_address"]
@@ -224,6 +225,50 @@ def wlan_state(interface: str = DEFAULT_INTERFACE) -> dict[str, Any]:
     m = re.search(r"type\s+(\w+)", info)
     if m:
         out["wlan_type"] = m.group(1)
+    return out
+
+
+def set_wlan_txpower(iface: str, dbm: float) -> dict[str, object]:
+    """Set the interface's transmit power and report what actually took effect.
+
+    Returns a dict for the run environment, never raises. Keys:
+    `wlan_txpower_requested_dbm`, `wlan_txpower_set` (did the command succeed),
+    `wlan_txpower_readback_dbm`, `wlan_txpower_matched`, and on failure
+    `wlan_txpower_error`.
+
+    It is recorded rather than enforced because the failure modes are quiet. The
+    driver may accept the command and ignore it, and `iw` reports 31.00 dBm as a
+    placeholder when it has no real value, so neither "the command returned 0"
+    nor "iw reports a number" is evidence on its own. Only the readback is, and
+    only once it is below the placeholder. Analysis can then reject a run whose
+    `wlan_txpower_matched` is false instead of averaging it in unnoticed.
+
+    Needs CAP_NET_ADMIN. Agents that already run under sudo have it; the rest
+    go through `sudo -n`, which fails fast rather than waiting on a password
+    prompt that nothing will ever answer.
+    """
+    import shutil
+    import subprocess
+
+    out: dict[str, object] = {"wlan_txpower_requested_dbm": float(dbm)}
+    mbm = str(int(round(float(dbm) * 100)))
+    cmd = ["iw", "dev", iface, "set", "txpower", "fixed", mbm]
+    if os.geteuid() != 0:
+        if not shutil.which("sudo"):
+            out.update(wlan_txpower_set=False, wlan_txpower_error="not root, no sudo")
+            return out
+        cmd = ["sudo", "-n", *cmd]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        out["wlan_txpower_set"] = r.returncode == 0
+        if r.returncode != 0:
+            out["wlan_txpower_error"] = (r.stderr or r.stdout).strip()[:200]
+    except Exception as exc:                       # noqa: BLE001 - never fail a run
+        out.update(wlan_txpower_set=False, wlan_txpower_error=f"{type(exc).__name__}: {exc}")
+
+    back = wlan_state(iface).get("wlan_txpower_dbm")
+    out["wlan_txpower_readback_dbm"] = back
+    out["wlan_txpower_matched"] = (back is not None and abs(float(back) - float(dbm)) < 0.5)
     return out
 
 

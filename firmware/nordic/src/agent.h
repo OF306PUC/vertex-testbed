@@ -100,8 +100,8 @@ struct agent_params {
     int32_t  vstate_0;
     int32_t  vartheta_0;
     int32_t  counter_0;
-    int32_t  gain_ij;           /* coupling gain, the paper's a_ij */
-    int32_t  alpha;             /* sign-power EXPONENT, not a gain */
+    int32_t  gain_ij;           /* coupling gain: a_ij */
+    int32_t  alpha;             /* sign-power exponent */
     int32_t  delta;
     int32_t  eta;
     uint32_t seed;              /* per-node, per-run PRNG seed, from CONTROL */
@@ -118,10 +118,7 @@ struct agent_vars {
     int32_t vartheta;
     int32_t counter;
     int64_t time_us;            /* run start, local uptime, MICROSECONDS */
-    /* Per-neighbour reception state, absorbed from the observer. Held here rather
-     * than read from the observer at report time because the report is built from
-     * a mutex-protected snapshot of the agent -- reaching into the observer would
-     * need a second snapshot with its own race. */
+    /* Per-neighbour reception state, absorbed from the observer. */
     uint16_t neighbor_seq[AGENT_MAX_NEIGHBORS];
     int8_t   neighbor_rssi[AGENT_MAX_NEIGHBORS];
     uint16_t tx_seq;
