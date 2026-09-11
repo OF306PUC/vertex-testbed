@@ -175,6 +175,29 @@ def interface_prefixlen(interface: str = DEFAULT_INTERFACE) -> int | None:
         s.close()
 
 
+#: Absolute path to `iw`, or None if it is not installed.
+#:
+#: It lives in /usr/sbin, which is on root's secure_path but NOT on an
+#: unprivileged user's PATH on Debian. A bare "iw" therefore resolves for an
+#: agent started under sudo and fails for one started without, and wlan_state()
+#: then returns {} so the run records no wireless state at all. That is a
+#: silent, launch-method-dependent hole: the same Wi-Fi agent logged power_save
+#: and channel when started from an interactive login shell and logged neither
+#: when started over `ssh host 'bash ...'`.
+#:
+#: Resolve it explicitly so what gets recorded does not depend on how the agent
+#: was launched. scripts/rf_survey.sh carries the same fix for the same reason.
+def _iw_binary() -> "str | None":
+    import shutil
+    found = shutil.which("iw")
+    if found:
+        return found
+    for cand in ("/usr/sbin/iw", "/sbin/iw", "/usr/local/sbin/iw"):
+        if os.path.exists(cand):
+            return cand
+    return None
+
+
 def wlan_state(interface: str = DEFAULT_INTERFACE) -> dict[str, Any]:
     """Wireless state that changes what a run measures: power save, channel, power.
 
@@ -193,19 +216,22 @@ def wlan_state(interface: str = DEFAULT_INTERFACE) -> dict[str, Any]:
     import subprocess
 
     out: dict[str, Any] = {}
+    iw = _iw_binary()
+    if iw is None:
+        return out
     def _run(args: list[str]) -> str:
         try:
-            return subprocess.run(args, capture_output=True, text=True,
+            return subprocess.run([iw, *args], capture_output=True, text=True,
                                   timeout=5).stdout
         except Exception:
             return ""
 
-    ps = _run(["iw", "dev", interface, "get", "power_save"])
+    ps = _run(["dev", interface, "get", "power_save"])
     m = re.search(r"Power save:\s*(\w+)", ps)
     if m:
         out["power_save"] = m.group(1).lower()
 
-    info = _run(["iw", "dev", interface, "info"])
+    info = _run(["dev", interface, "info"])
     m = re.search(r"channel\s+(\d+)\s+\((\d+)\s*MHz\)", info)
     if m:
         out["wlan_channel"] = int(m.group(1))
@@ -252,7 +278,11 @@ def set_wlan_txpower(iface: str, dbm: float) -> dict[str, object]:
 
     out: dict[str, object] = {"wlan_txpower_requested_dbm": float(dbm)}
     mbm = str(int(round(float(dbm) * 100)))
-    cmd = ["iw", "dev", iface, "set", "txpower", "fixed", mbm]
+    iw = _iw_binary()
+    if iw is None:
+        out.update(wlan_txpower_set=False, wlan_txpower_error="iw not found")
+        return out
+    cmd = [iw, "dev", iface, "set", "txpower", "fixed", mbm]
     if os.geteuid() != 0:
         if not shutil.which("sudo"):
             out.update(wlan_txpower_set=False, wlan_txpower_error="not root, no sudo")
