@@ -3,33 +3,29 @@
 An open testbed for distributed and multi-agent control over real heterogeneous
 radio links.
 
-## The question it exists to answer
+## Introduction
 
-**Does the radio a distributed controller runs over change what it can achieve,
-and by how much?**
+Distributed control laws are usually validated in simulation, where the network
+is itself a model: a loss probability, a delay distribution, an assumption about
+what arrives and when. VERTEX replaces that model with real radios.
 
-Simulation cannot settle it, because answering requires a loss model and the
-model chosen is most of the answer. A testbed built on one radio cannot settle it
-either, since it has nothing to compare against: every number it produces is
-about that radio, and nothing separates the medium from the controller.
+Thirty agents run the same coordination law over three transports — BLE
+advertising, Wi-Fi UDP broadcast, and a bridge carrying both — across ten
+Raspberry Pi nodes, each paired with an nRF52840-DK. The law, the graph, the
+disturbance and the clock are shared, so the **transport** is the only term that
+differs between agents, and what the fleet achieves can be attributed to the
+medium rather than to the implementation.
 
-VERTEX runs **the same control law on every agent** and changes only the
-**transport** — BLE advertising, Wi-Fi UDP broadcast, or both at once. Thirty
-agents share one fleet, one graph and one clock, so the medium is the only term
-that differs and a difference in what the fleet achieves is attributable to it
-rather than to the implementation.
-
-That attribution is the whole claim, and defending it is most of the work here.
-A testbed that merely runs is easy. One whose comparisons survive a sceptical
-reading is not, and the difference lies entirely in what gets checked before a
-run and what gets recorded during it.
+Defending that attribution is most of the work here, and most of what this
+repository contains: what gets checked before a run, and what gets recorded
+during it.
 
 ---
 
 ## ⚙️ System Overview
 
 <p align="center">
-  <img src="docs/diagrams/vertex-node.svg" width="50%">
+  <img src="docs/diagrams/vertex-node.svg" width="75%">
 </p> 
 
 ### The pieces
@@ -79,18 +75,10 @@ the hub is not a node:
 | **Node** — nRF52840-DK | nRF Connect SDK 2.7.0 (Zephyr `v3.6.99-ncs2`), board `nrf52840dk/nrf52840` |
 | **Access point** | any 2.4 GHz AP; its channel is read and recorded per run rather than configured here |
 
-Python **≥ 3.11** is the actual requirement (`pyproject.toml`); the two versions
-above simply reflect two different machines, and nothing in the project depends
-on them matching. Python packages come from `pip install -e .` — numpy ≥ 1.26,
-pydantic ≥ 2.7, networkx ≥ 2.8, pyyaml ≥ 6.0, pyserial ≥ 3.5, matplotlib ≥ 3.8.
-
-Install them into a virtual environment on each Pi, not system-wide. Bookworm's
-system Python has no `pydantic` at all and a numpy below the floor above, so
-every agent exits immediately against it. **The virtual environment must be
-active in the shell you run the agents from** — `scripts/agents.sh` uses
-whatever `python3` resolves to and does not go looking for a venv on your
-behalf, which is deliberate: an agent should run against the interpreter you
-chose, not one a script guessed at. Step 3 creates it, step 4 checks it.
+Python **≥ 3.11**; the exact versions above are just two different machines.
+Package requirements live in `pyproject.toml` and install with `pip install -e .`
+into a virtual environment on each Pi, never system-wide — Bookworm's system
+Python cannot run the agents.
 
 ---
 
@@ -120,27 +108,7 @@ Each is enforced by a check, not by intention:
 
 ---
 
-## 🚀 Implementation Steps
-
-### 0. Check it without hardware first
-
-```bash
-pip install -e .
-bash test/check_all.sh          # every check that needs no board and no radio
-python3 tools/simulate.py       # every manifest, simulated, ~1 s each
-```
-
-`check_all.sh` covers firmware syntax and symbols, host/firmware frame layouts
-for all three firmwares, the on-air codec in both directions, the C law against
-the Python law, the BLE transport against a fake controller, HCI socket reuse,
-the manifest generator, and the whole hub → agents → logs → collect path on
-loopback. It ends in `all checks passed` or names what failed.
-
-Worth doing after **any** edit to a frame layout or the control law: the two
-checks that catch a one-sided change — `serial layout` and `control law C vs
-Python` — cost seconds here and cost a bench session otherwise.
-
----
+## 🛠️ Implementation Steps
 
 ### 1. Flash the nRF52-DK firmware
 
@@ -213,9 +181,7 @@ regression it exists to catch.
    This is worth checking on every host, every time. The hub hands out one epoch,
    but each node still stamps arrivals with its **own** clock, so an unsynchronised
    host produces one-way delays that are really the difference between two nodes'
-   clocks — a number in the right units and wildly wrong. Offsets of −10 s and
-   +20 s have been measured this way, and nothing in the data says the delay is
-   fictitious.
+   clocks.
 4. Verify and note the `wlan0` IP address:
    ```bash
    ip -br a
@@ -305,19 +271,15 @@ of the fleet without saying so.
    export VERTEX_SERIAL=/dev/ttyACM0
    ```
 10. Run preflight
-   ```bash
-   bash scripts/agents.sh preflight
-   ```
-   Everything after this assumes it passed. Run it on every host before you commit
-   to a long run.
+    ```bash
+    bash scripts/agents.sh preflight
+    ```
+    Everything after this assumes it passed. Run it on every host before you
+    commit to a long run.
 
 ---
 
 ### 4. Start the agents on each node
-
-Activate the virtual environment first, in the same shell. The script runs
-whatever `python3` resolves to, so an inactive venv starts every agent against
-the system interpreter, where `pydantic` does not exist:
 
 ```bash
 bash scripts/agents.sh start
@@ -332,10 +294,6 @@ Three processes per node, one per type, each with a pidfile and a log. They come
 up, open their control port, and **wait** — no run has started, and no epoch
 exists yet. Starting the agents is not starting an experiment, which is why they
 can sit idle between runs.
-
-The script deliberately does not pass an epoch. The epoch is per-run and the hub
-sends it with the trigger, so every node in a run shares one origin; an epoch
-fixed at launch would give each agent its own.
 
 ---
 
@@ -475,8 +433,8 @@ python3 tools/plot_run.py runs/n30-ring4-40hz-0
 Writes into `results/<run>/`. Panels are coloured **by agent type**, not by node,
 because the question is BLE versus Wi-Fi versus bridge: a systematic split shows
 up as three bands rather than six unrelated lines. Everything is plotted against
-the host clock on the shared epoch, never against the nRF's own clock, which
-counts from its own trigger arrival and is not comparable between nodes.
+the host clock on the shared epoch, which is the only timebase common to all
+thirty agents.
 
 Four things to look at before believing a run:
 
@@ -496,9 +454,10 @@ Four things to look at before believing a run:
 
 ### 8. A measurement, rather than a single run
 
-Run-to-run spread on this platform is not small — BLE delivery has ranged over 6
-points across nominally identical runs while UDP moved 2 — so a single run cannot
-resolve a small effect. Repeat a configuration and aggregate:
+Run-to-run spread on this platform is not small. Across twenty nominally
+identical runs of the sparse ring, convergence varied by ±26 s about a 230 s
+mean, so a single run cannot resolve a difference of less than roughly 10%.
+Repeat a configuration and aggregate:
 
 ```bash
 python3 -m vertex.hub run experiments/n30-ring4-40hz.yaml --duration 300 --repeat 10
