@@ -61,8 +61,8 @@ else
   # and costs 8 hours over a 60-cycle campaign. Convergence time is measured
   # from t=0 and does not depend on run length, so the arms stay comparable.
   ARMS=(
-    "n30-dring-40hz:420"    "n30-ring4-40hz:300"    "n30-clusters-40hz:300"
-    "n30-dring-25hz:480"    "n30-ring4-25hz:360"    "n30-clusters-25hz:360"
+    "n30-dring-40hz:420"    "n30-ring4-40hz:300"    "n30-clusters-40hz:360"
+    "n30-dring-25hz:420"    "n30-ring4-25hz:300"    "n30-clusters-25hz:360"
   )
 fi
 LOG="$OUT/$CAMPAIGN/campaign.log"

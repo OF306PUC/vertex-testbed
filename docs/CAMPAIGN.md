@@ -37,28 +37,29 @@ uses, so it is sized to keep k > 1 on both radios; see PLATFORM 5.5b),
 `gain_ij = 0.5`, `eta = 2.5e-3` — identical across the rates, because the
 recursion is `x += dt*(u+nu)` and the gains are rates.
 
-**Duration is per arm, not uniform within a rate** (changed 2026-09-11):
+**Duration is per topology, the same at both rates** (2026-09-11):
 
-| arm | 40 Hz | 25 Hz | converges at | margin |
-|---|---|---|---|---|
-| G1 dring | **420 s** | **480 s** | 230 s / 259 s (sd 26 / 33) | 7.2 / 6.7 sd |
-| G2 ring4 | 300 s | 360 s | 59 s / 66 s | 241 / 24 sd |
-| G3 clusters | 300 s | 360 s | 190 s / 199 s | 85 / 16 sd |
+| arm | run | converges at (40 Hz / 25 Hz) | margin, in sd |
+|---|---|---|---|
+| G1 dring | **420 s** | 230 s / 259 s | 7.2 / 4.9 |
+| G2 ring4 | **300 s** | 59 s / 66 s | 241 / 19 |
+| G3 clusters | **360 s** | 190 s / 199 s | 131 / 16 |
 
-G1 was previously uniform with the others at 300/360 s, which left it only 2.7
-and 3.1 standard deviations of margin: a slow realisation nearly ran out of run
-before converging. The other two arms converge four times faster and already had
-far more margin than they needed, so lengthening them would have added 8 hours
-to a 60-cycle campaign for nothing. Convergence time is measured from t = 0 and
-does not depend on run length, so the arms remain directly comparable; what
-differs is the length of the steady-state window, and G1's is now the longest
-rather than the shortest. The rates differ from
-each other because 25 Hz publishes at 5 Hz against 40 Hz's 8 Hz, and fewer
-updates per second means a longer wall clock to the same place.
+Duration follows the topology because convergence does: G1 takes four times
+longer than G2 at either rate, and lambda_2 is what sets that, not the sample
+rate. Previously all three shared a duration within a rate, which left G1 with
+2.7 and 3.1 standard deviations of margin while G2 sat on 241, so a slow G1
+realisation nearly ran out of run while G2 spent most of its 300 s already
+converged.
 
-Note that ϑ takes roughly 130 s to latch in simulation, so a steady-state window
-should start no earlier than ~150 s. For G₃ the merge at t = 60 s leaves 240 s
-(40 Hz) or 300 s (25 Hz) of merged evolution.
+Convergence time is measured from t = 0 and does not depend on run length, so
+the arms stay directly comparable. What differs is the length of the
+steady-state window, and any statistic computed over it should be sliced to a
+common length rather than taking everything after convergence.
+
+The 25 Hz G1 margin of 4.9 sd is the tightest of the six. It is adequate, but it
+is the one to watch: if G1 at 25 Hz ever fails to converge inside 420 s, that is
+the arm to lengthen first.
 
 **Run index is held fixed at 0.** Initial conditions and every node's disturbance
 stream are then identical across all 50 replicates, so the network realisation is
