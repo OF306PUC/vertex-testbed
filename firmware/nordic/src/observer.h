@@ -32,6 +32,8 @@
  */
 typedef struct {
     int32_t  vstates[AGENT_MAX_NEIGHBORS];  /* virtual state, scaled by 1e6 */
+    /* Q coordinate, from a v2 frame. Zero when the sender speaks v1. */
+    int32_t  vstates_q[AGENT_MAX_NEIGHBORS];
     bool     enabled[AGENT_MAX_NEIGHBORS];  /* neighbour advertised as participating */
     int8_t   rssi[AGENT_MAX_NEIGHBORS];     /* last received signal strength, dBm */
     uint16_t seq[AGENT_MAX_NEIGHBORS];      /* sender's v1 sequence number; 0 from v0 */

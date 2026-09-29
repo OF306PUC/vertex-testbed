@@ -24,6 +24,8 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
+#include <math.h>
+
 #include "agent.h"
 #include "broadcaster.h"
 #include "common.h"
@@ -160,12 +162,19 @@ static state_packet_type on_air_packet(int64_t uptime_us)
         }
         tx_time_us = agent.params.epoch_us + (uint64_t)elapsed_us;
     }
+    /* How many coordinates go on the air follows from the law the manifest
+     * selected, so the frame version is decided in one place and cannot
+     * disagree with what the board is actually integrating. */
+    const bool two = (agent.params.law != LAW_FINITE_TIME_ADAPTIVE);
     return (state_packet_type){
         .node           = agent.params.node_id,
         .enabled        = agent.params.enabled,
         .disturbance_on = agent.params.disturbance.active,
         .seq            = agent.vars.tx_seq,
         .vstate         = agent.vars.vstate,
+        .vstate_q       = two ? (int32_t)lrintf(agent.vars.mg.zQ * SCALE_FACTOR)
+                              : 0,
+        .coords         = two ? 2u : 1u,
         .tx_time_us     = tx_time_us,
     };
 }
@@ -207,6 +216,8 @@ static void absorb_neighbors(const neighbor_info_type *info)
         return;
     }
     memcpy(agent.vars.neighbor_vstates, info->vstates, sizeof(info->vstates));
+    memcpy(agent.vars.neighbor_vstates_q, info->vstates_q,
+           sizeof(info->vstates_q));
     memcpy(agent.params.neighbors_enabled, info->enabled, sizeof(info->enabled));
     memcpy(agent.vars.neighbor_seq, info->seq, sizeof(info->seq));
     memcpy(agent.vars.neighbor_rssi, info->rssi, sizeof(info->rssi));

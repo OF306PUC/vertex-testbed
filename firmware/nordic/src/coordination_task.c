@@ -1,6 +1,7 @@
 #include <math.h>
 
 #include "coordination_task.h"
+#include "microgrid_task.h"
 #include "prng.h"
 
 float disturbance(struct agent *a)
@@ -75,6 +76,16 @@ static int32_t quantize_f(float v)
 
 void discrete_step(struct agent *a)
 {
+    /* Which law runs is the manifest's choice, carried in `params.law` and
+     * reset to the scalar one by every NETWORK frame. Nothing below this
+     * line changed when the second family was added, and
+     * test/common/check_scalar_law_unchanged.py plus test/crossval/compare.py
+     * hold it to that. */
+    if (a->params.law != LAW_FINITE_TIME_ADAPTIVE) {
+        microgrid_step(a);
+        return;
+    }
+
     const float dt       = (float)a->params.dt * 1e-3f;
     const float x        = sanitize_f(a->vars.state_f);
     const float z        = sanitize_f(a->vars.vstate_f);

@@ -484,10 +484,10 @@ DG5_Z0 = {i: [float(i), 6.0 - i] for i in range(1, 6)}
 #: adjacent. DG 1 carries the reference and must therefore be a bridge, which
 #: can talk to both.
 #:
-#: `mixed` needs the firmware: a `ble` agent's law runs on the nRF, in
-#: float32, which is the heterogeneity the platform exists to measure and not
-#: an implementation detail to route around. Until the microgrid family
-#: exists in C, this manifest validates and cannot be run.
+#: `mixed` runs the law on the nRF at its two `ble` nodes, in float32. That is
+#: the heterogeneity the platform exists to measure, not an implementation
+#: detail to route around, so the manifest waited for the C port rather than
+#: being rewritten to avoid it.
 #:
 #: `bridge5` gives every node both radios and the law on the Pi. It is the
 #: control: same graph, same law, every link carried twice, and it needs no
@@ -497,13 +497,62 @@ DG5_TOPOLOGIES = {
     "bridge5": {i: "bridge" for i in range(1, 6)},
 }
 
+#: The two Pis that carry `mixed`: 10.6.5.4 and 10.6.5.5, the boards with an
+#: nRF attached. Not the first two declared, so the pair is named here the way
+#: `n6_pair` is -- an agent's host is a property of the physical bench, and
+#: HOSTS is ordered by address, not by what is plugged into each board.
+#:
+#: The first element runs three services and the second two, so the order is
+#: load-bearing: reverse it and the Pi 5 picks up the wifi agent.
+def dg5_pair() -> list[str]:
+    return HOSTS[2:4] if len(HOSTS) >= 4 else HOSTS[:2]
+
+
+#: Which host each DG runs on, as an index into that topology's host pool.
+#:
+#: `bridge5` takes five, one per Pi, and is the clean control.
+#:
+#: `mixed` takes TWO, because a `ble` agent needs an nRF on its host and the
+#: lab has two boards so equipped: 10.6.5.4 runs three services (ble + wifi +
+#: bridge) and 10.6.5.5 two (ble + bridge). No host holds two agents of one
+#: type, so nothing collides: the control plane is one port per type, and
+#: STATE_PORT is shared through SO_REUSEPORT as it already is at n6 and n9.
+#:
+#: The placement is FORCED and it costs one edge. A 5-ring is an odd cycle, so
+#: it cannot be 2-coloured -- some edge lands inside a host whatever we do. The
+#: media decide which. The wifi node's two neighbours are both bridges, because
+#: nothing else shares a medium with it, and one Pi can hold only one bridge:
+#: two bridge agents on a host share a single HCI socket, and a controller does
+#: not receive its own advertisements, so that link would be dead rather than
+#: merely local. One of the wifi node's two edges is therefore always intra-host.
+#:
+#: Of the two ways to place it, this one keeps DG 1 -- the pinned node, the only
+#: one holding the reference -- with both of its links on the air. The kernel
+#: edge is 2-3 instead, a wifi/bridge pair on host 0: ~100% delivery, ~0 delay,
+#: and `check` warns about it. The warning is right. That link is not under test
+#: and no per-link average should be read without excluding it.
+#:
+#: The other four are real and still cover every path the platform compares:
+#: UDP across the LAN (1-2), Pi HCI to nRF (3-4), nRF to nRF (4-5), and nRF to
+#: Pi HCI (5-1).
+DG5_PLACEMENT = {
+    "mixed": {1: 1, 2: 0, 3: 0, 4: 1, 5: 0},
+    "bridge5": {i: i - 1 for i in range(1, 6)},
+}
+
+
+def dg5_hosts(topology: str) -> list[str]:
+    """The host pool `DG5_PLACEMENT` indexes into, for one topology."""
+    return list(HOSTS[:5]) if topology == "bridge5" else dg5_pair()
+
 #: Calibrated on the candidate operating point and then locked, per
 #: eq:epsilon_calibration. Per agent because the rule sizes each threshold
 #: from that agent's own measured implementation error.
 DG5_EPS = {1: 0.09376, 2: 0.09600, 3: 0.09101, 4: 0.09250, 5: 0.09781}
 
 
-def dg5(topology: str, *, h: float = 0.025, h_v: float = 0.125) -> dict:
+def dg5(topology: str, *, h: float = 0.025, h_v: float = 0.125,
+        hosts: list[str] | None = None) -> dict:
     """One microgrid manifest, configured for the deliverable arm C_DZ.
 
     The other three arms differ in one field each -- `eps = 0` is C_AA,
@@ -516,10 +565,12 @@ def dg5(topology: str, *, h: float = 0.025, h_v: float = 0.125) -> dict:
     `Phi` (3e-3 leaves the estimate inert) and the rates. PARAMS.md says why.
     """
     types = DG5_TOPOLOGIES[topology]
+    place = DG5_PLACEMENT[topology]
+    pool = hosts if hosts is not None else dg5_hosts(topology)
     nodes = []
     for i in range(1, 6):
         nodes.append({
-            "id": i, "ip": HOSTS[i - 1], "type": types[i],
+            "id": i, "ip": pool[place[i]], "type": types[i],
             "publish_period_s": h_v,
             "plant": {"kappa": DG5_KAPPA[i], "S": DG5_S[i],
                       "X0": DG5_X0[i], "z0": DG5_Z0[i]},
@@ -528,7 +579,8 @@ def dg5(topology: str, *, h: float = 0.025, h_v: float = 0.125) -> dict:
         "name": f"dg5-{topology}",
         "description": (
             f"5-DG microgrid benchmark on an undirected ring, pinned at DG 1. "
-            f"{topology}. h = {h * 1e3:g} ms, h_v = {h_v * 1e3:g} ms. "
+            f"{topology} on {max(place.values()) + 1} host(s). "
+            f"h = {h * 1e3:g} ms, h_v = {h_v * 1e3:g} ms. "
             f"Configured for C_DZ; the hub selects the other arms."),
         "seed": 20260929,
         "nodes": nodes,
@@ -558,12 +610,13 @@ def manifests() -> dict[str, dict]:
     should still get its two-host manifests written.
     """
     out: dict[str, dict] = {}
-    if len(HOSTS) >= 5:
-        for topo in DG5_TOPOLOGIES:
+    for topo, place in DG5_PLACEMENT.items():
+        need = max(place.values()) + 1
+        if len(HOSTS) >= need:
             out[f"dg5-{topo}"] = dg5(topo)
-    else:
-        print(f"skip     dg5-*                  needs >=5 hosts, "
-              f"{len(HOSTS)} declared")
+        else:
+            print(f"skip     dg5-{topo:<15}  needs >={need} hosts, "
+                  f"{len(HOSTS)} declared")
     if len(HOSTS) < 2:
         # Every edge in every manifest must cross hosts -- an intra-host link
         # never reaches the radio -- so one host can build nothing at all.

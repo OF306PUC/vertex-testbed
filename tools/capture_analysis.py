@@ -249,9 +249,11 @@ def plot(campaign: Path, out: Path):
     import matplotlib.pyplot as plt
 
     RATES = {"40hz": ("8 Hz publish", "125 ms"), "25hz": ("5 Hz publish", "200 ms")}
-    MEDIA = {"ble":    ("tab:red",   "o", "BLE relay (no scheduler)"),
-             "bridge": ("tab:green", "^", "bridge (BLE + UDP)"),
-             "wifi":   ("tab:blue",  "s", "Wi-Fi agent (AP batches)")}
+    sys.path.insert(0, str(ROOT / "plotting-tools"))
+    from palette import MEDIA as _MC, MEDIA_MARKER as _MM      # one scheme, paper-wide
+    MEDIA = {"ble":    (_MC["ble"],    _MM["ble"],    "BLE relay (no scheduler)"),
+             "bridge": (_MC["bridge"], _MM["bridge"], "bridge (BLE + UDP)"),
+             "wifi":   (_MC["wifi"],   _MM["wifi"],   "Wi-Fi agent (AP batches)")}
     ARM = {"dring": "$\\mathcal{G}_1$", "ring4": "$\\mathcal{G}_2$"}
 
     written = []
@@ -366,7 +368,13 @@ def by_medium(campaign: Path, arms: list[str], cycles: int | None = None):
                      json.loads(m.read_text()).get("node_type")
                      for m in run.glob("*.meta.json")}
             for nid, rxk in sorted(kinds.items()):
-                r = node_capture(run, nid)
+                # A run that lost a node still carries 29 good ones. Skipping
+                # the casualty keeps the other 29 rather than discarding the
+                # run, which matters when three runs in 360 are affected.
+                try:
+                    r = node_capture(run, nid)
+                except Exception:
+                    continue
                 if r is None:
                     continue
                 deg, rho, pc, _stale, _nw = r

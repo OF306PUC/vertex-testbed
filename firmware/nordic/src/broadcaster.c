@@ -102,7 +102,8 @@ int broadcaster_set_adv_params(uint16_t interval_min, uint16_t interval_max)
 static int build_ad(const state_packet_type *pkt, uint8_t *value, size_t cap,
 		    struct bt_data *ad)
 {
-	const int n = air_wire_encode_v1(pkt, value, cap);
+	/* v1 or v2, from how many coordinates the packet carries. */
+	const int n = air_wire_encode(pkt, value, cap);
 	if (n < 0) {
 		return -EINVAL;
 	}
@@ -121,7 +122,7 @@ int broadcaster_init(const state_packet_type *pkt)
 		return 0;
 	}
 
-	uint8_t value[AIR_WIRE_AD_VALUE_SIZE];
+	uint8_t value[AIR_WIRE_AD_VALUE_MAX];
 	struct bt_data ad[1];
 
 	if (build_ad(pkt, value, sizeof(value), ad)) {
@@ -154,7 +155,7 @@ int broadcaster_update(const state_packet_type *pkt)
 	if (!advertising) {
 		return -EAGAIN;
 	}
-	uint8_t value[AIR_WIRE_AD_VALUE_SIZE];
+	uint8_t value[AIR_WIRE_AD_VALUE_MAX];
 	struct bt_data ad[1];
 
 	if (build_ad(pkt, value, sizeof(value), ad)) {

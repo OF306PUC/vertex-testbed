@@ -65,6 +65,53 @@ int air_wire_encode_v1(const state_packet_type *p, uint8_t *out, size_t cap)
 	return (int)AIR_WIRE_AD_VALUE_SIZE;
 }
 
+int air_wire_encode_v2(const state_packet_type *p, uint8_t *out, size_t cap)
+{
+	if (cap < AIR_WIRE_V2_AD_VALUE_SIZE) {
+		return AIR_WIRE_ERR_LEN;
+	}
+	st_u16(&out[0], (uint16_t)MANUFACTURER_ID);
+
+	uint8_t *v = &out[2];
+	v[0] = (uint8_t)AIR_WIRE_V2_VERSION;
+	v[1] = (uint8_t)((p->enabled        ? AIR_WIRE_V1_FLAG_ENABLED     : 0u) |
+	                 (p->disturbance_on ? AIR_WIRE_V1_FLAG_DISTURBANCE : 0u));
+	v[2] = p->node;
+	/* No reserved byte: the frame is already 19 and a spare byte nothing
+	 * reads is not worth three more on the air. */
+	st_u16(&v[3], p->seq);
+	st_u32(&v[5], (uint32_t)p->vstate);
+	st_u32(&v[9], (uint32_t)p->vstate_q);
+	st_u48(&v[13], p->tx_time_us);
+	return (int)AIR_WIRE_V2_AD_VALUE_SIZE;
+}
+
+int air_wire_encode(const state_packet_type *p, uint8_t *out, size_t cap)
+{
+	return (p->coords >= 2u) ? air_wire_encode_v2(p, out, cap)
+	                         : air_wire_encode_v1(p, out, cap);
+}
+
+static int decode_v2(const uint8_t *v, state_packet_type *out)
+{
+	if (v[0] != (uint8_t)AIR_WIRE_V2_VERSION) {
+		return AIR_WIRE_ERR_FORMAT;
+	}
+	if (v[2] == 0u) {
+		return AIR_WIRE_ERR_FORMAT;         /* node id 0 is reserved */
+	}
+	out->node = v[2];
+	out->enabled = (v[1] & AIR_WIRE_V1_FLAG_ENABLED) != 0u;
+	out->disturbance_on = (v[1] & AIR_WIRE_V1_FLAG_DISTURBANCE) != 0u;
+	out->seq = ld_u16(&v[3]);
+	out->vstate = (int32_t)ld_u32(&v[5]);
+	out->vstate_q = (int32_t)ld_u32(&v[9]);
+	out->tx_time_us = ld_u48(&v[13]);
+	out->has_seq_and_time = true;
+	out->coords = 2u;
+	return AIR_WIRE_OK;
+}
+
 static int decode_v1(const uint8_t *v, state_packet_type *out)
 {
 	if (v[0] != (uint8_t)AIR_WIRE_V1_VERSION) {
@@ -86,6 +133,8 @@ static int decode_v1(const uint8_t *v, state_packet_type *out)
 	out->vstate           = (int32_t)ld_u32(&v[6]);
 	out->tx_time_us       = ld_u48(&v[10]);
 	out->has_seq_and_time = true;
+	out->coords = 1u;
+	out->vstate_q = 0;
 	return AIR_WIRE_OK;
 }
 
@@ -105,6 +154,8 @@ static int decode_v0(const uint8_t *v, state_packet_type *out)
 	out->seq              = 0u;
 	out->tx_time_us       = 0u;
 	out->has_seq_and_time = false;
+	out->coords = 1u;
+	out->vstate_q = 0;
 	return AIR_WIRE_OK;
 }
 
@@ -123,7 +174,9 @@ int air_wire_decode_any(const uint8_t *value, size_t len, state_packet_type *out
 	/* Dispatch on length, then verify the version byte. Both formats are fixed
 	 * size, so a length that matches neither is not a truncated packet worth
 	 * guessing at. */
-	if (len == AIR_WIRE_AD_VALUE_SIZE) {
+	if (len == AIR_WIRE_V2_AD_VALUE_SIZE) {
+		rc = decode_v2(&value[2], &tmp);
+	} else if (len == AIR_WIRE_AD_VALUE_SIZE) {
 		rc = decode_v1(&value[2], &tmp);
 	} else if (len == AIR_WIRE_V0_AD_VALUE_SIZE) {
 		rc = decode_v0(&value[2], &tmp);

@@ -70,6 +70,84 @@
 #define AGENT_RADIO_ACTIVE_SCAN 0x01u
 #define AGENT_RADIO_ADVERTISING 0x02u
 
+/**
+ * @brief Which control law this node runs.
+ *
+ * Both laws are compiled in and the manifest chooses, exactly as the Python
+ * side does through its controller registry: `finite_time_adaptive` is the
+ * scalar law the 30-agent campaigns run, `microgrid_*` is the five-DG
+ * benchmark. A board never decides for itself.
+ *
+ * The default is the scalar law and it is value 0, so a configuration
+ * sequence that never mentions a law selects it. That is what keeps an old
+ * host, an old manifest and every collected run working: the microgrid path
+ * is reachable only by a frame that did not exist before.
+ */
+enum control_law {
+    LAW_FINITE_TIME_ADAPTIVE = 0,
+    LAW_MICROGRID_ADAPTIVE   = 1,   /* C_AA when eps = 0, C_DZ otherwise */
+    LAW_MICROGRID_LC         = 2,   /* C_LC0 when terminal, C_LC+ otherwise */
+};
+
+/**
+ * @brief The microgrid benchmark's parameters, all of them.
+ *
+ * Scaled int32 on the wire like everything else, converted once on receipt.
+ * `S1`/`S2` are the emulator's unknown: they reach the plant and nothing
+ * else reads them, which is the same information barrier the Python side
+ * gets by not handing an interface a reference to the plant.
+ *
+ * `b`, `rP` and `rQ` are nonzero only on the pinned node. An unpinned board
+ * is never sent the reference, so "one node knows it" is a property of what
+ * crossed the serial link.
+ */
+struct microgrid_params {
+    /* plant */
+    int32_t kappa;              /* rating share, scaled */
+    int32_t S1, S2;             /* the unknown parameter, emulator only */
+    int32_t p_max, q_max;       /* nameplate, scaled */
+    uint8_t profile;            /* 0 = rep (decaying), 1 = per (persistent) */
+    /* common virtual layer */
+    int32_t T_o;                /* observer deadline, ms */
+    int32_t alpha_0;
+    int32_t delta_o;            /* regularization width, ms */
+    int32_t kappa_o;
+    int32_t xi;
+    int32_t c_0;
+    int32_t b;                  /* pinning coefficient; 0 on all but one */
+    int32_t rP, rQ;             /* the reference; meaningful only where b > 0 */
+    int32_t degree;             /* sum_j a_ij, so the layer can size its sum */
+    /* physical interface */
+    int32_t mu_max;
+    int32_t gamma;              /* adaptive: increment per update */
+    int32_t eps;                /* adaptive: dead zone; 0 selects C_AA */
+    int32_t vartheta_0;
+    int32_t T_c;                /* lc: control deadline, ms */
+    int32_t beta_c;             /* lc */
+    int32_t Phi;                /* lc: adaptation gain */
+    int32_t delta_c;            /* lc: regularization width, ms; 0 means 2h */
+    int32_t adapt_band;         /* lc: hold the update until |sigma|_1 <= this;
+                                   negative means no gate */
+    uint8_t terminal;           /* lc: 1 selects C_LC0 */
+    /* initial condition, PHYSICAL coordinates: the nameplate constrains it
+       there, and the node normalizes by kappa. */
+    int32_t X0_P, X0_Q;
+    int32_t z0_P, z0_Q;
+};
+
+/** @brief Integrator state for the microgrid laws. Two coordinates each. */
+struct microgrid_vars {
+    float xP, xQ;               /* normalized plant state */
+    float zP, zQ;               /* virtual state, the only thing transmitted */
+    float c;                    /* observer gain, local */
+    float wP, wQ;               /* held neighbour sum, frozen for the tick */
+    float vartheta;             /* adaptive interface */
+    float S1, S2;               /* lc interface */
+    uint32_t updates;
+    uint8_t  watchdog;          /* 0 = inside the envelope, else the cause */
+    uint16_t sat_run;           /* consecutive saturated updates */
+};
+
 struct disturbance_params {
     bool    active;
     int32_t sine_amplitude;     /* M        */
@@ -107,7 +185,13 @@ struct agent_params {
     uint32_t seed;              /* per-node, per-run PRNG seed, from CONTROL */
     uint64_t epoch_us;          /* host's epoch reading at trigger, from CONTROL */
 
+    /* Reset to LAW_FINITE_TIME_ADAPTIVE by every NETWORK frame, so each
+     * configuration sequence re-declares it and a stale selection cannot
+     * survive a reconfigure. */
+    enum control_law law;
+
     struct disturbance_params disturbance;
+    struct microgrid_params microgrid;
 };
 
 struct agent_vars {
@@ -123,11 +207,21 @@ struct agent_vars {
     int8_t   neighbor_rssi[AGENT_MAX_NEIGHBORS];
     uint16_t tx_seq;
     int32_t neighbor_vstates[AGENT_MAX_NEIGHBORS];
+    /* Second virtual coordinate, written only by a v2 frame. The scalar law
+     * never reads it and a v1 frame never writes it, so the two families can
+     * share a receive path without either seeing the other's leftovers. */
+    int32_t neighbor_vstates_q[AGENT_MAX_NEIGHBORS];
 
-    /* Full-precision integrator. */
+    /* Full-precision integrator, scalar law. */
     float state_f;
     float vstate_f;
     float vartheta_f;
+
+    /* Integrator for the microgrid laws. A separate struct and not a union:
+     * the two laws never run at once, but aliasing their state would make a
+     * mis-set `law` corrupt silently instead of simply running the wrong
+     * equations. */
+    struct microgrid_vars mg;
 };
 
 struct agent {

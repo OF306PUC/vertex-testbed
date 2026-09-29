@@ -65,3 +65,11 @@ results/
 .DS_Store
 
 docs/papers/
+
+plotting-tools/render/
+
+reviewers-exp/
+
+plotting-tools/
+
+test/

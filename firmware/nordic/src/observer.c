@@ -104,6 +104,9 @@ static bool on_data_parse_after_device_found(struct bt_data *data, void *user_da
 	}
 
 	neighbor_info.vstates[node_index] = pkt->vstate;
+	/* Zero from a v1 or v0 sender, which is what an unset cache holds, so a
+	 * scalar-law neighbour cannot inject a stale Q. */
+	neighbor_info.vstates_q[node_index] = pkt->vstate_q;
 	neighbor_info.enabled[node_index] = pkt->enabled;
 	neighbor_info.seq[node_index]     = pkt->seq;
 	neighbor_info.heard |= (1u << (unsigned)node_index);

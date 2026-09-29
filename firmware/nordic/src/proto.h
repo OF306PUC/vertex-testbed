@@ -48,6 +48,11 @@
 #define PROTO_T_RADIO           0x52u   /* 'R' -- set adv/scan parameters */
 #define PROTO_T_PING            0x50u   /* 'P' */
 #define PROTO_T_STATS_REQ       0x51u   /* 'Q' -- read counters */
+/* 'M' -- the microgrid benchmark's parameters, and the law selector with
+ * them. A board that never receives one runs the scalar law, which is what
+ * keeps every existing host and manifest working: this type did not exist
+ * before, so nothing that predates it can select the second family. */
+#define PROTO_T_MICROGRID       0x4Du
 
 /* board -> Pi */
 #define PROTO_T_ADV_REPORT      0x72u   /* 'r' -- one advertising report */
@@ -63,6 +68,8 @@
 #define PROTO_NETWORK_MIN_LEN   2u      /* enabled + node_id, zero neighbours */
 #define PROTO_NETWORK_MAX_LEN   (PROTO_NETWORK_MIN_LEN + PROTO_MAX_NEIGHBORS)
 #define PROTO_ALGORITHM_LEN     40u     /* 10 x int32 */
+/* law(1) + profile(1) + terminal(1) + 28 x int32 */
+#define PROTO_MICROGRID_LEN     115u
 #define PROTO_DISTURBANCE_LEN   29u     /* 1 x uint8 + 7 x int32 */
 #define PROTO_CONTROL_LEN       11u     /* run flag + uint32 seed + uint48 epoch */
 #define PROTO_RADIO_LEN         9u

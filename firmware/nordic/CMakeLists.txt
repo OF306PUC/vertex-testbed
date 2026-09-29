@@ -10,6 +10,7 @@ target_sources(app PRIVATE
   src/observer.c
   src/agent.c
   src/coordination_task.c
+    src/microgrid_task.c
   src/prng.c
   src/air_wire.c
   src/proto.c

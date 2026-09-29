@@ -63,6 +63,10 @@ class FrameType(IntEnum):
     RADIO = 0x52            # 'R'
     PING = 0x50             # 'P'
     STATS_REQ = 0x51        # 'Q'
+    #: 'M' -- the microgrid parameters, and the law selector with them.
+    #: Sent only when the manifest names a microgrid controller, which is
+    #: the only path to the second control family on a board.
+    MICROGRID = 0x4D
     # peer -> Pi
     TXAT = 0x74             # 't' -- payload reached the controller
     ADV_REPORT = 0x72       # 'r'
@@ -263,6 +267,46 @@ def encode_algorithm(*, dt_ms: int, clock_ms: int, state0: int, vstate0: int,
                          "nonzero disagreement contribute the same amount")
     return struct.pack("<10i", dt_ms, clock_ms, state0, vstate0, vartheta0,
                        counter0, gain_ij, delta, eta, alpha)
+
+
+#: Field order of the MICROGRID payload, after the three leading bytes.
+#: Must match `apply_microgrid` in firmware/nordic/src/agent.c, which
+#: test/common/check_proto_layout.py holds it to.
+MICROGRID_FIELDS = ['kappa', 'S1', 'S2', 'p_max', 'q_max', 'T_o', 'alpha_0', 'delta_o', 'kappa_o', 'xi', 'c_0', 'b', 'rP', 'rQ', 'degree', 'mu_max', 'gamma', 'eps', 'vartheta_0', 'T_c', 'beta_c', 'Phi', 'delta_c', 'adapt_band', 'X0_P', 'X0_Q', 'z0_P', 'z0_Q']
+
+#: Law selector values, matching `enum control_law` in agent.h. The scalar
+#: law is deliberately NOT encodable: it is what a board runs when this frame
+#: never arrives, and offering it here would give two ways to say one thing.
+LAW_MICROGRID_ADAPTIVE = 1
+LAW_MICROGRID_LC = 2
+
+
+def encode_microgrid(*, law: int, profile: int, terminal: bool,
+                     **fields: int) -> bytes:
+    """The microgrid block, scaled ints, in the board's field order.
+
+    Every value is already quantized by the caller: this is the wire, and
+    the scaling boundary is `vertex.numeric`, not here.
+    """
+    if law not in (LAW_MICROGRID_ADAPTIVE, LAW_MICROGRID_LC):
+        raise ProtoError(
+            f"law must select a microgrid family, got {law}; the scalar law "
+            "is what a board runs when no MICROGRID frame arrives")
+    missing = [f for f in MICROGRID_FIELDS if f not in fields]
+    if missing:
+        raise ProtoError(f"MICROGRID is missing {missing}")
+    extra = [k for k in fields if k not in MICROGRID_FIELDS]
+    if extra:
+        raise ProtoError(f"MICROGRID does not carry {extra}")
+    if fields["kappa"] <= 0:
+        raise ProtoError("kappa must be > 0; the node divides by it")
+    if fields["b"] == 0 and (fields["rP"] or fields["rQ"]):
+        raise ProtoError(
+            "an unpinned node was given the reference; b = 0 means the node "
+            "does not know it and must reach it through the graph")
+    return (bytes([int(law), int(profile), 1 if terminal else 0])
+            + struct.pack(f"<{len(MICROGRID_FIELDS)}i",
+                          *(int(fields[f]) for f in MICROGRID_FIELDS)))
 
 
 def encode_disturbance(*, active: bool, sine_amplitude: int, frequency: int,

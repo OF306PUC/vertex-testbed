@@ -33,12 +33,23 @@
 
 #define AIR_WIRE_V1_VERSION             1u
 #define AIR_WIRE_V1_PAYLOAD_SIZE        16u
+/* v2: the same header without the reserved byte, then two int32 coordinates.
+ * 5 + 8 + 6 = 19. Carried by the microgrid family, whose virtual state has
+ * two components; the version follows from how many there are, so a frame
+ * cannot disagree with its own contents. */
+#define AIR_WIRE_V2_VERSION             2u
+#define AIR_WIRE_V2_PAYLOAD_SIZE        19u
 #define AIR_WIRE_V1_FLAG_ENABLED        0x01u
 #define AIR_WIRE_V1_FLAG_DISTURBANCE    0x02u
 
 /** Company id (2) + v1 payload (16). The AD element's value, what `bt_data_parse`
  *  hands back as `data->data` / `data->data_len`. */
 #define AIR_WIRE_AD_VALUE_SIZE          (2u + AIR_WIRE_V1_PAYLOAD_SIZE)
+#define AIR_WIRE_V2_AD_VALUE_SIZE       (2u + AIR_WIRE_V2_PAYLOAD_SIZE)
+/* The larger of the two, for a buffer that must hold either. 23 of the 31 AD
+ * bytes, with the Complete Local Name already gone -- nothing read it and
+ * every receiver filters on the company id. */
+#define AIR_WIRE_AD_VALUE_MAX           AIR_WIRE_V2_AD_VALUE_SIZE
 
 /* v0: the 6-byte payload this firmware used to transmit. Decode only. */
 #define AIR_WIRE_V0_PAYLOAD_SIZE        6u
@@ -57,7 +68,11 @@ typedef struct {
 	bool     enabled;
 	bool     disturbance_on;
 	uint16_t seq;
-	int32_t  vstate;            /* scaled by 1e6 */
+	int32_t  vstate;            /* scaled by 1e6; the P coordinate on v2 */
+	int32_t  vstate_q;          /* Q coordinate, v2 only; 0 on v1 and v0 */
+	/* 1 for v1 and v0, 2 for v2. The encoder picks the frame from this and
+	 * the decoder sets it, so neither side has to be told separately. */
+	uint8_t  coords;
 	uint64_t tx_time_us;        /* experiment epoch; uint48 on the wire */
 	/** Set by the decoder: false when the packet was v0, which carries no
 	 *  sequence number and no timestamp. */
@@ -70,6 +85,18 @@ typedef struct {
  * @return AIR_WIRE_AD_VALUE_SIZE, or AIR_WIRE_ERR_LEN if @p cap is too small.
  */
 int air_wire_encode_v1(const state_packet_type *p, uint8_t *out, size_t cap);
+
+/**
+ * @brief Encode a v2 AD element value: company id, then two coordinates.
+ *
+ * @return AIR_WIRE_V2_AD_VALUE_SIZE, or AIR_WIRE_ERR_LEN if @p cap is small.
+ */
+int air_wire_encode_v2(const state_packet_type *p, uint8_t *out, size_t cap);
+
+/**
+ * @brief Encode whichever frame @p p needs, from its coordinate count.
+ */
+int air_wire_encode(const state_packet_type *p, uint8_t *out, size_t cap);
 
 /**
  * @brief Decode an AD element value, v1 or v0.
