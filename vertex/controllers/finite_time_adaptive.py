@@ -19,6 +19,12 @@ class FiniteTimeAdaptiveController(Controller):
     """Finite-time coordination with an adaptive gain."""
 
     name = "finite_time_adaptive"
+    dim = 1                     # one scalar state per agent
+    coords = ()
+
+    @classmethod
+    def channels(cls) -> tuple[str, ...]:
+        return ("vartheta",)
 
     def __init__(
         self,
@@ -64,8 +70,8 @@ class FiniteTimeAdaptiveController(Controller):
 
     # introspection: ------------------------------------------------------------
     @property
-    def vstate(self) -> float:
-        return self._vstate
+    def vstate(self) -> tuple[float]:
+        return (self._vstate,)
 
     @property
     def state(self) -> float:
@@ -110,7 +116,7 @@ class FiniteTimeAdaptiveController(Controller):
 
     def _emit(self) -> ControllerOutput:
         self._sanitize()
-        return ControllerOutput(self._state, self._vstate, self._vartheta)
+        return ControllerOutput((self._state,), (self._vstate,), (self._vartheta,))
 
     # the control law: -----------------------------------------------------------
     def step(

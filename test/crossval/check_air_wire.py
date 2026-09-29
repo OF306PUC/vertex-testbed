@@ -100,7 +100,8 @@ def main() -> int:
             continue
         got = (pkt.node_id, pkt.enabled, pkt.disturbance_on, pkt.seq,
                pkt.vstate, pkt.tx_time_us)
-        want = (node, en, dist, seq, vstate, tx)
+        # v1 carries one coordinate, so the decoded vstate is a one-tuple.
+        want = (node, en, dist, seq, (vstate,), tx)
         ok = got == want
         print(f"  {'ok  ' if ok else 'FAIL'} fw->host  {raw.hex()}")
         if not ok:

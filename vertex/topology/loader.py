@@ -20,6 +20,10 @@ __all__ = ["IC_RANGES", "load_manifest", "load_manifest_file", "node_seed",
            "NodeRuntime"]
 
 #: Initial-condition band per agent type, in engineering units.
+#:
+#: Unused by the microgrid family, whose initial conditions are declared per
+#: node in the manifest because the benchmark fixes them and the generator
+#: nameplate constrains them.
 IC_RANGES: dict[AgentType, tuple[float, float]] = {
     AgentType.BLE: (0.0, 10.0),
     AgentType.WIFI: (10.0, 20.0),
@@ -72,6 +76,49 @@ class NodeRuntime:
                 f"x0={self.ics['state']:.6f}, z0={self.ics['vstate']:.6f})")
 
 
+def microgrid_blocks(manifest: ExperimentManifest, node: NodeSpec) -> dict:
+    """The three parameter blocks for one microgrid agent.
+
+    The fleet-wide settings come from ``controller.microgrid``, the emulator
+    data from ``node.plant``, and the pin from ``coordination``. The
+    reference is put in **only** for a pinned agent: an unpinned one does not
+    receive the field at all, so "DG 1 alone knows it" is a property of what
+    crosses the control plane rather than a convention inside the controller.
+    """
+    from ..controllers.interface_adaptive import AdaptiveParams
+    from ..controllers.interface_lc import LCParams
+    from ..controllers.plant import PlantParams
+    from ..controllers.virtual import VirtualParams
+
+    m = manifest.controller.microgrid
+    if node.plant is None:
+        raise ValueError(
+            f"node {node.id} has no `plant` block but the manifest selects "
+            f"{manifest.controller.name!r}, which emulates a generator")
+    np_ = node.plant
+    coord = manifest.coordination
+    b = float(coord.pinned.get(node.id, 0.0)) if coord else 0.0
+    ref = coord.reference if (coord and b > 0.0) else (0.0, 0.0)
+
+    plant = PlantParams(kappa=np_.kappa, S1=np_.S[0], S2=np_.S[1],
+                        profile=m.profile, p_max=m.p_max, q_max=m.q_max)
+    virtual = VirtualParams(T_o=m.T_o, alpha_0=m.alpha_0, delta_o=m.delta_o,
+                            kappa_o=m.kappa_o, xi=m.xi, c_0=m.c_0,
+                            b=b, rP=ref[0], rQ=ref[1])
+    if m.interface == "adaptive":
+        iface = AdaptiveParams(gamma=m.gamma, eps=m.eps_for(node.id),
+                               vartheta0=m.vartheta0, mu_max=m.mu_max)
+    else:
+        iface = LCParams(kappa=np_.kappa, profile=m.profile, T_c=m.T_c,
+                         beta_c=m.beta_c, Phi=m.Phi, terminal=m.terminal,
+                         mu_max=m.mu_max, p_max=m.p_max, q_max=m.q_max,
+                         adapt_band=m.adapt_band)
+    return {"plant": plant, "virtual": virtual, "interface": iface,
+            "degree": len(node.neighbors),
+            "state0_P": np_.X0[0], "state0_Q": np_.X0[1],
+            "vstate0_P": np_.z0[0], "vstate0_Q": np_.z0[1]}
+
+
 def controller_params_for(
     manifest: ExperimentManifest, node: NodeSpec, run_index: int = 0
 ) -> ControllerParams:
@@ -79,6 +126,11 @@ def controller_params_for(
     ics = initial_conditions(node, manifest.seed, run_index)
     c = manifest.controller
     d = c.disturbance
+    if c.microgrid is not None:
+        # The microgrid family reads its own blocks and ignores the scalar
+        # gains, so they are left at their defaults rather than filled with
+        # values that would look meaningful and be unused.
+        return ControllerParams(dt_s=c.dt_s, **microgrid_blocks(manifest, node))
     return ControllerParams(
         dt_s=c.dt_s,
         state=ics["state"], vstate=ics["vstate"], vartheta=ics["vartheta"],

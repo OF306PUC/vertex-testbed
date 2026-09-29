@@ -467,6 +467,89 @@ BAND_ORDER = (list(range(1, 11))       # ble     1..10
               + list(range(26, 31)))   # bridge 26..30
 
 
+# ── the microgrid benchmark ────────────────────────────────────────────────
+#: Five DGs on an undirected ring, pinned at DG 1. kappa_i = i/15 and
+#: S_i = [i, i] come from the benchmark; the initial conditions are its
+#: non-proportional set, which is the one that actually tests coordination
+#: rather than reference tracking.
+DG5_KAPPA = {i: i / 15.0 for i in range(1, 6)}
+DG5_S = {i: [float(i), float(i)] for i in range(1, 6)}
+DG5_X0 = {1: [5.0, 1.0], 2: [2.0, 5.0], 3: [6.0, 3.0],
+          4: [1.0, 7.0], 5: [4.0, 2.0]}
+DG5_Z0 = {i: [float(i), 6.0 - i] for i in range(1, 6)}
+
+#: Two node-type assignments. `mixed` is forced: a `ble` agent has only its
+#: radio and a `wifi` agent only a socket, so on a five-ring with 2 + 2 + 1
+#: the wifi node must sit between the two bridges and the two ble nodes
+#: adjacent. DG 1 carries the reference and must therefore be a bridge, which
+#: can talk to both.
+#:
+#: `mixed` needs the firmware: a `ble` agent's law runs on the nRF, in
+#: float32, which is the heterogeneity the platform exists to measure and not
+#: an implementation detail to route around. Until the microgrid family
+#: exists in C, this manifest validates and cannot be run.
+#:
+#: `bridge5` gives every node both radios and the law on the Pi. It is the
+#: control: same graph, same law, every link carried twice, and it needs no
+#: firmware at all.
+DG5_TOPOLOGIES = {
+    "mixed": {1: "bridge", 2: "wifi", 3: "bridge", 4: "ble", 5: "ble"},
+    "bridge5": {i: "bridge" for i in range(1, 6)},
+}
+
+#: Calibrated on the candidate operating point and then locked, per
+#: eq:epsilon_calibration. Per agent because the rule sizes each threshold
+#: from that agent's own measured implementation error.
+DG5_EPS = {1: 0.09376, 2: 0.09600, 3: 0.09101, 4: 0.09250, 5: 0.09781}
+
+
+def dg5(topology: str, *, h: float = 0.025, h_v: float = 0.125) -> dict:
+    """One microgrid manifest, configured for the deliverable arm C_DZ.
+
+    The other three arms differ in one field each -- `eps = 0` is C_AA,
+    `interface: lc` with `terminal` true or false is C_LC0 or C_LC+ -- and the
+    hub overrides that per run rather than this emitting four near-identical
+    files that could drift apart.
+
+    Three values here are declared modifications, not the document's:
+    `alpha_0` (the source derives 0.1, which misses the calibration band),
+    `Phi` (3e-3 leaves the estimate inert) and the rates. PARAMS.md says why.
+    """
+    types = DG5_TOPOLOGIES[topology]
+    nodes = []
+    for i in range(1, 6):
+        nodes.append({
+            "id": i, "ip": HOSTS[i - 1], "type": types[i],
+            "publish_period_s": h_v,
+            "plant": {"kappa": DG5_KAPPA[i], "S": DG5_S[i],
+                      "X0": DG5_X0[i], "z0": DG5_Z0[i]},
+        })
+    return {
+        "name": f"dg5-{topology}",
+        "description": (
+            f"5-DG microgrid benchmark on an undirected ring, pinned at DG 1. "
+            f"{topology}. h = {h * 1e3:g} ms, h_v = {h_v * 1e3:g} ms. "
+            f"Configured for C_DZ; the hub selects the other arms."),
+        "seed": 20260929,
+        "nodes": nodes,
+        "structure": {"generator": "ring",
+                      "params": {"k": 1, "ids": list(range(1, 6))}},
+        "coordination": {"reference": [20.0, 25.0], "pinned": {1: 1.0}},
+        "radio": radio_dithered(h_v),
+        "controller": {
+            "name": "microgrid_adaptive", "dt_s": h,
+            "microgrid": {
+                "interface": "adaptive",
+                "profile": "per", "p_max": 10.0, "q_max": 12.0,
+                "T_o": 30.0, "T_c": 40.0,
+                "alpha_0": 1.0, "delta_o": h_v,
+                "mu_max": 10.0, "gamma": 0.0025, "eps": DG5_EPS,
+                "Phi": 3.0, "terminal": True,
+            },
+        },
+    }
+
+
 def manifests() -> dict[str, dict]:
     """Every manifest that the declared hosts can actually accommodate.
 
@@ -475,6 +558,12 @@ def manifests() -> dict[str, dict]:
     should still get its two-host manifests written.
     """
     out: dict[str, dict] = {}
+    if len(HOSTS) >= 5:
+        for topo in DG5_TOPOLOGIES:
+            out[f"dg5-{topo}"] = dg5(topo)
+    else:
+        print(f"skip     dg5-*                  needs >=5 hosts, "
+              f"{len(HOSTS)} declared")
     if len(HOSTS) < 2:
         # Every edge in every manifest must cross hosts -- an intra-host link
         # never reaches the radio -- so one host can build nothing at all.

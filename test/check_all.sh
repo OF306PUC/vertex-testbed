@@ -37,8 +37,22 @@ run "serial layout: loopback b"        python3 test/common/check_proto_layout.py
 # Does the firmware's on-air struct match the host's v0 decoder?
 run "on-air v1 codec"                 python3 test/crossval/check_air_wire.py
 
+# Did widening ControllerOutput for the microgrid family move a single bit of
+# the scalar law? 596 collected runs say it must not.
+run "scalar law unchanged"             python3 test/common/check_scalar_law_unchanged.py
+
 # Are the C and Python control laws the same dynamical system?
 run "control law C vs Python"          python3 test/crossval/compare.py
+
+# Is the microgrid emulator in vertex/ the same dynamical system as the one
+# every Phase 1 result was measured with? Gate G2's first piece.
+run "plant vs oracle"                  python3 test/oracle/check_plant.py
+run "virtual layer vs oracle"          python3 test/oracle/check_virtual.py
+run "interfaces vs oracle"             python3 test/oracle/check_interfaces.py
+run "fleet vs oracle"                  python3 test/oracle/check_fleet.py
+# Gate G2: the same fleet through the production transport, codec, neighbour
+# table and periodic loops, under a virtual clock.
+run "gate G2: fleet through the wire" python3 test/oracle/check_g2.py
 
 # Does the BLE transport behave against a fake controller?
 run "ble transport"                    python3 test/transports/check_ble.py

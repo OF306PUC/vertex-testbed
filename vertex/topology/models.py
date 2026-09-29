@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import ipaddress
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import (BaseModel, ConfigDict, Field, ValidationInfo, field_validator,
                       model_validator)
@@ -51,6 +51,106 @@ class DisturbanceSpec(BaseModel):
     )
 
 
+class MicrogridSpec(BaseModel):
+    """Fleet-wide settings for the microgrid benchmark's controllers.
+
+    Everything here is identical across agents; what differs per agent is in
+    :class:`NodePlantSpec` and in `coordination`. Splitting them that way is
+    what makes a typo visible: a gain that was meant to be common cannot end
+    up different on one node, because there is only one place to write it.
+
+    Declared modifications against the source are named as such in the field
+    descriptions, so a reader of the manifest can see which numbers are the
+    document's and which are ours.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: Which physical interface. `adaptive` is C_AA when eps = 0 and C_DZ when
+    #: it is positive; `lc` is C_LC0 with the terminal policy and C_LC+ without.
+    interface: Literal["adaptive", "lc"] = "adaptive"
+
+    # --- the plant, common part ---------------------------------------------
+    profile: Literal["rep", "per"] = "per"
+    p_max: float = Field(default=10.0, gt=0, description="kW")
+    q_max: float = Field(default=12.0, gt=0, description="kvar")
+
+    # --- the common virtual layer -------------------------------------------
+    T_o: float = Field(default=30.0, gt=0, description="observer deadline")
+    alpha_0: float = Field(
+        default=1.0, gt=0,
+        description="DECLARED MODIFICATION: the source derives 0.1 from "
+                    "1/(a_o T_o); at that value the observer misses the "
+                    "calibration band")
+    delta_o: float = Field(
+        default=0.125, gt=0,
+        description="regularization width; the document ties it to h_v")
+    kappa_o: float = 1e-3
+    xi: float = 0.025
+    c_0: float = 0.1
+
+    # --- the physical interface ---------------------------------------------
+    mu_max: float = Field(default=10.0, gt=0)
+    #: adaptive only. An increment per update, not a rate: gamma = h gamma_ct.
+    gamma: float = Field(default=0.0025, ge=0)
+    #: Dead-zone threshold. A single number applies to every agent; a
+    #: mapping gives one per agent, which is what eq:epsilon_calibration
+    #: produces, since it sizes each threshold from that agent's own measured
+    #: implementation error. 0 everywhere selects C_AA.
+    eps: float | dict[int, float] = Field(default=0.0)
+
+    @field_validator("eps")
+    @classmethod
+    def _eps_nonnegative(cls, v):
+        bad = ([v] if isinstance(v, (int, float)) and v < 0
+               else sorted(k for k, x in v.items() if x < 0)
+               if isinstance(v, dict) else [])
+        if bad:
+            raise ValueError(f"dead-zone thresholds must be >= 0, got {bad}")
+        return v
+
+    def eps_for(self, node_id: int) -> float:
+        """This agent's threshold, from the scalar or the per-agent mapping."""
+        if isinstance(self.eps, dict):
+            return float(self.eps.get(node_id, 0.0))
+        return float(self.eps)
+    vartheta0: float = 0.0
+    #: lc only.
+    T_c: float = Field(default=40.0, gt=0, description="control deadline")
+    beta_c: float = Field(default=2.0, gt=0)
+    Phi: float = Field(
+        default=3e-3,
+        description="adaptation gain. At the source's 3e-3 the estimate is "
+                    "inert; raising it is a DECLARED MODIFICATION")
+    terminal: bool = Field(
+        default=True,
+        description="True selects C_LC0, which zeroes the command AND freezes "
+                    "S_hat after T_c; False selects C_LC+")
+    adapt_band: float | None = Field(
+        default=None,
+        description="DECLARED MODIFICATION: hold the parameter update until "
+                    "||sigma||_1 falls below this, so the transient deposits "
+                    "nothing. None is the document's behaviour")
+
+
+class NodePlantSpec(BaseModel):
+    """One generator's emulator data.
+
+    ``S`` is the unknown the LC interface estimates and the adaptive ones
+    never see. It is here because the emulator needs it and nothing else does.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kappa: float = Field(gt=0, description="rating share; sum over agents = 1")
+    S: tuple[float, float] = Field(description="the unknown parameter")
+    #: Initial condition in PHYSICAL coordinates, which is where the nameplate
+    #: constrains it. The controller normalizes by kappa.
+    X0: tuple[float, float] = (0.0, 0.0)
+    #: Initial virtual estimate, in the normalized coordinates z lives in.
+    z0: tuple[float, float] = (0.0, 0.0)
+
+
 class ControllerSpec(BaseModel):
     """Controller selection and gains, in engineering units."""
 
@@ -67,6 +167,9 @@ class ControllerSpec(BaseModel):
                          description="Sign-power exponent")
     delta: float = Field(default=0.01, description="Adaptation dead-band")
     disturbance: DisturbanceSpec = DisturbanceSpec()
+    #: Present only for the microgrid benchmark's controllers, which ignore
+    #: the flat gains above and read this instead.
+    microgrid: MicrogridSpec | None = None
 
     @property
     def eta_well_below_gain(self) -> bool:
@@ -97,6 +200,8 @@ class NodeSpec(BaseModel):
         description="Ids this agent reads state FROM. Directed: listing j here "
                     "means j influences us, not the reverse.",
     )
+    #: Emulator data, for the microgrid benchmark only.
+    plant: NodePlantSpec | None = None
 
     @field_validator("ip")
     @classmethod
@@ -251,6 +356,43 @@ class StructureSpec(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
 
 
+class CoordinationSpec(BaseModel):
+    """The exogenous reference and which agents can see it.
+
+    Present only for the microgrid benchmark; the scalar coordination law has
+    no exogenous reference and omits this block entirely.
+
+    The two fields live together because neither means anything alone. The
+    reference is declared **once**, not per node: a per-node field lets two
+    agents disagree by a typo, and a fleet that agrees on the wrong value
+    produces a run that looks correct and measures nothing.
+
+    Which agents see it is the other half. Only a pinned agent is *sent* the
+    reference at all, so "DG 1 alone receives it" is a property of what
+    crosses the control plane, not a convention inside the controller.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: The setpoint, in the same coordinates the controller works in. Two
+    #: components for the microgrid benchmark: kW and kvar.
+    reference: tuple[float, float]
+    #: Agent id -> pinning coefficient b_i. Absent means b_i = 0, which means
+    #: that agent does not know the reference and must reach it through the
+    #: graph.
+    pinned: dict[int, float] = Field(default_factory=dict)
+
+    @field_validator("pinned")
+    @classmethod
+    def _positive_weights(cls, v: dict[int, float]) -> dict[int, float]:
+        bad = sorted(k for k, w in v.items() if w <= 0)
+        if bad:
+            raise ValueError(
+                f"pinning coefficients must be > 0, got zero or negative at "
+                f"{bad}; omit an agent instead of pinning it with weight 0")
+        return v
+
+
 class ScheduledEvent(BaseModel):
     """A change applied to a running fleet at a fixed offset from the trigger.
 
@@ -273,10 +415,23 @@ class ScheduledEvent(BaseModel):
     #: Fields to override on those nodes. `enabled` is the one this exists for.
     set: dict[str, Any] = Field(default_factory=dict)
 
+    #: Fields an event may never touch. The reference is constant by
+    #: assumption: `rdot = 0` is what lets the observer drop its
+    #: reference-derivative estimator exactly, and a reference that moves
+    #: mid-run brings that estimator, its deadline and its regularizer back.
+    FROZEN: ClassVar[tuple[str, ...]] = ("reference", "pinned",
+                                         "coordination")
+
     @model_validator(mode="after")
     def _has_changes(self) -> "ScheduledEvent":
         if not self.set:
             raise ValueError("a scheduled event with no `set` changes nothing")
+        frozen = sorted(set(self.set) & set(self.FROZEN))
+        if frozen:
+            raise ValueError(
+                f"event at {self.at_s} s changes {frozen}, which must stay "
+                "constant: the observer's derivative estimator was removed on "
+                "the assumption that the reference does not move")
         return self
 
 
@@ -291,6 +446,9 @@ class ExperimentManifest(BaseModel):
     controller: ControllerSpec = ControllerSpec()
     radio: RadioSpec = RadioSpec()
     structure: StructureSpec | None = None
+    #: The exogenous reference, for laws that have one. Omitted by the scalar
+    #: coordination law, which agrees on an emergent value instead.
+    coordination: CoordinationSpec | None = None
     #: Mid-run changes, applied in order of `at_s`. Empty for a static run.
     events: list[ScheduledEvent] = Field(default_factory=list)
 

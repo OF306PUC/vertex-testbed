@@ -71,9 +71,17 @@ FORMATS: dict[str, str] = {"binary": ".bin", "csv": ".csv", "jsonl": ".jsonl"}
 _ITEM = 8
 
 
-def record_width(n_neighbors: int) -> int:
-    """Columns per record: t, device_t, x, z, theta, then four per neighbour."""
-    return 5 + 4 * n_neighbors
+def record_width(n_neighbors: int, n_state: int = 3,
+                 n_timing: int = 0) -> int:
+    """Columns per record: t, device_t, the controller's channels, then four
+    per neighbour.
+
+    ``n_state`` is how many channels the controller declares through
+    :meth:`vertex.controllers.base.Controller.column_names`. It is 3 for the
+    scalar law (state, vstate, vartheta), which is the default so an old run
+    is read exactly as before.
+    """
+    return 2 + n_timing + n_state + 4 * n_neighbors
 
 
 def git_hash(cwd: str | Path | None = None) -> str:
@@ -111,6 +119,17 @@ class RunMeta:
     # Which representation the numbers are in. Recorded, never inferred: agents
     # whose law runs on the nRF report scaled int32, agents running it here
     # report engineering units, and both occur in one experiment.
+    #: The controller's own channels, in row order, from
+    #: `Controller.column_names()`. Recorded rather than inferred: a
+    #: controller that grows a channel must not silently shift an existing
+    #: column in a reader that assumed the old layout.
+    state_columns: list[str] = field(
+        default_factory=lambda: ["state", "vstate", "vartheta"])
+    #: Per-update implementation diagnostics, recorded when the controller
+    #: asks for them. Empty for the scalar law, so its rows are unchanged.
+    #: They sit between the timestamps and the controller's channels, where
+    #: they describe the tick rather than the law.
+    timing_columns: list[str] = field(default_factory=list)
     units: str = "engineering"
     log_format: str = "binary"
     columns: list[str] = field(default_factory=list)
@@ -144,7 +163,8 @@ class RunLog:
         self.meta = meta
         self.fmt = fmt
         self.flush_every = flush_every
-        self.ncols = record_width(len(meta.neighbors))
+        self.ncols = record_width(len(meta.neighbors), len(meta.state_columns),
+                                  len(meta.timing_columns))
         self._pack = struct.Struct(f"<{self.ncols}d").pack
         self.meta.log_format = fmt
         self.meta.record_bytes = self.ncols * _ITEM if fmt == "binary" else 0
@@ -155,7 +175,8 @@ class RunLog:
         self._count = 0
 
     def column_names(self) -> list[str]:
-        cols = ["timestamp", "device_timestamp", "state", "vstate", "vartheta"]
+        cols = ["timestamp", "device_timestamp", *self.meta.timing_columns,
+                *self.meta.state_columns]
         for nid in self.meta.neighbors:
             # vstate, arrival flag, the sender's seq, and RSSI. seq makes per-window
             # delivery derivable offline at any window size, and rssi separates
@@ -208,14 +229,13 @@ class RunLog:
     def append(
         self,
         t_s: float,
-        state: float,
-        vstate: float,
-        vartheta: float,
+        channels: Sequence[float],
         neighbor_vstates: Sequence[float] = (),
         neighbor_fresh: Sequence[bool] = (),
         device_t_s: float | None = None,
         neighbor_seq: Sequence[float] = (),
         neighbor_rssi: Sequence[float] = (),
+        timing: Sequence[float] = (),
     ) -> None:
         """Record one control step.
 
@@ -227,12 +247,25 @@ class RunLog:
 
         ``neighbor_fresh`` is 1 when a packet arrived from that neighbour inside its
         freshness window and 0 when the value is a retained stale one.
+
+        ``channels`` are the controller's own values in the order
+        :attr:`RunMeta.state_columns` names, which for the scalar law is
+        ``(state, vstate, vartheta)``.
         """
         if self._fh is None:
             raise RuntimeError("append() before start()")
 
+        if len(timing) != len(self.meta.timing_columns):
+            raise ValueError(
+                f"got {len(timing)} timing values but the run declares "
+                f"{len(self.meta.timing_columns)}: {self.meta.timing_columns}")
+        if len(channels) != len(self.meta.state_columns):
+            raise ValueError(
+                f"controller produced {len(channels)} channels but the run "
+                f"declares {len(self.meta.state_columns)}: "
+                f"{self.meta.state_columns}")
         row = [t_s, t_s if device_t_s is None else device_t_s,
-               state, vstate, vartheta]
+               *timing, *channels]
         n = len(self.meta.neighbors)
         for i in range(n):
             row.append(float(neighbor_vstates[i]) if i < len(neighbor_vstates) else 0.0)

@@ -52,7 +52,9 @@ __all__ = [
 ]
 
 VERSION = 1
+V2_VERSION = 2
 PAYLOAD_SIZE = 16
+V2_PAYLOAD_SIZE = 19
 SCALE_FACTOR = 1_000_000            # shared with the firmware; see vertex.numeric
 COMPANY_ID = 0x0059                 # Nordic Semiconductor, per nordic/src/common.h
 
@@ -67,6 +69,10 @@ _FLAG_DISTURBANCE = 0b0000_0010
 
 _HEAD = struct.Struct("<BBBBHi")    # through vstate: 10 bytes
 _STRUCT_SIZE = _HEAD.size           # 10; tx_time_us is a hand-packed uint48
+
+#: v2: the same header without the reserved byte, then two int32 coordinates.
+#: 5 + 8 + 6 = 19 bytes.
+_HEAD2 = struct.Struct("<BBBHii")
 
 V0_PAYLOAD_SIZE = 6
 V0_FLAG_ENABLED = 0x7F
@@ -88,7 +94,11 @@ class StatePacket:
     """One agent's broadcast state. ``vstate`` is scaled by ``SCALE_FACTOR``."""
 
     node_id: int
-    vstate: int
+    #: The virtual state, one scaled integer per coordinate. Length 1 is the
+    #: scalar law and rides the v1 frame; length 2 is the microgrid benchmark
+    #: and rides v2. The version follows from the length rather than being
+    #: set independently, so a frame cannot disagree with its own contents.
+    vstate: tuple[int, ...]
     seq: int = 0
     tx_time_us: int = 0
     enabled: bool = True
@@ -97,11 +107,22 @@ class StatePacket:
     def __post_init__(self) -> None:
         if not 1 <= self.node_id <= 255:
             raise ValueError(f"node_id must be 1..255, got {self.node_id}")
-        if not _INT32_MIN <= self.vstate <= _INT32_MAX:
+        # A bare int is accepted and normalised, so every v1 call site keeps
+        # working and nothing has to spell a one-tuple.
+        if isinstance(self.vstate, int):
+            object.__setattr__(self, "vstate", (self.vstate,))
+        else:
+            object.__setattr__(self, "vstate", tuple(int(v) for v in self.vstate))
+        if len(self.vstate) not in (1, 2):
             raise ValueError(
-                f"vstate {self.vstate} overflows int32; at SCALE_FACTOR={SCALE_FACTOR} "
-                f"the representable virtual state is +-{_INT32_MAX / SCALE_FACTOR:.4f}"
-            )
+                f"vstate has {len(self.vstate)} coordinates; the wire carries "
+                "1 (v1) or 2 (v2)")
+        for v in self.vstate:
+            if not _INT32_MIN <= v <= _INT32_MAX:
+                raise ValueError(
+                    f"vstate {v} overflows int32; at SCALE_FACTOR={SCALE_FACTOR} "
+                    f"the representable virtual state is "
+                    f"+-{_INT32_MAX / SCALE_FACTOR:.4f}")
         if not 0 <= self.seq <= _MAX_U16:
             raise ValueError(f"seq must fit uint16, got {self.seq}")
         if not 0 <= self.tx_time_us <= _MAX_U48:
@@ -109,28 +130,50 @@ class StatePacket:
 
     # scaling boundary: ---------------------------------------------------------
     @classmethod
-    def from_state(cls, node_id: int, vstate: float, **kw) -> "StatePacket":
-        """Build from a virtual state in engineering units, quantizing for the wire."""
-        return cls(node_id=node_id, vstate=quantize(vstate), **kw)
+    def from_state(cls, node_id: int, vstate, **kw) -> "StatePacket":
+        """Build from a virtual state in engineering units, quantizing for the wire.
+
+        ``vstate`` is a float or a sequence of them; the frame version follows
+        from how many there are.
+        """
+        vs = (vstate,) if isinstance(vstate, (int, float)) else tuple(vstate)
+        return cls(node_id=node_id, vstate=tuple(quantize(v) for v in vs), **kw)
 
     @property
-    def vstate_float(self) -> float:
-        """Virtual state in engineering units."""
-        return dequantize(self.vstate)
+    def version(self) -> int:
+        """Which frame this packet needs: v1 for one coordinate, v2 for two."""
+        return VERSION if len(self.vstate) == 1 else V2_VERSION
+
+    @property
+    def vstate_float(self) -> tuple[float, ...]:
+        """Virtual state in engineering units, one per coordinate."""
+        return tuple(dequantize(v) for v in self.vstate)
 
     # v1 codec: -----------------------------------------------------------------
     def encode(self) -> bytes:
         flags = (_FLAG_ENABLED if self.enabled else 0) | (
             _FLAG_DISTURBANCE if self.disturbance_on else 0
         )
-        out = _HEAD.pack(VERSION, flags, self.node_id, 0, self.seq, self.vstate)
+        if len(self.vstate) == 1:
+            out = _HEAD.pack(VERSION, flags, self.node_id, 0, self.seq,
+                             self.vstate[0])
+        else:
+            # v2 drops the reserved byte rather than growing past it: the
+            # frame is already 19 bytes and the AD element 23 of 31, and a
+            # spare byte nothing reads is not worth three more.
+            out = _HEAD2.pack(V2_VERSION, flags, self.node_id, self.seq,
+                              self.vstate[0], self.vstate[1])
         out += self.tx_time_us.to_bytes(6, "little")
         return out
 
     @classmethod
     def decode(cls, data: bytes) -> "StatePacket":
+        if len(data) == V2_PAYLOAD_SIZE and data[:1] == bytes([V2_VERSION]):
+            return cls._decode_v2(data)
         if len(data) != PAYLOAD_SIZE:
-            raise DecodeError(f"expected {PAYLOAD_SIZE} bytes, got {len(data)}")
+            raise DecodeError(
+                f"expected {PAYLOAD_SIZE} (v1) or {V2_PAYLOAD_SIZE} (v2) "
+                f"bytes, got {len(data)}")
         version, flags, node_id, reserved, seq, vstate = _HEAD.unpack_from(data, 0)
         if version != VERSION:
             raise DecodeError(f"unsupported version {version} (this build speaks v{VERSION})")
@@ -140,9 +183,24 @@ class StatePacket:
             raise DecodeError("node_id 0 is reserved")
         return cls(
             node_id=node_id,
-            vstate=vstate,
+            vstate=(vstate,),
             seq=seq,
             tx_time_us=int.from_bytes(data[10:16], "little"),
+            enabled=bool(flags & _FLAG_ENABLED),
+            disturbance_on=bool(flags & _FLAG_DISTURBANCE),
+        )
+
+
+    @classmethod
+    def _decode_v2(cls, data: bytes) -> "StatePacket":
+        version, flags, node_id, seq, zP, zQ = _HEAD2.unpack_from(data, 0)
+        if version != V2_VERSION:
+            raise DecodeError(f"not a v2 frame: version {version}")
+        if node_id == 0:
+            raise DecodeError("node_id 0 is reserved")
+        return cls(
+            node_id=node_id, vstate=(zP, zQ), seq=seq,
+            tx_time_us=int.from_bytes(data[13:19], "little"),
             enabled=bool(flags & _FLAG_ENABLED),
             disturbance_on=bool(flags & _FLAG_DISTURBANCE),
         )
@@ -191,10 +249,17 @@ def decode_v0(data: bytes) -> StatePacket:
 
 
 def decode_any(data: bytes) -> StatePacket:
-    """Accept v1 or v0, for a fleet mid-reflash.
+    """Accept v2, v1 or v0, so a fleet mid-reflash or mid-migration degrades.
+
+    v2 carries two virtual coordinates and v1 one, so a receiver can tell the
+    two families apart from the frame alone. That matters on a shared medium:
+    a scalar-law fleet and a microgrid fleet can be on the air at once, and
+    neither should mistake the other's packets for its own.
     """
     if not data:
         raise DecodeError("empty payload")
+    if data[0] == V2_VERSION and len(data) == V2_PAYLOAD_SIZE:
+        return StatePacket.decode(data)
     if data[0] == VERSION and len(data) == PAYLOAD_SIZE:
         return StatePacket.decode(data)
     if data[0] in (V0_FLAG_ENABLED, V0_FLAG_DISABLED):

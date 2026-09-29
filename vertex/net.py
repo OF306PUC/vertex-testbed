@@ -22,7 +22,22 @@ _SIOCGIFADDR = 0x8915
 
 
 class AgentType(StrEnum):
-    """Transport an agent uses to reach its neighbours."""
+    """Transport an agent uses to reach its neighbours, and where its law runs.
+
+    The two are bundled, deliberately:
+
+    * ``ble``    the nRF's radio, and the control law runs **on the nRF**.
+      The Pi relays configuration to it and reads its reports back. That the
+      law runs on another processor, in float32, is not incidental: it is the
+      heterogeneity the platform exists to measure.
+    * ``wifi``   a UDP socket, law on the Pi.
+    * ``bridge`` both radios, law on the Pi. The only type that can carry a
+      packet between the BLE and UDP subnets.
+
+    A BLE agent whose law ran on the Pi would be a bridge with one radio
+    switched off, and a mixed-medium experiment built from those would be
+    measuring the medium while claiming to measure the platform.
+    """
 
     BLE = "ble"
     WIFI = "wifi"

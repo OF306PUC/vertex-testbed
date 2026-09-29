@@ -322,6 +322,11 @@ class AgentService:
         a = self.assignment
         data: dict[str, Any] = {
             "node_type": str(self.node_type),
+            # eq:watchdog. Empty when the run stayed inside its envelope. A
+            # trip is a result, not a transport error, so it travels with the
+            # status rather than as a failed call.
+            "watchdog": getattr(getattr(self.agent, "controller", None),
+                                "watchdog_cause", "") or "",
             "node_id": a.node_id if a else None,
             "configured": a is not None,
             "running": self.running,
@@ -425,6 +430,12 @@ class AgentService:
                 manifest_name=a.manifest_name, seed=a.seed, run_index=a.run_index,
                 dt_s=a.dt_s, publish_period_s=a.publish_period_s,
                 neighbors=list(a.neighbors),
+                # The log schema comes from the controller, not from here: it
+                # declares its own channels and whether it wants the tick
+                # timed, and the metadata records the resolved list so a
+                # reader never infers it.
+                state_columns=_controller_columns(a.controller),
+                timing_columns=_timing_columns(a.controller),
                 controller=a.model_dump(),
                 # A relay logs what the nRF reported: scaled int32, unconverted.
                 # `vertex.analysis.units` normalises on read.
@@ -460,8 +471,9 @@ class AgentService:
 
     def _record(self, t_s: float, out, vstates, fresh, seq=(), rssi=()) -> None:
         if self.runlog is not None:
-            self.runlog.append(t_s, out.state, out.vstate, out.vartheta, vstates,
-                               fresh, neighbor_seq=seq, neighbor_rssi=rssi)
+            self.runlog.append(t_s, out.channels(), vstates, fresh,
+                               neighbor_seq=seq, neighbor_rssi=rssi,
+                               timing=getattr(self.agent, "last_timing", ()))
 
     def _record_report(self, report, rx_time_us: int | None = None) -> None:
         """Write one nRF report. State values pass through unscaled.
@@ -474,7 +486,7 @@ class AgentService:
             return
         device_t_s = report.t_us / 1e6
         t_s = device_t_s if rx_time_us is None else rx_time_us / 1e6
-        self.runlog.append(t_s, report.state, report.vstate, report.vartheta,
+        self.runlog.append(t_s, (report.state, report.vstate, report.vartheta),
                            list(report.neighbor_vstates),
                            list(report.neighbor_fresh),
                            device_t_s=device_t_s,
@@ -615,6 +627,20 @@ def _interpreter_provenance() -> dict[str, Any]:
         "executable": _sys.executable,
         "platform": platform.platform(),
     }
+
+
+def _controller_columns(name: str) -> list[str]:
+    """The channel names the named controller declares."""
+    from ..controllers.base import REGISTRY
+    cls = REGISTRY.get(name)
+    return cls.column_names() if cls else ["state", "vstate", "vartheta"]
+
+
+def _timing_columns(name: str) -> list[str]:
+    """``realized_h`` and ``cpu_us`` if the controller asks to be timed."""
+    from ..controllers.base import REGISTRY
+    cls = REGISTRY.get(name)
+    return ["realized_h", "cpu_us"] if cls and cls.logs_timing else []
 
 
 def _utc_now() -> str:

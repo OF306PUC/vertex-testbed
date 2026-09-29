@@ -36,9 +36,44 @@ import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+import random
+from typing import Any, Iterable, Sequence
 
 from ..agent.assignment import AgentAssignment, assignments_for
+
+#: The four arms of the microgrid comparison. Each differs from the manifest's
+#: declared configuration in exactly one field, which is why they are applied
+#: as an override rather than shipped as four near-identical manifests that
+#: could drift apart.
+ARMS = ("LC0", "LC+", "AA", "DZ")
+
+
+def arm_manifest(manifest: ExperimentManifest, arm: str) -> ExperimentManifest:
+    """The manifest with one arm's field changed, and nothing else.
+
+    `C_AA` is `C_DZ` with the dead zone at zero; `C_LC0` is `C_LC+` with the
+    terminal policy on. Everything else -- rates, gains, graph, pin, initial
+    conditions, seed -- is shared by construction, so a difference between two
+    arms of a trial cannot come from anywhere but the field named here.
+    """
+    if arm not in ARMS:
+        raise ValueError(f"unknown arm {arm!r}; known: {ARMS}")
+    if manifest.controller.microgrid is None:
+        raise ValueError(
+            f"arm {arm!r} needs a `controller.microgrid` block; this manifest "
+            f"selects {manifest.controller.name!r}, which has no arms")
+    doc = manifest.model_dump(mode="json", exclude_none=True)
+    mg = doc["controller"]["microgrid"]
+    if arm in ("AA", "DZ"):
+        doc["controller"]["name"] = "microgrid_adaptive"
+        mg["interface"] = "adaptive"
+        if arm == "AA":
+            mg["eps"] = 0.0
+    else:
+        doc["controller"]["name"] = "microgrid_lc"
+        mg["interface"] = "lc"
+        mg["terminal"] = (arm == "LC0")
+    return ExperimentManifest(**doc)
 from ..control import ControlClient, ControlError
 from ..net import CONTROL_PORTS, AgentType
 from ..topology import ExperimentManifest
@@ -370,6 +405,84 @@ class ExperimentRunner:
         (run_dir / "run.json").write_text(
             json.dumps(report.to_dict(), indent=2), encoding="utf-8")
         return report
+
+    # ── paired arms ──────────────────────────────────────────────────────────
+    def set_arm(self, arm: str) -> None:
+        """Point this hub at one arm of the comparison.
+
+        Rebuilds the assignments from a manifest with that arm's one field
+        changed. The run index is untouched, so the initial conditions and
+        every node's disturbance stream stay bit-identical across the arms of
+        a trial: that is what makes the comparison paired.
+        """
+        self.arm = arm
+        self.assignments = assignments_for(arm_manifest(self.manifest, arm),
+                                           self.run_index)
+
+    async def run_arms(self, base_name: str, duration_s: float, *,
+                       arms: Sequence[str] = ARMS, trials: int = 1,
+                       settle_between_s: float = 5.0,
+                       only: Iterable[int] | None = None,
+                       settle_s: float = 0.0, order_seed: int = 0,
+                       before_each=None) -> list[RunReport]:
+        """Paired trials: every arm, in a randomized order, per trial.
+
+        Two things this does that a loop over `run()` would not.
+
+        **The order is randomized within each trial**, per sec:protocol, so
+        the arms do not correlate with anything that drifts over an hour:
+        temperature, battery level, the building's Wi-Fi load. A fixed order
+        would put one arm always first and always coolest.
+
+        **Every arm is reconfigured before it starts**, which is a full reset
+        of the plant, the observer and the adaptive state. `configure` on a
+        stopped agent rebuilds the controller; only `configure` on a *running*
+        one preserves integrators, and that path is for scheduled events.
+
+        What it does not do is hold the medium fixed. On hardware the
+        impairment is the medium and cannot be replayed, so the arms of a
+        trial share a configuration and a seed but not a packet realisation.
+        The per-run delivery record is what makes that legible afterwards.
+        """
+        out: list[RunReport] = []
+        for trial in range(trials):
+            order = list(arms)
+            random.Random(order_seed + trial).shuffle(order)
+            for k, arm in enumerate(order):
+                if out:
+                    await asyncio.sleep(settle_between_s)
+                self.set_arm(arm)
+                epoch = time.time()
+                if before_each is not None:
+                    before_each(epoch)
+                name = f"{base_name}-t{trial}-{arm.replace('+', 'plus')}"
+                report = await self.run(name, duration_s, epoch_unix_s=epoch,
+                                        only=only, settle_s=settle_s)
+                report.notes.append(
+                    f"arm {arm}, trial {trial}, position {k + 1} of {len(order)}")
+                await self._record_watchdog(report, only=only)
+                out.append(report)
+        return out
+
+    async def _record_watchdog(self, report: RunReport,
+                               only: Iterable[int] | None = None) -> None:
+        """Note which agents tripped eq:watchdog, and why.
+
+        A trip is a result and the trial stays in the statistics: sec:protocol
+        counts a watchdog termination as a failure and forbids removing it.
+        Recording the cause per node is what lets a reader tell a diverged run
+        from one that merely saturated for too long.
+        """
+        try:
+            st = await self.status(only)
+        except Exception as exc:                      # pragma: no cover
+            report.notes.append(f"watchdog poll failed: {exc}")
+            return
+        tripped = {nid: d.get("watchdog") for nid, d in st.items()
+                   if isinstance(d, dict) and d.get("watchdog")}
+        if tripped:
+            report.notes.append(
+                "WATCHDOG " + ", ".join(f"{n}:{c}" for n, c in sorted(tripped.items())))
 
     async def run_repeated(self, base_name: str, duration_s: float, *,
                            repeats: int, settle_between_s: float = 5.0,

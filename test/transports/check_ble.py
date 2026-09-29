@@ -171,7 +171,7 @@ async def main() -> int:
         fails.append("report queued behind a command completion was lost")
     else:
         got = received[0].packet
-        if (got.node_id, got.vstate, got.seq) != (2, 21_000_000, 3):
+        if (got.node_id, got.vstate, got.seq) != (2, (21_000_000,), 3):
             fails.append(f"delivered packet is wrong: {got}")
 
     # 4. self-filtering
@@ -193,7 +193,8 @@ async def main() -> int:
         await asyncio.sleep(0)
     if len(received) != before + 1:
         fails.append("a v0 advertisement from an nRF was not delivered")
-    elif (received[-1].packet.node_id, received[-1].packet.vstate) != (5, 19_500_000):
+    elif (received[-1].packet.node_id,
+          received[-1].packet.vstate) != (5, (19_500_000,)):
         fails.append(f"v0 decoded wrong: {received[-1].packet}")
 
     await t.stop()

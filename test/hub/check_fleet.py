@@ -194,7 +194,13 @@ async def main(manifest_path: str) -> int:
             kind,
             data_dir=WORK / f"agent-{node.id}",
             host_ip="127.0.0.1",
-            control_port=CONTROL_PORTS[kind] + 10000 + node.id,  # loopback-safe
+            # Unique per NODE, not per (type, id): on hardware each agent has
+            # its own address so one port per type suffices, but here every
+            # service binds 127.0.0.1 and `base + id` aliases whenever two
+            # node ids differ by the same amount as their type's base. A
+            # bridge at id 1 and a wifi agent at id 2 both landed on 13004,
+            # which is why a mixed-type manifest could not be driven here.
+            control_port=13000 + 10 * node.id + list(AgentType).index(kind),
             link=link,
             transport_factory=(lambda nid, clk, b=bus: LoopbackTransport(b, nid)),
         )

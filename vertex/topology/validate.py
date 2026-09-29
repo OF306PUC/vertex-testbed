@@ -57,6 +57,10 @@ class GraphReport:
     effective_algebraic_connectivity: float | None = None
     effective_components: list[list[int]] = field(default_factory=list)
     by_type: dict[str, int] = field(default_factory=dict)
+    #: Agents that can see the exogenous reference, and the agents no path
+    #: from one of them reaches. Empty on a manifest with no reference.
+    pinned: list[int] = field(default_factory=list)
+    unreachable_from_pin: list[int] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
@@ -91,6 +95,60 @@ class GraphReport:
         for w in self.warnings:
             lines.append(f"  warning {w}")
         return "\n".join(lines)
+
+
+def _check_reference(manifest, g: nx.DiGraph, rep: "GraphReport") -> None:
+    """The exogenous reference, if there is one, must be declared and reachable.
+
+    Three failures are possible and only one of them shows up at runtime as
+    anything but a plausible-looking run:
+
+    * a reference with no pin. Every agent has ``b_i = 0``, so nothing in the
+      fleet knows the setpoint. The graph is connected, every degree is
+      positive, every local guard is satisfied, and the fleet converges to
+      consensus on an arbitrary value. This is the one that cannot be caught
+      anywhere else.
+    * a pin with no reference, which is a pin on nothing.
+    * an agent no path from a pinned agent reaches. Edges run ``j -> i`` when
+      i reads j, so the reference propagates along them; an agent outside the
+      pinned agent's descendants never learns it.
+    """
+    coord = getattr(manifest, "coordination", None)
+    if coord is None:
+        return
+    pins = {int(k) for k in coord.pinned}
+    rep.pinned = sorted(pins)
+    known = {n.id for n in manifest.nodes}
+    unknown = sorted(pins - known)
+    if unknown:
+        rep.errors.append(f"pinned ids {unknown} are not declared nodes")
+        pins -= set(unknown)
+    if not pins:
+        rep.errors.append(
+            "a reference is declared but no agent is pinned, so no agent "
+            "knows it; the fleet would agree on an arbitrary value instead")
+        return
+    disabled = sorted(p for p in pins
+                      if not manifest.by_id[p].enabled)
+    if disabled:
+        rep.errors.append(
+            f"pinned agents {disabled} are disabled, so the reference cannot "
+            "enter the fleet")
+    live = pins - set(disabled)
+    if live:
+        reach = set(live)
+        for p in live:
+            reach |= nx.descendants(g, p)
+        rep.unreachable_from_pin = sorted(set(g.nodes) - reach)
+        if rep.unreachable_from_pin:
+            rep.errors.append(
+                f"no path from a pinned agent reaches {rep.unreachable_from_pin}; "
+                "those agents can never learn the reference")
+    if len(pins) > 1:
+        rep.warnings.append(
+            f"{len(pins)} agents are pinned; the benchmark pins exactly one, "
+            "and more pins change the convergence rate the results are "
+            "compared against")
 
 
 def _algebraic_connectivity(g: nx.DiGraph) -> float | None:
@@ -149,6 +207,8 @@ def check(manifest: ExperimentManifest, *, require_strong: bool | None = None) -
         effective_components=eff_components,
         by_type=by_type,
     )
+
+    _check_reference(manifest, g, rep)
 
     if isolated:
         rep.errors.append(f"nodes {isolated} have no links at all")

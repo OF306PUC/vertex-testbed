@@ -17,6 +17,26 @@ from ..topology.loader import node_seed
 
 __all__ = ["AgentAssignment", "assignment_for", "assignments_for"]
 
+#: Which dataclass rebuilds each block. Keyed by the name the assignment uses.
+_BLOCKS = ("plant", "virtual", "interface")
+
+
+def _microgrid_params(m: dict[str, Any]) -> dict[str, Any]:
+    """Rebuild the controller's parameter blocks from the carried dicts."""
+    from ..controllers.interface_adaptive import AdaptiveParams
+    from ..controllers.interface_lc import LCParams
+    from ..controllers.plant import PlantParams
+    from ..controllers.virtual import VirtualParams
+
+    iface_kind = m.get("interface_kind", "adaptive")
+    build = {"plant": PlantParams, "virtual": VirtualParams,
+             "interface": AdaptiveParams if iface_kind == "adaptive" else LCParams}
+    out = {k: v for k, v in m.items()
+           if k not in _BLOCKS and k != "interface_kind"}
+    for name in _BLOCKS:
+        out[name] = build[name](**m[name])
+    return out
+
 
 class AgentAssignment(BaseModel):
     """One agent's complete configuration for one run.
@@ -52,6 +72,16 @@ class AgentAssignment(BaseModel):
     disturbance: dict[str, Any] = Field(default_factory=dict)
     disturbance_seed: int = 0
 
+    #: The microgrid family's three parameter blocks, plus the per-agent
+    #: scalars, as plain dicts so the whole assignment stays JSON. Empty for
+    #: the scalar law. The dataclasses in `vertex/controllers/` remain the one
+    #: definition of what the fields are; this only carries them.
+    #:
+    #: A node that is not pinned has `virtual.b = 0` and no reference, because
+    #: the loader never puts one in. The value therefore does not cross the
+    #: control plane to an agent that must not know it.
+    microgrid: dict[str, Any] = Field(default_factory=dict)
+
     # radio -- milliseconds; the 0.625 ms conversion happens at the transport.
     radio: dict[str, Any] = Field(default_factory=dict)
 
@@ -61,6 +91,9 @@ class AgentAssignment(BaseModel):
     run_index: int = 0
 
     def to_controller_params(self) -> ControllerParams:
+        if self.microgrid:
+            return ControllerParams(dt_s=self.dt_s,
+                                    **_microgrid_params(self.microgrid))
         d = self.disturbance
         return ControllerParams(
             dt_s=self.dt_s, state=self.state, vstate=self.vstate,
@@ -126,9 +159,24 @@ def assignment_for(
             "sine_phase_s": d.sine_phase_s, "period_samples": d.period_samples,
         },
         disturbance_seed=node_seed(manifest.seed, run_index, node.id, "disturbance"),
+        microgrid=_microgrid_dicts(manifest, node),
         radio=manifest.radio.model_dump(),
         manifest_name=manifest.name, seed=manifest.seed, run_index=run_index,
     )
+
+
+def _microgrid_dicts(manifest: ExperimentManifest, node) -> dict[str, Any]:
+    """The microgrid blocks as JSON, or empty for the scalar law."""
+    if manifest.controller.microgrid is None:
+        return {}
+    from dataclasses import asdict
+    from ..topology.loader import microgrid_blocks
+
+    blocks = microgrid_blocks(manifest, node)
+    out: dict[str, Any] = {"interface_kind": manifest.controller.microgrid.interface}
+    for k, v in blocks.items():
+        out[k] = asdict(v) if k in _BLOCKS else v
+    return out
 
 
 def assignments_for(

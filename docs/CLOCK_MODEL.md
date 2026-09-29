@@ -257,6 +257,85 @@ first two in full.
 
 ---
 
+---
+
+## The tick model: where the packet comes from
+
+Two designs exist in the tree and the difference is not cosmetic. Which one an
+agent uses is declared by its controller, through
+`Controller.publishes_in_tick`, because it is a property of what the
+coordination law can absorb.
+
+### Two independent loops (`publishes_in_tick = False`)
+
+The original design, and what the scalar law has always used. `Agent` runs a
+control loop at `dt_s` and a publish loop at `publish_period_s` as separate
+periodic tasks on clock #2 (or #5 in simulation).
+
+Whenever `publish_period_s` is a whole multiple of `dt_s`, which it always is
+in practice, the two tasks **tie at every publish instant**. Nothing resolves
+that tie in a stable way: under `VirtualClock` the heap breaks ties by
+insertion order, and the insertion order of the two sleeps drifts as the loops
+interleave. Measured on a five-agent run at `dt_s = 25 ms`,
+`publish_period_s = 125 ms`, the number of completed control steps at
+successive publishes was
+
+```
+4, 10, 14, 19        increments of 6, 4, 5
+```
+
+so the packet carries the state from before that tick's update on some
+periods and after it on others, and the effective exchange schedule wobbles
+by one tick. On hardware the two loops are separate tasks too, so the race is
+real there as well; the simulator does not invent it, it only makes it
+deterministic.
+
+The scalar law absorbs this. Its coupling is a sign-power of state
+differences, so a tick of jitter changes the size of a step and not the
+structure of anything.
+
+### Publishing inside the tick (`publishes_in_tick = True`)
+
+What the microgrid family uses. There is no publish loop; the control step
+emits the packet after the commit, every `publish_every = publish_period_s /
+dt_s` ticks. `run_publish_loop` becomes a no-op so no caller has to know.
+
+Three things follow:
+
+* "the current committed virtual state" is unambiguous, which is the phrase
+  `sec:testbed` uses;
+* the exchange schedule is exact, every `publish_every` ticks, with no
+  tie to lose;
+* `publish_period_s` must be a whole multiple of `dt_s`, which the agent
+  now enforces rather than assumes.
+
+Counting from `publish_every - 1` puts the first transmission at wall time
+`publish_period_s`, the same instant the separate loop would have used. There
+is no transmission before that: a node cannot have received anything before
+anyone has sent, and delivering at t = 0 would hand every node its
+neighbours' initial values for free.
+
+### Why the prescribed-time family cannot use the first design
+
+Its gains are functions of absolute run time and its convergence is bounded
+by the **number of exchanges** before the deadline, not by elapsed time or by
+gain: the layer performs one averaging sweep per packet and no more. A
+schedule that gains or loses a tick per period is therefore perturbing the
+one quantity the result depends on. See
+`reviewers-exp/EXCHANGE-LIMIT.md`.
+
+This is also what gate G2 was for. Comparing the fleet against the off-line
+oracle through the production transport diverged by 6% until the tick model
+was fixed; with the packet emitted inside the tick it agrees to `5e-8`, which
+is one least significant bit of the v2 payload.
+
+### A note on what "the exchange period" means
+
+Row 1 of the table above calls `publish_period_s` a period and not a clock.
+With `publishes_in_tick` it is also, exactly, the neighbour-exchange period
+`h_v` of the coordination theory: `h_v = publish_every * dt_s`. With two
+loops it is that only on average.
+
 ## Checklist for a clock-synchronisation experiment
 
 If the clock model is to be run for real:

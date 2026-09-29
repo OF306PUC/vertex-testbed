@@ -35,7 +35,8 @@ class NeighborRecord:
 class NeighborTable:
     """Latest state per neighbour, with freshness accounting."""
 
-    __slots__ = ("neighbor_ids", "max_age_us", "monitor", "_records", "_arrived",
+    __slots__ = ("neighbor_ids", "max_age_us", "dim", "hold", "monitor",
+                 "_records", "_arrived",
                  "_ignored", "_first_seen_us")
 
     def __init__(
@@ -43,12 +44,19 @@ class NeighborTable:
         neighbor_ids: list[int] | tuple[int, ...],
         *,
         max_age_s: float,
+        dim: int = 1,
+        hold: bool = False,
         monitor: LinkMonitor | None = None,
     ) -> None:
         if max_age_s <= 0:
             raise ValueError(f"max_age_s must be > 0, got {max_age_s}")
         self.neighbor_ids = tuple(neighbor_ids)
         self.max_age_us = int(round(max_age_s * 1e6))
+        #: Scaled integers per neighbour in a snapshot: 1 for the scalar law,
+        #: 2 for the microgrid benchmark's [P, Q].
+        self.dim = int(dim)
+        #: Whether a stale neighbour's last value is used rather than dropped.
+        self.hold = bool(hold)
         self.monitor = monitor if monitor is not None else LinkMonitor()
         self._records: dict[int, NeighborRecord] = {}
         #: Neighbours heard since the last `arrivals()` call. Set on receipt,
@@ -84,21 +92,42 @@ class NeighborTable:
     # read side: called from the control loop, synchronously 
     def snapshot(self, now_us: int) -> tuple[list[int], list[bool]]:
         """``(vstates, enabled)`` aligned to ``neighbor_ids``.
+
+        ``vstates`` is flat with :attr:`dim` scaled integers per neighbour, in
+        declared order. A neighbour never heard from contributes zeros, which
+        is what an empty receive cache holds.
+
+        Two staleness policies, because two coordination laws need different
+        things from a silent neighbour:
+
+        * ``hold = False``, the default and what the scalar law has always
+          done: a stale neighbour is reported not-enabled and its term is
+          dropped from the coupling.
+        * ``hold = True``: the last value is used however old it is. A
+          Laplacian disagreement is defined over a fixed edge set, so dropping
+          a term changes the graph and its convergence rate, while holding a
+          stale one only makes the information older. The specification is
+          explicit that a lost packet is held.
+
+        Either way :meth:`freshness` reports the truth, so the log records
+        what actually arrived rather than what the controller chose to use.
         """
         vstates: list[int] = []
         enabled: list[bool] = []
         for nid in self.neighbor_ids:
             rec = self._records.get(nid)
             if rec is None:
-                vstates.append(0)
+                vstates.extend([0] * self.dim)
                 enabled.append(False)
                 continue
             fresh = rec.age_us(now_us) <= self.max_age_us
-            vstates.append(rec.vstate)
-            enabled.append(bool(fresh and rec.sender_enabled))
+            v = rec.vstate
+            v = (v,) if isinstance(v, int) else tuple(v)
+            vstates.extend(list(v[:self.dim]) + [0] * max(0, self.dim - len(v)))
+            usable = rec.sender_enabled and (self.hold or fresh)
+            enabled.append(bool(usable))
         return vstates, enabled
 
-    # introspection:
     def freshness(self, now_us: int) -> list[bool]:
         # Distinct from snapshot()'s `enabled`, which also folds in whether the
         # sender declared itself enabled. Logging needs them separated: a stale
