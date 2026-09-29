@@ -244,6 +244,7 @@ static int apply_control(struct agent *a, const uint8_t *d, uint16_t len,
             a->params.available_neighbors[i] = false;
             a->params.neighbors_enabled[i]   = false;
             a->vars.neighbor_vstates[i]      = 0;
+            a->vars.neighbor_vstates_q[i]    = 0;
             a->vars.neighbor_seq[i]          = 0;
             a->vars.neighbor_rssi[i]         = 0;
         }
@@ -258,7 +259,17 @@ static int apply_control(struct agent *a, const uint8_t *d, uint16_t len,
         a->vars.state_f    = (float)a->params.state_0    * 1e-6f;
         a->vars.vstate_f   = (float)a->params.vstate_0   * 1e-6f;
         a->vars.vartheta_f = (float)a->params.vartheta_0 * 1e-6f;
-        
+
+        /* The trigger is what starts a run, so it is where initial conditions
+         * are latched -- for whichever law is selected. Without this the
+         * lines above put the SCALAR law's state_0 into the mirrors and the
+         * microgrid integrators kept whatever the previous run left them,
+         * so configuring once and triggering twice gave two different runs
+         * and the first reported sample was the wrong law's value. */
+        if (a->params.law != LAW_FINITE_TIME_ADAPTIVE) {
+            microgrid_reset(a);
+        }
+
         prng_seed((uint64_t)a->params.seed, (uint64_t)a->params.node_id);
     } else {
         a->params.running            = false;

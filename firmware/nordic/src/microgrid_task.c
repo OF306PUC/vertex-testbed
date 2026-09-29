@@ -64,6 +64,20 @@ void microgrid_reset(struct agent *a)
     v->updates = 0u;
     v->watchdog = MG_WD_NONE;
     v->sat_run = 0u;
+
+    /* The law's clock. `t = counter * h`, so a run that inherited a counter
+     * would start mid-schedule, past T_o on a second trigger. It is reset
+     * here rather than trusted to ALGORITHM's counter_0, because it belongs
+     * to this law and not to the frame that configures the other one. */
+    a->vars.counter = 0u;
+
+    /* Publish the int32 mirrors now, not at the end of the first step.
+     * report.c sends whatever is in them, so leaving them stale made the
+     * first sample of every run carry the previous law's value -- the sample
+     * at t = 0, which is the initial condition every plot starts from. */
+    a->vars.state    = (int32_t)lrintf(v->xP * SCALE_FACTOR);
+    a->vars.vstate   = (int32_t)lrintf(v->zP * SCALE_FACTOR);
+    a->vars.vartheta = (int32_t)lrintf(v->vartheta * SCALE_FACTOR);
 }
 
 /** alpha(t) = alpha_0 T_o / max(T_o - t, delta_o), continued past T_o. */
