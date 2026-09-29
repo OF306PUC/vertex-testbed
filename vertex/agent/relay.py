@@ -15,7 +15,8 @@ from ..serial import (FrameType, StateReport, build_frame, decode_ack,
                       encode_control, encode_disturbance, encode_network,
                       encode_radio)
 from ..serial.proto import (LAW_MICROGRID_ADAPTIVE, LAW_MICROGRID_LC,
-                            encode_microgrid)
+                            encode_microgrid_iface, encode_microgrid_plant,
+                            encode_microgrid_virtual)
 from .assignment import AgentAssignment
 
 __all__ = ["RelayError", "RelayCounters", "assignment_to_frames",
@@ -80,7 +81,7 @@ def assignment_to_frames(a: AgentAssignment, *,
             samples=int(d.get("period_samples", 1000)))),
     ]
     if a.microgrid:
-        frames.append(microgrid_frame(a))
+        frames.extend(microgrid_frames(a))
     if trigger is not None:
         frames.append((FrameType.CONTROL, encode_control(
             trigger=trigger, seed=a.disturbance_seed & 0xFFFFFFFF,
@@ -88,8 +89,8 @@ def assignment_to_frames(a: AgentAssignment, *,
     return frames
 
 
-def microgrid_frame(a: AgentAssignment) -> tuple[int, bytes]:
-    """The microgrid block, scaled for the wire.
+def microgrid_frames(a: AgentAssignment) -> list[tuple[int, bytes]]:
+    """The microgrid configuration, as its three blocks.
 
     Times go in milliseconds, like `dt` and `clock` in the ALGORITHM frame,
     because the board's clock is in milliseconds and converting once here
@@ -98,37 +99,44 @@ def microgrid_frame(a: AgentAssignment) -> tuple[int, bytes]:
 
     `adapt_band` is negative when there is no gate, which is how the absence
     of a Python `None` crosses a fixed-width int32.
+
+    ORDER MATTERS. MG_IFACE carries `law` and the board refuses it until the
+    other two have arrived, so the board is never running a law whose plant
+    or observer is missing. Returned as a list, in order, for that reason.
     """
     m = a.microgrid
     plant, virt, iface = m["plant"], m["virtual"], m["interface"]
     lc = m["interface_kind"] == "lc"
     band = iface.get("adapt_band") if lc else None
-    return (FrameType.MICROGRID, encode_microgrid(
-        law=LAW_MICROGRID_LC if lc else LAW_MICROGRID_ADAPTIVE,
-        profile=0 if plant["profile"] == "rep" else 1,
-        terminal=bool(iface.get("terminal", False)) if lc else False,
-        kappa=quantize(plant["kappa"]),
-        S1=quantize(plant["S1"]), S2=quantize(plant["S2"]),
-        p_max=quantize(plant["p_max"]), q_max=quantize(plant["q_max"]),
-        T_o=int(round(virt["T_o"] * 1000)),
-        alpha_0=quantize(virt["alpha_0"]),
-        delta_o=int(round(virt["delta_o"] * 1000)),
-        kappa_o=quantize(virt["kappa_o"]), xi=quantize(virt["xi"]),
-        c_0=quantize(virt["c_0"]), b=quantize(virt["b"]),
-        rP=quantize(virt["rP"]), rQ=quantize(virt["rQ"]),
-        degree=int(m["degree"]),
-        mu_max=quantize(iface["mu_max"]),
-        gamma=quantize(iface.get("gamma", 0.0)) if not lc else 0,
-        eps=quantize(iface.get("eps", 0.0)) if not lc else 0,
-        vartheta_0=quantize(iface.get("vartheta0", 0.0)) if not lc else 0,
-        T_c=int(round(iface.get("T_c", 0.0) * 1000)) if lc else 0,
-        beta_c=quantize(iface.get("beta_c", 0.0)) if lc else 0,
-        Phi=quantize(iface.get("Phi", 0.0)) if lc else 0,
-        delta_c=int(round((iface.get("delta_c") or 0.0) * 1000)) if lc else 0,
-        adapt_band=quantize(band) if band is not None else -1,
-        X0_P=quantize(m["state0_P"]), X0_Q=quantize(m["state0_Q"]),
-        z0_P=quantize(m["vstate0_P"]), z0_Q=quantize(m["vstate0_Q"]),
-    ))
+    return [
+        (FrameType.MG_PLANT, encode_microgrid_plant(
+            profile=0 if plant["profile"] == "rep" else 1,
+            kappa=quantize(plant["kappa"]),
+            S1=quantize(plant["S1"]), S2=quantize(plant["S2"]),
+            p_max=quantize(plant["p_max"]), q_max=quantize(plant["q_max"]),
+            X0_P=quantize(m["state0_P"]), X0_Q=quantize(m["state0_Q"]))),
+        (FrameType.MG_VIRTUAL, encode_microgrid_virtual(
+            T_o=int(round(virt["T_o"] * 1000)),
+            alpha_0=quantize(virt["alpha_0"]),
+            delta_o=int(round(virt["delta_o"] * 1000)),
+            kappa_o=quantize(virt["kappa_o"]), xi=quantize(virt["xi"]),
+            c_0=quantize(virt["c_0"]), b=quantize(virt["b"]),
+            rP=quantize(virt["rP"]), rQ=quantize(virt["rQ"]),
+            degree=int(m["degree"]),
+            z0_P=quantize(m["vstate0_P"]), z0_Q=quantize(m["vstate0_Q"]))),
+        (FrameType.MG_IFACE, encode_microgrid_iface(
+            law=LAW_MICROGRID_LC if lc else LAW_MICROGRID_ADAPTIVE,
+            terminal=bool(iface.get("terminal", False)) if lc else False,
+            mu_max=quantize(iface["mu_max"]),
+            gamma=quantize(iface.get("gamma", 0.0)) if not lc else 0,
+            eps=quantize(iface.get("eps", 0.0)) if not lc else 0,
+            vartheta_0=quantize(iface.get("vartheta0", 0.0)) if not lc else 0,
+            T_c=int(round(iface.get("T_c", 0.0) * 1000)) if lc else 0,
+            beta_c=quantize(iface.get("beta_c", 0.0)) if lc else 0,
+            Phi=quantize(iface.get("Phi", 0.0)) if lc else 0,
+            delta_c=int(round((iface.get("delta_c") or 0.0) * 1000)) if lc else 0,
+            adapt_band=quantize(band) if band is not None else -1)),
+    ]
 
 
 def radio_frame(*, adv_interval_ms: float,

@@ -287,11 +287,30 @@ class SerialLink:
         self.counters.unknown_frames += 1
 
     # ── commands ─────────────────────────────────────────────────────────────
+    #: Bytes per write, or 0 for one write per frame.
+    #:
+    #: Measured on an nRF52840-DK over its J-Link VCOM: a frame of 64 bytes
+    #: or fewer is answered and 65 is not, sharply and repeatably. 64 is the
+    #: USB CDC bulk packet size, so a frame spanning two packets is lost --
+    #: not truncated, not corrupt, lost, with no counter on the board moving.
+    #:
+    #: Every frame this platform sent before the microgrid block fitted in one
+    #: packet, which is why it went unnoticed: ALGORITHM, the largest, is 46
+    #: bytes. The limit is directional -- STATS is 93 bytes board-to-host and
+    #: arrives intact.
+    write_chunk: int = 0
+
     def send(self, frame_type: int, payload: bytes = b"") -> None:
         """Fire and forget. No reply is awaited, so failures surface elsewhere."""
         if self._io is None:
             raise LinkError("link is not open")
-        self._io.write(build_frame(frame_type, payload))
+        frame = build_frame(frame_type, payload)
+        if self.write_chunk and len(frame) > self.write_chunk:
+            for i in range(0, len(frame), self.write_chunk):
+                self._io.write(frame[i:i + self.write_chunk])
+                self._io.flush()
+        else:
+            self._io.write(frame)
         self.counters.frames_out += 1
 
     def request(self, frame_type: int, payload: bytes = b"",

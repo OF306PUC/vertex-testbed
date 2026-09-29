@@ -83,6 +83,10 @@
  * host, an old manifest and every collected run working: the microgrid path
  * is reachable only by a frame that did not exist before.
  */
+/** @brief Bits in `agent_params.mg_blocks`. */
+#define MG_BLOCK_PLANT      0x01u
+#define MG_BLOCK_VIRTUAL    0x02u
+
 enum control_law {
     LAW_FINITE_TIME_ADAPTIVE = 0,
     LAW_MICROGRID_ADAPTIVE   = 1,   /* C_AA when eps = 0, C_DZ otherwise */
@@ -189,6 +193,9 @@ struct agent_params {
      * configuration sequence re-declares it and a stale selection cannot
      * survive a reconfigure. */
     enum control_law law;
+    /* Which microgrid blocks have arrived since the last NETWORK frame.
+     * MG_IFACE commits the law and refuses until both others are present. */
+    uint8_t mg_blocks;
 
     struct disturbance_params disturbance;
     struct microgrid_params microgrid;

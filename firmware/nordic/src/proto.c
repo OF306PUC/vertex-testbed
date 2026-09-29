@@ -56,6 +56,11 @@ static uint16_t max_len_for(uint8_t type)
     case PROTO_T_PING:        return PROTO_PING_LEN;
     case PROTO_T_STATS_REQ:   return PROTO_STATS_REQ_LEN;
     case PROTO_T_ADV_TX:      return PROTO_MAX_PAYLOAD;   /* AD bytes, variable */
+#ifdef PROTO_T_MG_PLANT
+    case PROTO_T_MG_PLANT:    return PROTO_MG_PLANT_LEN;
+    case PROTO_T_MG_VIRTUAL:  return PROTO_MG_VIRTUAL_LEN;
+    case PROTO_T_MG_IFACE:    return PROTO_MG_IFACE_LEN;
+#endif
     default:                  return 0xFFFFu;
     }
 }

@@ -77,6 +77,14 @@ void control_on_frame(uint8_t type, const uint8_t *payload, uint16_t len, void *
     case PROTO_T_ALGORITHM:
     case PROTO_T_DISTURBANCE:
     case PROTO_T_CONTROL:
+    /* The microgrid blocks belong here and nowhere else: agent.c owns every
+     * field decoder, and this switch is the only thing that decides which
+     * frames reach it. Leaving the type out made the board answer ERR to a
+     * frame it fully implements -- proto.h defined it and agent.c had the
+     * decoder, but nothing routed one to the other. */
+    case PROTO_T_MG_PLANT:
+    case PROTO_T_MG_VIRTUAL:
+    case PROTO_T_MG_IFACE:
         rc = agent_apply_frame(a, type, payload, len,
                                k_ticks_to_us_floor64(k_uptime_ticks()));
         break;

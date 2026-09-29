@@ -66,7 +66,19 @@ class FrameType(IntEnum):
     #: 'M' -- the microgrid parameters, and the law selector with them.
     #: Sent only when the manifest names a microgrid controller, which is
     #: the only path to the second control family on a board.
-    MICROGRID = 0x4D
+    # The microgrid block travels as three frames, not one. A single frame
+    # held 28 int32 and came to 121 bytes on the wire, and the J-Link VCOM
+    # carries exactly one 64-byte USB CDC packet host-to-board: measured, a
+    # 64-byte frame is answered and a 65-byte one is silently lost. 0x4D is
+    # retired rather than reused, so a stale 115-byte frame is rejected as an
+    # unknown type instead of being half applied.
+    #
+    # The split is along the seams vertex/controllers already has -- plant,
+    # virtual layer, interface -- and not a mechanical part index, so each
+    # frame is a thing rather than a slice.
+    MG_PLANT = 0x47         # 'G'
+    MG_VIRTUAL = 0x56       # 'V'
+    MG_IFACE = 0x49         # 'I'  -- carries `law`, so it commits the set
     # peer -> Pi
     TXAT = 0x74             # 't' -- payload reached the controller
     ADV_REPORT = 0x72       # 'r'
@@ -272,7 +284,13 @@ def encode_algorithm(*, dt_ms: int, clock_ms: int, state0: int, vstate0: int,
 #: Field order of the MICROGRID payload, after the three leading bytes.
 #: Must match `apply_microgrid` in firmware/nordic/src/agent.c, which
 #: test/common/check_proto_layout.py holds it to.
-MICROGRID_FIELDS = ['kappa', 'S1', 'S2', 'p_max', 'q_max', 'T_o', 'alpha_0', 'delta_o', 'kappa_o', 'xi', 'c_0', 'b', 'rP', 'rQ', 'degree', 'mu_max', 'gamma', 'eps', 'vartheta_0', 'T_c', 'beta_c', 'Phi', 'delta_c', 'adapt_band', 'X0_P', 'X0_Q', 'z0_P', 'z0_Q']
+#: The three blocks, in wire order within each frame. Together they are the
+#: same 28 values the single frame carried; apart, each fits a USB packet.
+MG_PLANT_FIELDS = ["kappa", "S1", "S2", "p_max", "q_max", "X0_P", "X0_Q"]
+MG_VIRTUAL_FIELDS = ["T_o", "alpha_0", "delta_o", "kappa_o", "xi", "c_0",
+                     "b", "rP", "rQ", "degree", "z0_P", "z0_Q"]
+MG_IFACE_FIELDS = ["mu_max", "gamma", "eps", "vartheta_0", "T_c", "beta_c",
+                   "Phi", "delta_c", "adapt_band"]
 
 #: Law selector values, matching `enum control_law` in agent.h. The scalar
 #: law is deliberately NOT encodable: it is what a board runs when this frame
@@ -281,32 +299,52 @@ LAW_MICROGRID_ADAPTIVE = 1
 LAW_MICROGRID_LC = 2
 
 
-def encode_microgrid(*, law: int, profile: int, terminal: bool,
-                     **fields: int) -> bytes:
-    """The microgrid block, scaled ints, in the board's field order.
+def _mg_block(name: str, fields: list[str], head: bytes,
+              got: dict[str, int]) -> bytes:
+    missing = [f for f in fields if f not in got]
+    if missing:
+        raise ProtoError(f"{name} is missing {missing}")
+    extra = [k for k in got if k not in fields]
+    if extra:
+        raise ProtoError(f"{name} does not carry {extra}")
+    return head + struct.pack(f"<{len(fields)}i", *(int(got[f]) for f in fields))
 
-    Every value is already quantized by the caller: this is the wire, and
-    the scaling boundary is `vertex.numeric`, not here.
+
+def encode_microgrid_plant(*, profile: int, **fields: int) -> bytes:
+    """The DG and its rating limiter. Send first.
+
+    Every value is already quantized by the caller: this is the wire, and the
+    scaling boundary is `vertex.numeric`, not here.
+    """
+    if fields.get("kappa", 0) <= 0:
+        raise ProtoError("kappa must be > 0; the node divides by it")
+    if fields.get("p_max", 0) <= 0 or fields.get("q_max", 0) <= 0:
+        raise ProtoError("p_max and q_max must be > 0; they size the limiter")
+    return _mg_block("MG_PLANT", MG_PLANT_FIELDS, bytes([int(profile)]), fields)
+
+
+def encode_microgrid_virtual(**fields: int) -> bytes:
+    """The common layer: deadline, observer gains, degree, pin and reference."""
+    if fields.get("b") == 0 and (fields.get("rP") or fields.get("rQ")):
+        raise ProtoError(
+            "an unpinned node was given the reference; b = 0 means the node "
+            "does not know it and must reach it through the graph")
+    return _mg_block("MG_VIRTUAL", MG_VIRTUAL_FIELDS, b"", fields)
+
+
+def encode_microgrid_iface(*, law: int, terminal: bool, **fields: int) -> bytes:
+    """The interface, and the law selector.
+
+    Sent last on purpose. `law` is what makes the board leave the scalar
+    family, and the firmware refuses this frame until the other two have
+    arrived, so a configuration interrupted halfway never becomes a live one.
     """
     if law not in (LAW_MICROGRID_ADAPTIVE, LAW_MICROGRID_LC):
         raise ProtoError(
             f"law must select a microgrid family, got {law}; the scalar law "
-            "is what a board runs when no MICROGRID frame arrives")
-    missing = [f for f in MICROGRID_FIELDS if f not in fields]
-    if missing:
-        raise ProtoError(f"MICROGRID is missing {missing}")
-    extra = [k for k in fields if k not in MICROGRID_FIELDS]
-    if extra:
-        raise ProtoError(f"MICROGRID does not carry {extra}")
-    if fields["kappa"] <= 0:
-        raise ProtoError("kappa must be > 0; the node divides by it")
-    if fields["b"] == 0 and (fields["rP"] or fields["rQ"]):
-        raise ProtoError(
-            "an unpinned node was given the reference; b = 0 means the node "
-            "does not know it and must reach it through the graph")
-    return (bytes([int(law), int(profile), 1 if terminal else 0])
-            + struct.pack(f"<{len(MICROGRID_FIELDS)}i",
-                          *(int(fields[f]) for f in MICROGRID_FIELDS)))
+            "is what a board runs when these frames never arrive")
+    return _mg_block("MG_IFACE", MG_IFACE_FIELDS,
+                     bytes([int(law), 1 if terminal else 0]), fields)
 
 
 def encode_disturbance(*, active: bool, sine_amplitude: int, frequency: int,

@@ -52,7 +52,17 @@
  * them. A board that never receives one runs the scalar law, which is what
  * keeps every existing host and manifest working: this type did not exist
  * before, so nothing that predates it can select the second family. */
-#define PROTO_T_MICROGRID       0x4Du
+/* The microgrid block travels as three frames. One held 28 int32 and came to
+ * 121 bytes on the wire; the J-Link VCOM carries exactly one 64-byte USB CDC
+ * packet host-to-board, measured -- 64 answers, 65 is silently lost. 0x4D is
+ * retired, not reused, so a stale 115-byte frame is an unknown type rather
+ * than a half-applied configuration.
+ *
+ * MG_IFACE carries `law` and is refused until the other two have arrived, so
+ * the board cannot end up running a law it is only half configured for. */
+#define PROTO_T_MG_PLANT        0x47u   /* 'G' */
+#define PROTO_T_MG_VIRTUAL      0x56u   /* 'V' */
+#define PROTO_T_MG_IFACE        0x49u   /* 'I' -- commits the set */
 
 /* board -> Pi */
 #define PROTO_T_ADV_REPORT      0x72u   /* 'r' -- one advertising report */
@@ -69,7 +79,9 @@
 #define PROTO_NETWORK_MAX_LEN   (PROTO_NETWORK_MIN_LEN + PROTO_MAX_NEIGHBORS)
 #define PROTO_ALGORITHM_LEN     40u     /* 10 x int32 */
 /* law(1) + profile(1) + terminal(1) + 28 x int32 */
-#define PROTO_MICROGRID_LEN     115u
+#define PROTO_MG_PLANT_LEN      29u    /* profile + 7 x int32 */
+#define PROTO_MG_VIRTUAL_LEN    48u    /* 12 x int32 */
+#define PROTO_MG_IFACE_LEN      38u    /* law, terminal + 9 x int32 */
 #define PROTO_DISTURBANCE_LEN   29u     /* 1 x uint8 + 7 x int32 */
 #define PROTO_CONTROL_LEN       11u     /* run flag + uint32 seed + uint48 epoch */
 #define PROTO_RADIO_LEN         9u
