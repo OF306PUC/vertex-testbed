@@ -443,6 +443,17 @@ def decode_adv_report(payload: bytes) -> AdvReport:
 #:
 #:   [t_us:8][state:4][vstate:4][vartheta:4][counter:4][n:1]
 #:   then per neighbour: [vstate:4][flags:1]   flags bit0=enabled bit1=fresh
+#:   then, under a microgrid law only: [state_Q:4][vstate_Q:4]
+#:
+#: The tail is appended after the neighbour records so every offset before it
+#: is unchanged, and the two layouts are told apart by length -- the rule
+#: `decode_stats` and the air codec already use. A scalar run's frame is byte
+#: for byte what it always was.
+#:
+#: Only the second coordinate rides, not the whole 19-channel set the Python
+#: controller logs: g, mu, sigma, theta and the estimator states are all
+#: functions of (x, z, t) and the parameters, so they are recoverable offline
+#: and do not need to cross a 40 Hz link.
 STATE_HEADER = struct.Struct("<QiiiiB")
 #: Per-neighbour record: vstate, the SENDER's seq, rssi in dBm, flags.
 #: `seq` is what makes per-link delivery derivable for a link into an nRF -- those
@@ -451,6 +462,9 @@ STATE_HEADER = struct.Struct("<QiiiiB")
 #: by the firmware's observer and dropped at the STATE boundary.
 #: Mirrors STATE_NEIGHBOUR_BYTES in firmware/nordic/src/report.h.
 STATE_NEIGHBOUR = struct.Struct("<iHbB")
+
+#: The microgrid tail: the second coordinate of state and virtual state.
+STATE_TAIL = struct.Struct("<ii")
 
 STATE_FLAG_ENABLED = 0x01
 STATE_FLAG_FRESH = 0x02
@@ -474,6 +488,11 @@ class StateReport:
     neighbor_seq: tuple[int, ...] = ()
     #: Last received signal strength per neighbour, dBm. 0 when never heard.
     neighbor_rssi: tuple[int, ...] = ()
+    #: The second coordinate, present only under a microgrid law. `None`
+    #: means the frame did not carry one, which is not the same as zero:
+    #: the scalar law has no second coordinate at all.
+    state_Q: int | None = None
+    vstate_Q: int | None = None
 
     @property
     def t_s(self) -> float:
@@ -490,6 +509,8 @@ def encode_state(r: StateReport) -> bytes:
         seq = r.neighbor_seq[i] if i < len(r.neighbor_seq) else 0
         rssi = r.neighbor_rssi[i] if i < len(r.neighbor_rssi) else 0
         out += STATE_NEIGHBOUR.pack(r.neighbor_vstates[i], seq, rssi, flags)
+    if r.state_Q is not None or r.vstate_Q is not None:
+        out += STATE_TAIL.pack(r.state_Q or 0, r.vstate_Q or 0)
     return out
 
 
@@ -500,9 +521,11 @@ def decode_state(payload: bytes) -> StateReport:
     t_us, state, vstate, vartheta, counter, n = STATE_HEADER.unpack_from(payload, 0)
 
     want = STATE_HEADER.size + n * STATE_NEIGHBOUR.size
-    if len(payload) != want:
+    tail = len(payload) - want
+    if tail not in (0, STATE_TAIL.size):
         raise ProtoError(
-            f"STATE declares {n} neighbour(s) so should be {want} bytes, "
+            f"STATE declares {n} neighbour(s) so should be {want} bytes, or "
+            f"{want + STATE_TAIL.size} with the microgrid tail; "
             f"got {len(payload)}")
     if n > MAX_NEIGHBORS:
         raise ProtoError(f"STATE declares {n} neighbours, limit is {MAX_NEIGHBORS}")
@@ -517,9 +540,13 @@ def decode_state(payload: bytes) -> StateReport:
         enabled.append(bool(flags & STATE_FLAG_ENABLED))
         fresh.append(bool(flags & STATE_FLAG_FRESH))
 
+    state_Q = vstate_Q = None
+    if tail:
+        state_Q, vstate_Q = STATE_TAIL.unpack_from(payload, want)
+
     return StateReport(t_us, state, vstate, vartheta, counter,
                        tuple(vstates), tuple(enabled), tuple(fresh),
-                       tuple(seqs), tuple(rssis))
+                       tuple(seqs), tuple(rssis), state_Q, vstate_Q)
 
 
 def decode_txat(payload: bytes) -> tuple[int, int]:

@@ -28,7 +28,8 @@ int report_state(const struct agent *a)
     }
 
     uint8_t p[8 + 4 + 4 + 4 + 4 + 1
-              + (AGENT_MAX_NEIGHBORS * STATE_NEIGHBOUR_BYTES)];
+              + (AGENT_MAX_NEIGHBORS * STATE_NEIGHBOUR_BYTES)
+              + STATE_TAIL_BYTES];
     size_t n = 0;
 
     /* vars.time_us is the run start, in MICROSECONDS.*/
@@ -59,6 +60,16 @@ int report_state(const struct agent *a)
             flags |= STATE_FLAG_FRESH;
         }
         p[n++] = flags;
+    }
+
+    /* The second coordinate rides at the END, after the neighbour records,
+     * so the offsets of everything before it are untouched and the two
+     * layouts are told apart by length -- the same rule decode_stats and the
+     * air codec already use. Appended only under a microgrid law, so a
+     * scalar run's frame is byte for byte what it always was. */
+    if (a->params.law != LAW_FINITE_TIME_ADAPTIVE) {
+        proto_st_u32(&p[n], (uint32_t)a->vars.state_q);      n += 4;
+        proto_st_u32(&p[n], (uint32_t)a->vars.vstate_q);     n += 4;
     }
 
     int err = uart_link_send(PROTO_T_STATE, p, (uint16_t)n);

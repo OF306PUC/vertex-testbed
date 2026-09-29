@@ -78,6 +78,8 @@ void microgrid_reset(struct agent *a)
     a->vars.state    = (int32_t)lrintf(v->xP * SCALE_FACTOR);
     a->vars.vstate   = (int32_t)lrintf(v->zP * SCALE_FACTOR);
     a->vars.vartheta = (int32_t)lrintf(v->vartheta * SCALE_FACTOR);
+    a->vars.state_q  = (int32_t)lrintf(v->xQ * SCALE_FACTOR);
+    a->vars.vstate_q = (int32_t)lrintf(v->zQ * SCALE_FACTOR);
 }
 
 /** alpha(t) = alpha_0 T_o / max(T_o - t, delta_o), continued past T_o. */
@@ -252,5 +254,11 @@ void microgrid_step(struct agent *a)
     a->vars.state = (int32_t)lrintf(v->xP * SCALE_FACTOR);
     a->vars.vstate = (int32_t)lrintf(v->zP * SCALE_FACTOR);
     a->vars.vartheta = (int32_t)lrintf(v->vartheta * SCALE_FACTOR);
+    /* The second coordinate. Everything else the law computes -- g, mu,
+     * sigma, theta, the estimator states -- is a function of (x, z, t) and
+     * the parameters, so it is recoverable offline from these four and does
+     * not need to cross the wire at 40 Hz. */
+    a->vars.state_q = (int32_t)lrintf(v->xQ * SCALE_FACTOR);
+    a->vars.vstate_q = (int32_t)lrintf(v->zQ * SCALE_FACTOR);
     a->vars.counter = (a->vars.counter + 1) % a->params.disturbance.samples;
 }

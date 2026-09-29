@@ -213,6 +213,13 @@ struct agent_vars {
     uint16_t neighbor_seq[AGENT_MAX_NEIGHBORS];
     int8_t   neighbor_rssi[AGENT_MAX_NEIGHBORS];
     uint16_t tx_seq;
+    /* Second coordinate of this node's own state, scaled. Written only by
+     * the microgrid laws; the scalar law is one-dimensional and leaves them
+     * zero, which is why the STATE frame carries them only when a microgrid
+     * law is selected. */
+    int32_t state_q;
+    int32_t vstate_q;
+
     int32_t neighbor_vstates[AGENT_MAX_NEIGHBORS];
     /* Second virtual coordinate, written only by a v2 frame. The scalar law
      * never reads it and a v1 frame never writes it, so the two families can

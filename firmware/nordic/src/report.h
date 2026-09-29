@@ -34,6 +34,9 @@
  *  `vertex/serial/proto.py`; test/common/check_proto_layout.py compares them. */
 #define STATE_NEIGHBOUR_BYTES  8u
 
+/** Bytes appended when a microgrid law runs: state_q and vstate_q. */
+#define STATE_TAIL_BYTES       8u
+
 /** @brief Send one STATE frame. Call at the `clock` period while running. */
 int report_state(const struct agent *a);
 

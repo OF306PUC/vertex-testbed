@@ -497,53 +497,32 @@ DG5_TOPOLOGIES = {
     "bridge5": {i: "bridge" for i in range(1, 6)},
 }
 
-#: The two Pis that carry `mixed`: 10.6.5.4 and 10.6.5.5, the boards with an
-#: nRF attached. Not the first two declared, so the pair is named here the way
-#: `n6_pair` is -- an agent's host is a property of the physical bench, and
-#: HOSTS is ordered by address, not by what is plugged into each board.
+#: Where the five DGs run: one agent per Pi, each with an nRF attached.
 #:
-#: The first element runs three services and the second two, so the order is
-#: load-bearing: reverse it and the Pi 5 picks up the wifi agent.
-def dg5_pair() -> list[str]:
-    return HOSTS[2:4] if len(HOSTS) >= 4 else HOSTS[:2]
-
-
-#: Which host each DG runs on, as an index into that topology's host pool.
+#: Named boards, not indices into HOSTS, because which board carries which
+#: agent is a property of the bench -- rpi2 and rpi4 have the nRFs that run a
+#: `ble` agent's law, rpi5 and rpi7 carry the bridges, rpi13 the wifi node.
+#: HOSTS is ordered by address and says nothing about what is plugged in.
 #:
-#: `bridge5` takes five, one per Pi, and is the clean control.
-#:
-#: `mixed` takes TWO, because a `ble` agent needs an nRF on its host and the
-#: lab has two boards so equipped: 10.6.5.4 runs three services (ble + wifi +
-#: bridge) and 10.6.5.5 two (ble + bridge). No host holds two agents of one
-#: type, so nothing collides: the control plane is one port per type, and
-#: STATE_PORT is shared through SO_REUSEPORT as it already is at n6 and n9.
-#:
-#: The placement is FORCED and it costs one edge. A 5-ring is an odd cycle, so
-#: it cannot be 2-coloured -- some edge lands inside a host whatever we do. The
-#: media decide which. The wifi node's two neighbours are both bridges, because
-#: nothing else shares a medium with it, and one Pi can hold only one bridge:
-#: two bridge agents on a host share a single HCI socket, and a controller does
-#: not receive its own advertisements, so that link would be dead rather than
-#: merely local. One of the wifi node's two edges is therefore always intra-host.
-#:
-#: Of the two ways to place it, this one keeps DG 1 -- the pinned node, the only
-#: one holding the reference -- with both of its links on the air. The kernel
-#: edge is 2-3 instead, a wifi/bridge pair on host 0: ~100% delivery, ~0 delay,
-#: and `check` warns about it. The warning is right. That link is not under test
-#: and no per-link average should be read without excluding it.
-#:
-#: The other four are real and still cover every path the platform compares:
-#: UDP across the LAN (1-2), Pi HCI to nRF (3-4), nRF to nRF (4-5), and nRF to
-#: Pi HCI (5-1).
-DG5_PLACEMENT = {
-    "mixed": {1: 1, 2: 0, 3: 0, 4: 1, 5: 0},
-    "bridge5": {i: i - 1 for i in range(1, 6)},
+#: One agent per host means EVERY EDGE CROSSES HOSTS, which is the property
+#: the platform's comparisons rest on: an intra-host link is delivered by the
+#: kernel or by two radios centimetres apart, reports ~100% delivery and ~0
+#: delay, and flatters any per-link average it lands in. A 5-ring is an odd
+#: cycle, so two hosts could not have avoided one; five can and do.
+DG5_MIXED_HOSTS = {
+    4: "10.6.5.2",      # rpi2   ble
+    5: "10.6.5.4",      # rpi4   ble
+    1: "10.6.5.5",      # rpi5   bridge, and the pinned node
+    3: "10.6.5.7",      # rpi7   bridge
+    2: "10.6.5.13",     # rpi13  wifi
 }
 
 
-def dg5_hosts(topology: str) -> list[str]:
-    """The host pool `DG5_PLACEMENT` indexes into, for one topology."""
-    return list(HOSTS[:5]) if topology == "bridge5" else dg5_pair()
+def dg5_host(topology: str, node_id: int) -> str:
+    """The address node `node_id` runs at, for one topology."""
+    if topology == "bridge5":
+        return HOSTS[node_id - 1]
+    return DG5_MIXED_HOSTS[node_id]
 
 #: Calibrated on the candidate operating point and then locked, per
 #: eq:epsilon_calibration. Per agent because the rule sizes each threshold
@@ -565,12 +544,12 @@ def dg5(topology: str, *, h: float = 0.025, h_v: float = 0.125,
     `Phi` (3e-3 leaves the estimate inert) and the rates. PARAMS.md says why.
     """
     types = DG5_TOPOLOGIES[topology]
-    place = DG5_PLACEMENT[topology]
-    pool = hosts if hosts is not None else dg5_hosts(topology)
     nodes = []
     for i in range(1, 6):
         nodes.append({
-            "id": i, "ip": pool[place[i]], "type": types[i],
+            "id": i,
+            "ip": hosts[i - 1] if hosts is not None else dg5_host(topology, i),
+            "type": types[i],
             "publish_period_s": h_v,
             "plant": {"kappa": DG5_KAPPA[i], "S": DG5_S[i],
                       "X0": DG5_X0[i], "z0": DG5_Z0[i]},
@@ -579,7 +558,7 @@ def dg5(topology: str, *, h: float = 0.025, h_v: float = 0.125,
         "name": f"dg5-{topology}",
         "description": (
             f"5-DG microgrid benchmark on an undirected ring, pinned at DG 1. "
-            f"{topology} on {max(place.values()) + 1} host(s). "
+            f"{topology} on 5 hosts, one agent each. "
             f"h = {h * 1e3:g} ms, h_v = {h_v * 1e3:g} ms. "
             f"Configured for C_DZ; the hub selects the other arms."),
         "seed": 20260929,
@@ -610,12 +589,11 @@ def manifests() -> dict[str, dict]:
     should still get its two-host manifests written.
     """
     out: dict[str, dict] = {}
-    for topo, place in DG5_PLACEMENT.items():
-        need = max(place.values()) + 1
-        if len(HOSTS) >= need:
+    for topo in DG5_TOPOLOGIES:
+        if len(HOSTS) >= 5:
             out[f"dg5-{topo}"] = dg5(topo)
         else:
-            print(f"skip     dg5-{topo:<15}  needs >={need} hosts, "
+            print(f"skip     dg5-{topo:<15}  needs 5 hosts, "
                   f"{len(HOSTS)} declared")
     if len(HOSTS) < 2:
         # Every edge in every manifest must cross hosts -- an intra-host link

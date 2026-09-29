@@ -16,6 +16,7 @@ Lifecycle::
 from __future__ import annotations
 
 import asyncio
+import sys
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -87,6 +88,10 @@ class AgentService:
         self._hci = None        # one HCI socket per process
         self.relay: BleRelay | None = None
         self.runlog: RunLog | None = None
+        #: Samples the log refused. Non-zero means rows were lost for a
+        #: reason this process knew and nobody was told; surfaced in status.
+        self.record_errors: int = 0
+        self._record_error: str | None = None
         self.run_name: str | None = None
         self._tasks: list[asyncio.Task] = []
         self._started_at: float = 0.0
@@ -334,6 +339,9 @@ class AgentService:
             "samples": self.runlog.samples if self.runlog else 0,
             "control_port": self.control_port,
         }
+        if self.record_errors:
+            data["record_errors"] = self.record_errors
+            data["record_error"] = self._record_error
         if self.is_relay and self.relay is not None:
             data.update(self.relay.status())
             data["node_type"] = str(self.node_type)
@@ -434,13 +442,16 @@ class AgentService:
                 # declares its own channels and whether it wants the tick
                 # timed, and the metadata records the resolved list so a
                 # reader never infers it.
-                state_columns=_controller_columns(a.controller),
-                timing_columns=_timing_columns(a.controller),
+                state_columns=_controller_columns(a.controller,
+                                                  relay=self.is_relay),
+                timing_columns=_timing_columns(a.controller,
+                                               relay=self.is_relay),
                 controller=a.model_dump(),
                 # A relay logs what the nRF reported: scaled int32, unconverted.
                 # `vertex.analysis.units` normalises on read.
                 units="scaled_int" if self.is_relay else "engineering",
                 environment={**self.environment, **self._radio_meta(a),
+                             **self._relay_schema_meta(a),
                              **self._board_meta(),
                              **_interpreter_provenance(),
                              "epoch_unix_s": getattr(self.clock, "epoch_unix_s", None)},
@@ -475,6 +486,22 @@ class AgentService:
                                neighbor_seq=seq, neighbor_rssi=rssi,
                                timing=getattr(self.agent, "last_timing", ()))
 
+    def _relay_schema_meta(self, a) -> dict:
+        """Say, in the run's own record, that this node logged states only.
+
+        A column that is simply absent is worse than a missing run: the file
+        parses, the plots draw, and the gap is found during analysis.
+        """
+        if not self.is_relay or not a.microgrid:
+            return {}
+        return {"relay_schema_note":
+                "this node's law ran on the nRF. The STATE frame carries the "
+                "four states and vartheta; the derived channels a Pi-side "
+                "node logs (g, mu, muapp, sigma, theta, saturated, trig, and "
+                "the estimator states) are functions of (x, z, t) and the "
+                "parameters, and are reconstructed offline rather than "
+                "transmitted"}
+
     def _record_report(self, report, rx_time_us: int | None = None) -> None:
         """Write one nRF report. State values pass through unscaled.
 
@@ -486,12 +513,33 @@ class AgentService:
             return
         device_t_s = report.t_us / 1e6
         t_s = device_t_s if rx_time_us is None else rx_time_us / 1e6
-        self.runlog.append(t_s, (report.state, report.vstate, report.vartheta),
-                           list(report.neighbor_vstates),
-                           list(report.neighbor_fresh),
-                           device_t_s=device_t_s,
-                           neighbor_seq=list(report.neighbor_seq),
-                           neighbor_rssi=list(report.neighbor_rssi))
+        # Four states under a microgrid law, one under the scalar one. The
+        # frame says which by carrying the tail or not, so the row shape
+        # follows the wire and cannot disagree with it.
+        if report.state_Q is None:
+            channels = (report.state, report.vstate, report.vartheta)
+        else:
+            channels = (report.state, report.state_Q,
+                        report.vstate, report.vstate_Q, report.vartheta)
+        try:
+            self.runlog.append(t_s, channels,
+                               list(report.neighbor_vstates),
+                               list(report.neighbor_fresh),
+                               device_t_s=device_t_s,
+                               neighbor_seq=list(report.neighbor_seq),
+                               neighbor_rssi=list(report.neighbor_rssi))
+        except Exception as exc:
+            # This runs as an event-loop callback, so an exception here is
+            # handled by the loop and seen by nobody: a schema mismatch cost
+            # a whole 5-node run that the hub reported as ok on every node.
+            # Counted and reported once, so `status` and the run summary say
+            # the node logged nothing and why.
+            self.record_errors += 1
+            if self.record_errors == 1:
+                self._record_error = f"{type(exc).__name__}: {exc}"
+                node = self.assignment.node_id if self.assignment else "?"
+                print(f"error: node {node} is dropping every sample -- "
+                      f"{self._record_error}", file=sys.stderr, flush=True)
 
     def _rebind_clock(self) -> None:
         """Push the run's clock into everything that cached a reference.
@@ -629,16 +677,50 @@ def _interpreter_provenance() -> dict[str, Any]:
     }
 
 
-def _controller_columns(name: str) -> list[str]:
-    """The channel names the named controller declares."""
+#: What a relayed node logs. A `ble` agent does not run the controller -- the
+#: nRF does -- so its columns are set by what the STATE frame carries, not by
+#: what the Python class declares.
+#:
+#: Spelled the same as the controller's own names, deliberately, so analysis
+#: code finds fewer columns at a `ble` node rather than different ones.
+RELAY_COLUMNS = ("state", "vstate", "vartheta")
+
+#: Under a microgrid law the frame carries the second coordinate too, so a
+#: relayed node logs all four states. That is the whole state: everything
+#: else the law computes -- g, mu, sigma, theta, the estimator states -- is a
+#: function of (x, z, t) and the parameters, so it is recoverable offline and
+#: does not need to cross a 40 Hz link.
+RELAY_COLUMNS_MICROGRID = ("state_P", "state_Q", "vstate_P", "vstate_Q",
+                           "vartheta")
+
+
+def _controller_columns(name: str, *, relay: bool = False) -> list[str]:
+    """The channel names this node will actually write.
+
+    A relay writes what the nRF reported, which is three values whatever law
+    the board is running. Taking the controller's list here is what made a
+    microgrid run on a `ble` node log nothing at all: the run declared 19
+    columns and 2 timing values, `_record_report` supplied 3 and 0, and the
+    ValueError died inside the event loop -- so every sample was dropped and
+    the hub still reported the node ok.
+    """
     from ..controllers.base import REGISTRY
+    if relay:
+        return list(RELAY_COLUMNS_MICROGRID if name.startswith("microgrid")
+                    else RELAY_COLUMNS)
     cls = REGISTRY.get(name)
     return cls.column_names() if cls else ["state", "vstate", "vartheta"]
 
 
-def _timing_columns(name: str) -> list[str]:
-    """``realized_h`` and ``cpu_us`` if the controller asks to be timed."""
+def _timing_columns(name: str, *, relay: bool = False) -> list[str]:
+    """``realized_h`` and ``cpu_us`` if the controller asks to be timed.
+
+    Never for a relay: the tick being timed happens on the nRF, and this
+    process cannot measure it.
+    """
     from ..controllers.base import REGISTRY
+    if relay:
+        return []
     cls = REGISTRY.get(name)
     return ["realized_h", "cpu_us"] if cls and cls.logs_timing else []
 
