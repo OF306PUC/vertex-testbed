@@ -33,11 +33,35 @@ UnitSystem = Literal["engineering", "scaled_int"]
 
 #: Columns holding a state quantity, and therefore subject to scaling. Timestamps
 #: are seconds and freshness flags are booleans; converting either would be wrong.
-STATE_COLUMNS = ("state", "vstate", "vartheta")
+#:
+#: The `_P`/`_Q` names are the microgrid laws' two coordinates as a relayed
+#: node logs them. They were missing when the relay's columns were renamed
+#: from `state`/`vstate`, and because an unrecognised column used to fall
+#: through unconverted, a `ble` node's trajectory stayed in scaled integers
+#: while its metadata was stamped `engineering`. Nothing raised: the run
+#: loaded, the plots drew, and two nodes of five sat a factor of 1e6 above
+#: the rest. Hence `UnknownColumn` below -- the list being incomplete must
+#: be an error, not a pass-through.
+STATE_COLUMNS = ("state", "vstate", "vartheta",
+                 "state_P", "state_Q", "vstate_P", "vstate_Q")
+
+#: Columns that are genuinely not scaled quantities, by exact name or prefix.
+#: Everything else is either in STATE_COLUMNS or unknown.
+PASSTHROUGH_COLUMNS = ("timestamp", "device_timestamp")
+PASSTHROUGH_PREFIXES = ("rx_", "seq_", "rssi_")
 
 
 class UnitMismatch(ValueError):
     """Runs in different unit systems were combined without normalising."""
+
+
+class UnknownColumn(ValueError):
+    """A column in a scaled run is neither a known state nor a known passthrough.
+
+    Raised rather than passed through: a column that silently escapes
+    conversion is indistinguishable from one that did not need it, and the
+    difference is a factor of 1e6 that no plot makes obvious.
+    """
 
 
 def detect_units(payload: dict[str, Any]) -> str:
@@ -86,18 +110,27 @@ def normalize_run(payload: dict[str, Any], *, to: str = ENGINEERING) -> dict[str
         return out
 
     converted: dict[str, Any] = {}
+    unknown: list[str] = []
     for name, column in data.items():
-        # Both time columns and the freshness flags are named explicitly rather
-        # than left to the fall-through: seconds are not a scaled state, and a
-        # column that survives conversion by accident survives it only until
-        # someone adds a branch above.
-        if (name in ("timestamp", "device_timestamp")
-                or name.startswith(("rx_", "seq_", "rssi_"))):
+        # Time columns and the per-neighbour flags are named explicitly:
+        # seconds are not a scaled state, and a column that survives
+        # conversion by accident survives it only until someone renames one.
+        if (name in PASSTHROUGH_COLUMNS
+                or name.startswith(PASSTHROUGH_PREFIXES)):
             converted[name] = column
         elif name in STATE_COLUMNS or name.isdigit():
             converted[name] = [convert_value(v, frm, to) for v in column]
         else:
+            unknown.append(name)
             converted[name] = column
+    if unknown:
+        raise UnknownColumn(
+            f"node {(out.get('meta') or {}).get('node_id', '?')}: "
+            f"{sorted(unknown)} are neither known state columns nor known "
+            f"passthroughs, so converting {frm} -> {to} would leave them in "
+            f"{frm} with the run labelled {to}. Add them to STATE_COLUMNS or "
+            f"to PASSTHROUGH_COLUMNS -- the choice is which, not whether."
+        )
     out["data"] = converted
     return out
 

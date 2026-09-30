@@ -74,14 +74,13 @@
  * @brief Which control law this node runs.
  *
  * Both laws are compiled in and the manifest chooses, exactly as the Python
- * side does through its controller registry: `finite_time_adaptive` is the
- * scalar law the 30-agent campaigns run, `microgrid_*` is the five-DG
- * benchmark. A board never decides for itself.
- *
- * The default is the scalar law and it is value 0, so a configuration
- * sequence that never mentions a law selects it. That is what keeps an old
- * host, an old manifest and every collected run working: the microgrid path
- * is reachable only by a frame that did not exist before.
+ * side does through its controller registry. 
+ * 
+ * Examples are: 
+ *      (1) `finite_time_adaptive` as the scalar law for a 30-agent campaign run, 
+ *      (2) `microgrid_*` is the five-DG benchmark as the cyber-physical system.
+ *              - Runs a baseline controller interface: LAW_MICROGRID_LC
+ *              - Runs an always adaptive and dead-zone physical interface: LAW_MICROGRID_ADAPTIVE
  */
 /** @brief Bits in `agent_params.mg_blocks`. */
 #define MG_BLOCK_PLANT      0x01u
@@ -95,6 +94,8 @@ enum control_law {
 
 /**
  * @brief The microgrid benchmark's parameters, all of them.
+ * 
+ * Runs a pinned consensus law. 
  *
  * Scaled int32 on the wire like everything else, converted once on receipt.
  * `S1`/`S2` are the emulator's unknown: they reach the plant and nothing

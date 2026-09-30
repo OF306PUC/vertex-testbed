@@ -471,6 +471,114 @@ not reduced by sending less or sending faster. It also means UDP latency figures
 from this testbed do not transfer to a different AP without restating its DTIM
 period. Power save was ruled out separately by re-running with it disabled.
 
+### 5.2a The release events themselves, and what they cost `dg5-mixed`
+
+§5.2 inferred the DTIM cycle from a delay statistic — `median − min` matching
+`W/2`. `dg5-mixed-0` (2026-09-29, five hosts, 120 s, publish 125 ms) shows the
+**release events directly**, and adds a consequence that the 200 ms analysis
+could not have seen.
+
+Two independent receivers on different Pis, listening to the same wifi node:
+
+```
+  inter-burst gap      median 300 ms   (mode 300 ms in 317 of 442 intervals)
+  |t_DG1 - t_DG3|      median 0.4 ms,  91.4% inside one 25 ms control period
+```
+
+300 ms against the 307.2 ms the beacon and DTIM period predict, inside the
+25 ms sampling quantum. And two stations that share no clock cannot agree to
+0.4 ms unless one upstream event releases both — which is the mechanism seen
+from the front rather than through its statistics.
+
+#### Nothing is lost, and two different numbers both say so correctly
+
+The transport counters at the wifi node:
+
+```
+  sent=960   received=2864   self_filtered=960   delivered=1904
+```
+
+2864 ≈ 3 broadcasters × 960, so **~99% of datagrams arrived** — the figure
+§5.1 already quotes. Meanwhile the per-window freshness computed from the
+logged rows reads **45.4 to 46.6%** on all four UDP links, against 65.5–88.7%
+on the BLE links.
+
+Both are right, and METRICS.md already says why: `rho_i` is defined as the
+fraction of publication windows containing at least one fresh arrival, and it
+warns that "the `rx_` flag under-counts when two arrivals land inside one
+sampling period". It also predicts `rho = 0.52` for UDP at `T_pub = 125 ms`
+against a 250–300 ms quantum. Measured 0.46 against a measured 300 ms cycle.
+The model held.
+
+The trap is not the metric, it is **putting the two media's row figures in one
+column**. On a link that does not burst they coincide with delivery; on one
+that does they differ by a factor of two, and the Wi-Fi path then looks half
+as reliable as BLE when it delivers more. The gap histogram separates the
+cases without ambiguity — random 54% loss would make a gap of 1 the most
+common outcome:
+
+```
+  UDP  DG2<-DG1   gaps {1: 62,  2: 226, 3: 144}   mean 2.2
+  BLE  DG5<-DG4   gaps {1: 754, 2: 85,  3: 10}    mean 1.13
+```
+
+So: quote `rho` for freshness, quote the transport counters for delivery, and
+never compare a bursty link's `rho` against a non-bursty link's as though
+both were the same quantity.
+
+#### The cost to the microgrid benchmark
+
+The effective exchange interval on every UDP link is **300 ms, not the 125 ms
+the manifest declares**. §5.2 was measured at a 200 ms publish period, where
+one publish roughly fits one cycle; at 125 ms each release carries ~2.4
+publishes and the layer advances in bursts.
+
+The virtual layer survives it — G2 passed on hardware, worst `E_z` after
+`T_o` 0.0429 against the 0.1125 gate — but the margin is not the one the
+manifest assumes. The exchange-count limit measured in phase 1 is
+`h_v <= 348 ms`. At an effective 300 ms that is **14% of headroom, not the
+2.8x a 125 ms period suggests**. Any change that lengthens the cycle — a
+different AP, a longer DTIM, a slower basic rate — crosses it.
+
+#### Decision: the selectable transport is deferred
+
+The `broadcast`/`unicast` option proposed in §4 C2.2 is **not being built
+now**. The reasons are that the benchmark passes its gate as it stands, that
+the change reaches into the transport's addressing and re-opens the
+topology-enforcement question of C2.1 point 4, and that neither is worth
+carrying while the five-DG campaign is the thing being brought up. The
+proposal, its falsifiable prediction and its risks stay in C2.2 as written,
+for the platform work that follows.
+
+#### Operating around it, and how to check the assumption
+
+The working plan is to **schedule runs near 21:00**, when the lab network is
+idle.
+
+State the mechanism carefully, because the obvious reading is wrong. **The
+DTIM period is a static field in the beacon; it does not relax when the
+network is quiet.** What an empty network changes is the *trigger*: an AP
+buffers group-addressed frames only while some associated station is dozing.
+With no other clients associated there is nothing to buffer for, and the
+frames go out at the next beacon rather than the next DTIM beacon. So the
+expected gain is real but it comes from the client population, not from the
+AP reconfiguring itself — and it is a property of someone else's network that
+can change without notice.
+
+Which makes it a measurement, not an assumption:
+
+```bash
+bash scripts/ap_info.sh --dump         # beacon interval and DTIM must be unchanged
+python3 -m vertex.hub run experiments/dg5-mixed.yaml --duration 120
+```
+
+then re-run the burst analysis above. *Falsifiable prediction: at 21:00 the
+inter-burst gap collapses from 300 ms toward the 102.4 ms beacon, and the
+row-derived UDP delivery rises from ~46% toward the BLE range. If the gap
+stays at 300 ms, stations are still dozing or the AP buffers unconditionally,
+and scheduling buys nothing.* Record which it was in the run's notes: a
+campaign half-collected under each behaviour is two experiments.
+
 ### 5.3 The advertising interval is a delivery ceiling
 
 `broadcaster_update()` and `cmd_le_set_adv_data` rewrite the advertising *payload*;

@@ -83,6 +83,33 @@ Host-side rehearsed with `python3 test/hub/check_fleet.py experiments/n6-ring.ya
 
 ---
 
+### When to run: the Wi-Fi links are quantised by the AP's other clients
+
+Schedule anything whose Wi-Fi latency matters **near 21:00**, when the lab
+network is idle.
+
+The reason is not that the AP relaxes at night — the DTIM period is a static
+field in its beacon and does not change with load. It is that an AP buffers
+group-addressed frames only while some associated station is dozing. With no
+other clients associated there is nothing to buffer for, and the UDP
+broadcasts go out at the next beacon (102.4 ms) rather than the next DTIM
+beacon (307.2 ms). Our own `power_save off` does not help: the trigger is
+someone else's laptop, not our stations.
+
+Measured in office hours, `dg5-mixed-0` saw releases every 300 ms on all four
+UDP links, and the microgrid layer's effective exchange interval was 300 ms
+against the 125 ms its manifest declares. PLATFORM.md §5.2a has the numbers
+and the falsifiable prediction for the evening run.
+
+Check it, do not assume it:
+
+```bash
+bash scripts/ap_info.sh --dump      # beacon interval and DTIM, from the cache
+```
+
+and write which behaviour the run saw into its notes. A campaign half
+collected under each is two experiments.
+
 ### Restarting agents, and stale pidfiles
 
 `scripts/agents.sh start` is idempotent -- it skips what is already alive, so after

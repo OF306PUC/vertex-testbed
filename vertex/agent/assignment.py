@@ -22,7 +22,23 @@ _BLOCKS = ("plant", "virtual", "interface")
 
 
 def _microgrid_params(m: dict[str, Any]) -> dict[str, Any]:
-    """Rebuild the controller's parameter blocks from the carried dicts."""
+    """Rebuild the controller's parameter blocks from the carried dicts.
+
+    Keys are selected by what `ControllerParams` accepts, not by excluding
+    the ones known not to be parameters. The `microgrid` block carries two
+    kinds of thing -- values the controller is built from, and values the run
+    must record about itself, like `T_c`, which only one interface takes as a
+    parameter but every arm is judged against. A deny-list means each new
+    entry of the second kind is a `TypeError` inside `configure` on any agent
+    older than the hub, which is exactly how one was found: the hub sent
+    `T_c`, five agents refused the whole run, and nothing had changed on
+    their side.
+
+    An allow-list makes an unrecognised key inert instead. It does not
+    rescue an agent already deployed with the old code -- nothing can -- but
+    it stops the next field from doing the same thing.
+    """
+    from ..controllers.base import ControllerParams
     from ..controllers.interface_adaptive import AdaptiveParams
     from ..controllers.interface_lc import LCParams
     from ..controllers.plant import PlantParams
@@ -31,8 +47,8 @@ def _microgrid_params(m: dict[str, Any]) -> dict[str, Any]:
     iface_kind = m.get("interface_kind", "adaptive")
     build = {"plant": PlantParams, "virtual": VirtualParams,
              "interface": AdaptiveParams if iface_kind == "adaptive" else LCParams}
-    out = {k: v for k, v in m.items()
-           if k not in _BLOCKS and k != "interface_kind"}
+    accepted = set(ControllerParams.__dataclass_fields__)
+    out = {k: v for k, v in m.items() if k in accepted and k not in _BLOCKS}
     for name in _BLOCKS:
         out[name] = build[name](**m[name])
     return out
@@ -173,7 +189,14 @@ def _microgrid_dicts(manifest: ExperimentManifest, node) -> dict[str, Any]:
     from ..topology.loader import microgrid_blocks
 
     blocks = microgrid_blocks(manifest, node)
-    out: dict[str, Any] = {"interface_kind": manifest.controller.microgrid.interface}
+    # `T_c` is the prescribed convergence deadline for the whole experiment,
+    # and every arm is judged against it -- but only the `lc` interface takes
+    # it as a parameter, so under `adaptive` it reached no log at all and a
+    # run could not say what deadline it had been held to. Carried beside the
+    # blocks rather than inside one: it belongs to the experiment, not to an
+    # interface that happens to use it.
+    out: dict[str, Any] = {"interface_kind": manifest.controller.microgrid.interface,
+                           "T_c": manifest.controller.microgrid.T_c}
     for k, v in blocks.items():
         out[k] = asdict(v) if k in _BLOCKS else v
     return out

@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 from ..topology import check, load_manifest_file
-from .runner import ExperimentRunner
+from .runner import ARMS, ExperimentRunner
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -53,6 +53,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                          "quiesce before the next run (default 5)")
     ap.add_argument("--timeout", type=float, default=10.0,
                     help="per-command control-plane timeout")
+    # The four arms of the microgrid comparison. `run_arms` has existed since
+    # the family was added and had no way to reach it from a terminal, so the
+    # only arm anyone could run was whichever one the manifest was written
+    # for.
+    ap.add_argument("--arm", metavar="NAME",
+                    help=f"run ONE arm instead of the manifest's own: "
+                         f"{', '.join(ARMS)}. The manifest is rebuilt with "
+                         f"that arm's single field changed and nothing else")
+    ap.add_argument("--arms", metavar="A,B,...",
+                    help=f"paired comparison: every arm in a randomized order "
+                         f"per trial (default {','.join(ARMS)}). Use --trials "
+                         f"for more than one")
+    ap.add_argument("--trials", type=int, default=1, metavar="N",
+                    help="trials for --arms; each runs every arm once, in a "
+                         "fresh random order")
+    ap.add_argument("--order-seed", type=int, default=0,
+                    help="seed for the --arms ordering, so a campaign's "
+                         "sequence is reproducible from the record")
     ap.add_argument("--force", action="store_true",
                     help="run even if the manifest fails validation")
     return ap.parse_args(argv)
@@ -133,6 +151,45 @@ async def main_async(args: argparse.Namespace) -> int:
 
         run_name = args.run_name or f"{manifest.name}-{args.run_index}"
         n_nodes = len(only or runner.assignments)
+
+        if args.arms:
+            arms = [a.strip() for a in args.arms.split(",") if a.strip()]
+            unknown = [a for a in arms if a not in ARMS]
+            if unknown:
+                print(f"error: unknown arm(s) {unknown}; known: {list(ARMS)}",
+                      file=sys.stderr)
+                return 2
+            total = len(arms) * args.trials
+            print(f"{args.trials} trial(s) x {len(arms)} arm(s) = {total} runs "
+                  f"of {args.duration:g}s, order randomized within each trial "
+                  f"(seed {args.order_seed}); run-index {args.run_index} held "
+                  f"fixed so the arms of a trial share initial conditions")
+            reports = await runner.run_arms(
+                run_name, args.duration, arms=arms, trials=args.trials,
+                settle_between_s=args.settle_between, only=only,
+                settle_s=args.settle, order_seed=args.order_seed)
+            bad = 0
+            for rep in reports:
+                print()
+                print(rep.summary())
+                for note in rep.notes:
+                    print(f"  {note}")
+                if not rep.ok:
+                    bad += 1
+            print()
+            print(f"{len(reports) - bad}/{len(reports)} runs ok")
+            return 0 if bad == 0 else 1
+
+        if args.arm:
+            if args.arm not in ARMS:
+                print(f"error: unknown arm {args.arm!r}; known: {list(ARMS)}",
+                      file=sys.stderr)
+                return 2
+            runner.set_arm(args.arm)
+            run_name = args.run_name or (f"{manifest.name}-{args.run_index}"
+                                         f"-{args.arm.replace('+', 'plus')}")
+            print(f"arm {args.arm}: one field changed from the manifest, "
+                  f"everything else identical")
 
         if args.repeat > 1:
             print(f"{args.repeat} repeats of {run_name}: {n_nodes} nodes, "
