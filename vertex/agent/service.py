@@ -518,9 +518,13 @@ class AgentService:
         # follows the wire and cannot disagree with it.
         if report.state_Q is None:
             channels = (report.state, report.vstate, report.vartheta)
-        else:
+        elif report.S1_hat is None:
             channels = (report.state, report.state_Q,
                         report.vstate, report.vstate_Q, report.vartheta)
+        else:
+            channels = (report.state, report.state_Q,
+                        report.vstate, report.vstate_Q,
+                        report.S1_hat, report.S2_hat)
         try:
             self.runlog.append(t_s, channels,
                                list(report.neighbor_vstates),
@@ -693,6 +697,14 @@ RELAY_COLUMNS = ("state", "vstate", "vartheta")
 RELAY_COLUMNS_MICROGRID = ("state_P", "state_Q", "vstate_P", "vstate_Q",
                            "vartheta")
 
+#: The LC arms report their estimator instead of `vartheta`, which they do
+#: not have. Unlike g, mu and sigma -- functions of (x, z, t) that are
+#: reconstructed offline -- the estimate is the integral of its own error,
+#: so re-integrating it would only reproduce the host's answer rather than
+#: say what the board did.
+RELAY_COLUMNS_MICROGRID_LC = ("state_P", "state_Q", "vstate_P", "vstate_Q",
+                              "S1", "S2")
+
 
 def _controller_columns(name: str, *, relay: bool = False) -> list[str]:
     """The channel names this node will actually write.
@@ -706,6 +718,8 @@ def _controller_columns(name: str, *, relay: bool = False) -> list[str]:
     """
     from ..controllers.base import REGISTRY
     if relay:
+        if name == "microgrid_lc":
+            return list(RELAY_COLUMNS_MICROGRID_LC)
         return list(RELAY_COLUMNS_MICROGRID if name.startswith("microgrid")
                     else RELAY_COLUMNS)
     cls = REGISTRY.get(name)

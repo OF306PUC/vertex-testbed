@@ -37,6 +37,17 @@
 /** Bytes appended when a microgrid law runs: state_q and vstate_q. */
 #define STATE_TAIL_BYTES       8u
 
+/**
+ * @brief Bytes appended under the LC laws: the above plus S1_hat, S2_hat.
+ *
+ * The estimator is not derivable from the trajectory the way g, mu and sigma
+ * are: those are functions of (x, z, t), while this is the integral of its
+ * own error and re-integrating it offline only reproduces the host's answer.
+ * When LC+ tracked on three Pi nodes and not on the two nRF ones, the one
+ * quantity that separates the explanations was the one nothing reported.
+ */
+#define STATE_TAIL_LC_BYTES    16u
+
 /** @brief Send one STATE frame. Call at the `clock` period while running. */
 int report_state(const struct agent *a);
 

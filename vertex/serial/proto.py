@@ -465,6 +465,9 @@ STATE_NEIGHBOUR = struct.Struct("<iHbB")
 
 #: The microgrid tail: the second coordinate of state and virtual state.
 STATE_TAIL = struct.Struct("<ii")
+#: The LC tail: the above, then the interface's estimate. Told apart from the
+#: shorter one by length, like everything else in this codec.
+STATE_TAIL_LC = struct.Struct("<iiii")
 
 STATE_FLAG_ENABLED = 0x01
 STATE_FLAG_FRESH = 0x02
@@ -493,6 +496,11 @@ class StateReport:
     #: the scalar law has no second coordinate at all.
     state_Q: int | None = None
     vstate_Q: int | None = None
+    #: The LC interface's estimate, present only under those arms. `None`
+    #: is "this law has no such state", which is not zero: a zero estimate
+    #: is a meaningful value that the run starts from.
+    S1_hat: int | None = None
+    S2_hat: int | None = None
 
     @property
     def t_s(self) -> float:
@@ -509,7 +517,10 @@ def encode_state(r: StateReport) -> bytes:
         seq = r.neighbor_seq[i] if i < len(r.neighbor_seq) else 0
         rssi = r.neighbor_rssi[i] if i < len(r.neighbor_rssi) else 0
         out += STATE_NEIGHBOUR.pack(r.neighbor_vstates[i], seq, rssi, flags)
-    if r.state_Q is not None or r.vstate_Q is not None:
+    if r.S1_hat is not None or r.S2_hat is not None:
+        out += STATE_TAIL_LC.pack(r.state_Q or 0, r.vstate_Q or 0,
+                                  r.S1_hat or 0, r.S2_hat or 0)
+    elif r.state_Q is not None or r.vstate_Q is not None:
         out += STATE_TAIL.pack(r.state_Q or 0, r.vstate_Q or 0)
     return out
 
@@ -522,10 +533,11 @@ def decode_state(payload: bytes) -> StateReport:
 
     want = STATE_HEADER.size + n * STATE_NEIGHBOUR.size
     tail = len(payload) - want
-    if tail not in (0, STATE_TAIL.size):
+    if tail not in (0, STATE_TAIL.size, STATE_TAIL_LC.size):
         raise ProtoError(
-            f"STATE declares {n} neighbour(s) so should be {want} bytes, or "
-            f"{want + STATE_TAIL.size} with the microgrid tail; "
+            f"STATE declares {n} neighbour(s) so should be {want} bytes, "
+            f"{want + STATE_TAIL.size} with the microgrid tail, or "
+            f"{want + STATE_TAIL_LC.size} with the LC one; "
             f"got {len(payload)}")
     if n > MAX_NEIGHBORS:
         raise ProtoError(f"STATE declares {n} neighbours, limit is {MAX_NEIGHBORS}")
@@ -540,13 +552,17 @@ def decode_state(payload: bytes) -> StateReport:
         enabled.append(bool(flags & STATE_FLAG_ENABLED))
         fresh.append(bool(flags & STATE_FLAG_FRESH))
 
-    state_Q = vstate_Q = None
-    if tail:
+    state_Q = vstate_Q = S1_hat = S2_hat = None
+    if tail == STATE_TAIL.size:
         state_Q, vstate_Q = STATE_TAIL.unpack_from(payload, want)
+    elif tail == STATE_TAIL_LC.size:
+        state_Q, vstate_Q, S1_hat, S2_hat = STATE_TAIL_LC.unpack_from(
+            payload, want)
 
     return StateReport(t_us, state, vstate, vartheta, counter,
                        tuple(vstates), tuple(enabled), tuple(fresh),
-                       tuple(seqs), tuple(rssis), state_Q, vstate_Q)
+                       tuple(seqs), tuple(rssis), state_Q, vstate_Q,
+                       S1_hat, S2_hat)
 
 
 def decode_txat(payload: bytes) -> tuple[int, int]:

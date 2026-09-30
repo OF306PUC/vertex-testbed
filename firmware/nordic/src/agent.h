@@ -147,7 +147,7 @@ struct microgrid_vars {
     float c;                    /* observer gain, local */
     float wP, wQ;               /* held neighbour sum, frozen for the tick */
     float vartheta;             /* adaptive interface */
-    float S1, S2;               /* lc interface */
+    float S1_hat, S2_hat;       /* lc interface: the ESTIMATE */
     uint32_t updates;
     uint8_t  watchdog;          /* 0 = inside the envelope, else the cause */
     uint16_t sat_run;           /* consecutive saturated updates */
@@ -193,6 +193,7 @@ struct agent_params {
     /* Reset to LAW_FINITE_TIME_ADAPTIVE by every NETWORK frame, so each
      * configuration sequence re-declares it and a stale selection cannot
      * survive a reconfigure. */
+    /* TODO: we still need to figure out */
     enum control_law law;
     /* Which microgrid blocks have arrived since the last NETWORK frame.
      * MG_IFACE commits the law and refuses until both others are present. */
@@ -214,10 +215,12 @@ struct agent_vars {
     uint16_t neighbor_seq[AGENT_MAX_NEIGHBORS];
     int8_t   neighbor_rssi[AGENT_MAX_NEIGHBORS];
     uint16_t tx_seq;
+
     /* Second coordinate of this node's own state, scaled. Written only by
      * the microgrid laws; the scalar law is one-dimensional and leaves them
      * zero, which is why the STATE frame carries them only when a microgrid
      * law is selected. */
+    /* TODO: make an array version of these two variable states */
     int32_t state_q;
     int32_t vstate_q;
 
@@ -225,6 +228,7 @@ struct agent_vars {
     /* Second virtual coordinate, written only by a v2 frame. The scalar law
      * never reads it and a v1 frame never writes it, so the two families can
      * share a receive path without either seeing the other's leftovers. */
+    /* TODO: again, there should only be one neighbor_vstates_* so these must me a 2-D vector/ array */
     int32_t neighbor_vstates_q[AGENT_MAX_NEIGHBORS];
 
     /* Full-precision integrator, scalar law. */
@@ -236,6 +240,7 @@ struct agent_vars {
      * the two laws never run at once, but aliasing their state would make a
      * mis-set `law` corrupt silently instead of simply running the wrong
      * equations. */
+    /* I like this way of adding user-systems to study, for example here we can add different plants from another .{h,c} file */
     struct microgrid_vars mg;
 };
 

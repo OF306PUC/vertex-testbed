@@ -1,4 +1,7 @@
+#include <math.h>
+
 #include "report.h"
+#include "coordination_task.h"   /* SCALE_FACTOR */
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -29,7 +32,7 @@ int report_state(const struct agent *a)
 
     uint8_t p[8 + 4 + 4 + 4 + 4 + 1
               + (AGENT_MAX_NEIGHBORS * STATE_NEIGHBOUR_BYTES)
-              + STATE_TAIL_BYTES];
+              + STATE_TAIL_LC_BYTES];
     size_t n = 0;
 
     /* vars.time_us is the run start, in MICROSECONDS.*/
@@ -70,6 +73,14 @@ int report_state(const struct agent *a)
     if (a->params.law != LAW_FINITE_TIME_ADAPTIVE) {
         proto_st_u32(&p[n], (uint32_t)a->vars.state_q);      n += 4;
         proto_st_u32(&p[n], (uint32_t)a->vars.vstate_q);     n += 4;
+    }
+    /* The LC interface's estimate. Under the adaptive law `vartheta` already
+     * rides in the header, so only this family needs more. */
+    if (a->params.law == LAW_MICROGRID_LC) {
+        proto_st_u32(&p[n], (uint32_t)lrintf(a->vars.mg.S1_hat * SCALE_FACTOR));
+        n += 4;
+        proto_st_u32(&p[n], (uint32_t)lrintf(a->vars.mg.S2_hat * SCALE_FACTOR));
+        n += 4;
     }
 
     int err = uart_link_send(PROTO_T_STATE, p, (uint16_t)n);

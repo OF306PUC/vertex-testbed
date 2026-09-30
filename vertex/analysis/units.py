@@ -43,7 +43,8 @@ UnitSystem = Literal["engineering", "scaled_int"]
 #: the rest. Hence `UnknownColumn` below -- the list being incomplete must
 #: be an error, not a pass-through.
 STATE_COLUMNS = ("state", "vstate", "vartheta",
-                 "state_P", "state_Q", "vstate_P", "vstate_Q")
+                 "state_P", "state_Q", "vstate_P", "vstate_Q",
+                 "S1", "S2")
 
 #: Columns that are genuinely not scaled quantities, by exact name or prefix.
 #: Everything else is either in STATE_COLUMNS or unknown.

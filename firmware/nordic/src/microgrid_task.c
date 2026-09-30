@@ -59,8 +59,14 @@ void microgrid_reset(struct agent *a)
     v->wP = u(m->b) * u(m->rP);
     v->wQ = u(m->b) * u(m->rQ);
     v->vartheta = u(m->vartheta_0);
-    v->S1 = 0.0f;               /* never given the answer */
-    v->S2 = 0.0f;
+    /* Never given the answer. `m->S1` is the emulator's true
+     * parameter and is read by the plant and by nothing else;
+     * the `_hat` is what the interface is trying to learn. The
+     * two are one word of context apart in this file, and a slip
+     * between them would make the law work perfectly and the
+     * benchmark meaningless, so they do not share a name. */
+    v->S1_hat = 0.0f;
+    v->S2_hat = 0.0f;
     v->updates = 0u;
     v->watchdog = MG_WD_NONE;
     v->sat_run = 0u;
@@ -168,8 +174,8 @@ void microgrid_step(struct agent *a)
                 rem = d_c;
             }
             const float lam = u(m->beta_c) / rem;
-            muP = gP - lam * sP - A * (ps * v->S1 + qs * v->S2);
-            muQ = gQ - lam * sQ - A * (qs * v->S1 - ps * v->S2);
+            muP = gP - lam * sP - A * (ps * v->S1_hat + qs * v->S2_hat);
+            muQ = gQ - lam * sQ - A * (qs * v->S1_hat - ps * v->S2_hat);
 
             adapt_now = true;
             if (m->adapt_band >= 0 && trig > u(m->adapt_band)) {
@@ -184,8 +190,8 @@ void microgrid_step(struct agent *a)
         /* The command is formed before the estimate moves. */
         if (adapt_now) {
             const float step = h * u(m->Phi) * kappa * kappa * A;
-            v->S1 += step * (ps * sP + qs * sQ);
-            v->S2 += step * (qs * sP - ps * sQ);
+            v->S1_hat += step * (ps * sP + qs * sQ);
+            v->S2_hat += step * (qs * sP - ps * sQ);
             v->updates++;
         }
         muP = aP;
