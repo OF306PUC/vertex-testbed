@@ -518,20 +518,115 @@ DG5_MIXED_HOSTS = {
 }
 
 
+#: The two-node bisection, for isolating the nRF's behaviour under LC.
+#:
+#: Three configurations sit between "works" and "fails", and only the middle
+#: one was missing. A single nRF node with NO neighbours reproduces the host
+#: exactly over the full horizon; the same node inside the five-ring, with
+#: two neighbours reachable only over the air, misses the tracking band by a
+#: factor of six. The step between them is ONE neighbour, and that is what
+#: this pair is.
+#:
+#: `dg2-air` puts the law on the nRF and its single neighbour across a radio
+#: link. `dg2-wire` is the same graph with both agents on their hosts, so a
+#: difference between the two is where the law is computed. It is not a
+#: perfect control -- a bridge pair is carried on both media and the ble link
+#: only on one -- but delivery has already been excluded as the mechanism:
+#: in double precision the fleet converges unchanged at 60% delivery.
+#:
+#: Two nodes also make the failure instrumentable. At five agents the STATE
+#: frame is sized against the airtime; at two there is room to report
+#: whatever the diagnosis needs.
+DG2_NODES = {1: ("bridge", "10.6.5.5"),      # rpi5, pinned, law on the host
+             2: ("ble", "10.6.5.2")}         # rpi2, law on the attached nRF
+
+
+def dg2(wire: bool, *, profile: str = "per", h: float = 0.025,
+        h_v: float = 0.125) -> dict:
+    """One edge, one pinned node. `wire` puts both laws on their hosts."""
+    nodes = []
+    for i, (kind, ip) in DG2_NODES.items():
+        nodes.append({
+            "id": i, "ip": ip, "type": "bridge" if wire else kind,
+            "publish_period_s": h_v,
+            # The edge is declared, not generated: a 2-node ring is
+            # degenerate for `ring()` and 2k < n cannot hold.
+            "neighbors": [2 if i == 1 else 1],
+            "plant": {"kappa": DG5_KAPPA[i], "S": DG5_S[i],
+                      "X0": DG5_X0[i], "z0": DG5_Z0[i]},
+        })
+    name = ("dg2-wire" if wire else "dg2-air") + (
+        "" if profile == "per" else f"-{profile}")
+    return {
+        "name": name,
+        "description": (
+            f"Two DGs, one edge, pinned at DG 1. "
+            f"{'both laws on their hosts' if wire else 'DG 2 runs its law on the nRF'}. "
+            f"The minimal graph that gives a node exactly one neighbour: the "
+            f"step between a neighbourless board, which matches the host "
+            f"exactly, and the five-ring, where the same board does not. "
+            f"h = {h*1e3:g} ms, h_v = {h_v*1e3:g} ms."),
+        "seed": 20260930,
+        "nodes": nodes,
+        "coordination": {"reference": [20.0, 25.0], "pinned": {1: 1.0}},
+        "radio": radio_dithered(h_v),
+        "controller": {
+            "name": "microgrid_adaptive", "dt_s": h,
+            "microgrid": {
+                "interface": "adaptive",
+                "profile": profile, "p_max": 10.0, "q_max": 12.0,
+                "T_o": 30.0, "T_c": 40.0,
+                "alpha_0": 1.0, "delta_o": h_v,
+                "mu_max": 10.0, "gamma": 0.0025,
+                "eps": {i: DG5_EPS[profile][i] for i in DG2_NODES},
+                "Phi": 3.0, "terminal": True,
+            },
+        },
+    }
+
+
 def dg5_host(topology: str, node_id: int) -> str:
-    """The address node `node_id` runs at, for one topology."""
-    if topology == "bridge5":
-        return HOSTS[node_id - 1]
+    """The address node `node_id` runs at, for one topology.
+
+    `bridge5` uses the SAME five boards, in the same node-to-host mapping,
+    as `mixed`. That is what makes it a control rather than a second
+    experiment: only the agent type changes, so a difference between the two
+    cannot come from which Pi a DG sat on.
+
+    It matters more than it looks. In `mixed` the two `ble` nodes are also
+    the only two whose BOTH neighbours arrive over the air -- the topology
+    confounds "the law runs on an nRF" with "neither neighbour comes over a
+    socket", and no amount of staring at a `mixed` run separates them.
+    Under `bridge5` every node has two air links and every law runs on a Pi
+    in float64, which breaks the pair.
+    """
     return DG5_MIXED_HOSTS[node_id]
 
-#: Calibrated on the candidate operating point and then locked, per
-#: eq:epsilon_calibration. Per agent because the rule sizes each threshold
-#: from that agent's own measured implementation error.
-DG5_EPS = {1: 0.09376, 2: 0.09600, 3: 0.09101, 4: 0.09250, 5: 0.09781}
+#: The dead-zone threshold, per agent and PER UNCERTAINTY PROFILE.
+#:
+#: eq:epsilon_calibration with the `differenced+zeta` rule, setting B, under
+#: condition S1. Reproduced exactly from reviewers-exp/sim/calibrate.py:
+#:
+#:     RunConfig(condition=S0, profile=<profile>, initial="primary",
+#:               setting=SETTINGS["B"])
+#:     calibrate_eps(condition=S1, cfg=cfg)
+#:
+#: Per agent because the rule sizes each threshold from that agent's own
+#: measured implementation error. Per profile because the rule's `zeta_floor`
+#: term measures the h*zeta contribution of a nominal closed-loop run, and
+#: the two profiles do not have the same zeta: the replication one has fallen
+#: to 4.5e-8 by t = 2 s, so that term all but vanishes and only the
+#: differenced measurement error is left. Using the `per` numbers on a `rep`
+#: run would oversize the dead zone by 2-7% and stop DZ adapting earlier than
+#: its own rule says -- which is the one parameter DZ's claim rests on.
+DG5_EPS = {
+    "per": {1: 0.09376, 2: 0.09600, 3: 0.09101, 4: 0.09250, 5: 0.09781},
+    "rep": {1: 0.09220, 2: 0.09295, 3: 0.08657, 4: 0.08683, 5: 0.09105},
+}
 
 
-def dg5(topology: str, *, h: float = 0.025, h_v: float = 0.125,
-        hosts: list[str] | None = None) -> dict:
+def dg5(topology: str, *, profile: str = "per", h: float = 0.025,
+        h_v: float = 0.125, hosts: list[str] | None = None) -> dict:
     """One microgrid manifest, configured for the deliverable arm C_DZ.
 
     The other three arms differ in one field each -- `eps = 0` is C_AA,
@@ -544,6 +639,8 @@ def dg5(topology: str, *, h: float = 0.025, h_v: float = 0.125,
     `Phi` (3e-3 leaves the estimate inert) and the rates. PARAMS.md says why.
     """
     types = DG5_TOPOLOGIES[topology]
+    if profile not in DG5_EPS:
+        raise ValueError(f"unknown profile {profile!r}; known: {sorted(DG5_EPS)}")
     nodes = []
     for i in range(1, 6):
         nodes.append({
@@ -555,8 +652,13 @@ def dg5(topology: str, *, h: float = 0.025, h_v: float = 0.125,
                       "X0": DG5_X0[i], "z0": DG5_Z0[i]},
         })
     return {
-        "name": f"dg5-{topology}",
+        # The `per` manifests keep their original names: runs already
+        # collected record `manifest_name`, and renaming would orphan that
+        # link for the sake of symmetry. The profile leads the description
+        # instead, and every run records `plant.profile` regardless.
+        "name": f"dg5-{topology}" + ("" if profile == "per" else f"-{profile}"),
         "description": (
+            f"{profile} uncertainty profile. "
             f"5-DG microgrid benchmark on an undirected ring, pinned at DG 1. "
             f"{topology} on 5 hosts, one agent each. "
             f"h = {h * 1e3:g} ms, h_v = {h_v * 1e3:g} ms. "
@@ -571,10 +673,10 @@ def dg5(topology: str, *, h: float = 0.025, h_v: float = 0.125,
             "name": "microgrid_adaptive", "dt_s": h,
             "microgrid": {
                 "interface": "adaptive",
-                "profile": "per", "p_max": 10.0, "q_max": 12.0,
+                "profile": profile, "p_max": 10.0, "q_max": 12.0,
                 "T_o": 30.0, "T_c": 40.0,
                 "alpha_0": 1.0, "delta_o": h_v,
-                "mu_max": 10.0, "gamma": 0.0025, "eps": DG5_EPS,
+                "mu_max": 10.0, "gamma": 0.0025, "eps": DG5_EPS[profile],
                 "Phi": 3.0, "terminal": True,
             },
         },
@@ -589,9 +691,15 @@ def manifests() -> dict[str, dict]:
     should still get its two-host manifests written.
     """
     out: dict[str, dict] = {}
+    for wire in (False, True):
+        for prof in DG5_EPS:
+            m = dg2(wire, profile=prof)
+            out[m["name"]] = m
     for topo in DG5_TOPOLOGIES:
         if len(HOSTS) >= 5:
-            out[f"dg5-{topo}"] = dg5(topo)
+            for prof in DG5_EPS:
+                m = dg5(topo, profile=prof)
+                out[m["name"]] = m
         else:
             print(f"skip     dg5-{topo:<15}  needs 5 hosts, "
                   f"{len(HOSTS)} declared")
