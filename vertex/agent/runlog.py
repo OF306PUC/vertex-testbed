@@ -43,11 +43,21 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Sequence
 
+#: Suffixes for a multi-coordinate neighbour value, in order.
+COORD_SUFFIX = ("P", "Q")
+
 __all__ = ["SCHEMA_VERSION", "FORMATS", "RunMeta", "RunLog", "read_run_file",
            "recover_rows", "record_width"]
 
 #: Bumped whenever the on-disk layout changes in a way readers must notice.
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
+# v7  `dim` value columns per neighbour instead of one, named `<id>_P`/`<id>_Q`
+#     when there are two. Before this the row took the i-th VALUE for the i-th
+#     NEIGHBOUR, so a two-coordinate law logged both coordinates of its first
+#     neighbour under the ids of its first two and logged the rest not at all.
+#     Runs recorded under v6 with a two-coordinate law have unusable neighbour
+#     VALUE columns; their rx_/seq_/rssi_ columns are per neighbour and were
+#     always correct.
 # v6  four columns per neighbour instead of two: `seq_<id>` (the sender's sequence
 #     number) and `rssi_<id>` (dBm) join vstate and the arrival flag. seq makes
 #     per-link delivery, loss, duplicates and reordering derivable OFFLINE at any
@@ -72,16 +82,20 @@ _ITEM = 8
 
 
 def record_width(n_neighbors: int, n_state: int = 3,
-                 n_timing: int = 0) -> int:
-    """Columns per record: t, device_t, the controller's channels, then four
-    per neighbour.
+                 n_timing: int = 0, *, dim: int = 1) -> int:
+    """Columns per record: t, device_t, the controller's channels, then
+    ``3 + dim`` per neighbour.
 
     ``n_state`` is how many channels the controller declares through
     :meth:`vertex.controllers.base.Controller.column_names`. It is 3 for the
     scalar law (state, vstate, vartheta), which is the default so an old run
     is read exactly as before.
     """
-    return 2 + n_timing + n_state + 4 * n_neighbors
+    # `dim` values per neighbour, not one. A two-coordinate law hands this
+    # a FLAT list of dim*degree, and taking element i for neighbour i stored
+    # both coordinates of the first neighbour under the ids of the first two
+    # and dropped the rest -- silently, because the width still matched.
+    return 2 + n_timing + n_state + (3 + dim) * n_neighbors
 
 
 def git_hash(cwd: str | Path | None = None) -> str:
@@ -108,6 +122,10 @@ class RunMeta:
     dt_s: float = 0.0
     publish_period_s: float = 0.0
     neighbors: list[int] = field(default_factory=list)
+    #: Coordinates per neighbour value, i.e. the controller's `dim`. 1 for the
+    #: scalar law, 2 for the microgrid family. Recorded because the row width
+    #: depends on it and a reader cannot infer it from a row alone.
+    dim: int = 1
     controller: dict[str, Any] = field(default_factory=dict)
     started_at: str = ""
     ended_at: str = ""
@@ -164,7 +182,7 @@ class RunLog:
         self.fmt = fmt
         self.flush_every = flush_every
         self.ncols = record_width(len(meta.neighbors), len(meta.state_columns),
-                                  len(meta.timing_columns))
+                                  len(meta.timing_columns), dim=meta.dim)
         self._pack = struct.Struct(f"<{self.ncols}d").pack
         self.meta.log_format = fmt
         self.meta.record_bytes = self.ncols * _ITEM if fmt == "binary" else 0
@@ -178,10 +196,14 @@ class RunLog:
         cols = ["timestamp", "device_timestamp", *self.meta.timing_columns,
                 *self.meta.state_columns]
         for nid in self.meta.neighbors:
-            # vstate, arrival flag, the sender's seq, and RSSI. seq makes per-window
-            # delivery derivable offline at any window size, and rssi separates
-            # interference from load -- see v6 in the schema note.
-            cols += [str(nid), f"rx_{nid}", f"seq_{nid}", f"rssi_{nid}"]
+            # The neighbour's virtual state -- one column per COORDINATE, named
+            # `<id>` when there is one and `<id>_P`/`<id>_Q` when there are two
+            # -- then the arrival flag, the sender's seq, and RSSI. seq makes
+            # per-window delivery derivable offline at any window size, and
+            # rssi separates interference from load; see v6 and v7.
+            cols += ([str(nid)] if self.meta.dim == 1
+                     else [f"{nid}_{c}" for c in COORD_SUFFIX[:self.meta.dim]])
+            cols += [f"rx_{nid}", f"seq_{nid}", f"rssi_{nid}"]
         return cols
 
     # paths: ---------------------------------------------------------------------
@@ -267,8 +289,14 @@ class RunLog:
         row = [t_s, t_s if device_t_s is None else device_t_s,
                *timing, *channels]
         n = len(self.meta.neighbors)
+        dim = self.meta.dim
         for i in range(n):
-            row.append(float(neighbor_vstates[i]) if i < len(neighbor_vstates) else 0.0)
+            # `neighbor_vstates` is flat with `dim` values per neighbour, in
+            # declared order, which is how the controller is handed it.
+            for c in range(dim):
+                k = i * dim + c
+                row.append(float(neighbor_vstates[k])
+                           if k < len(neighbor_vstates) else 0.0)
             row.append(1.0 if i < len(neighbor_fresh) and neighbor_fresh[i] else 0.0)
             row.append(float(neighbor_seq[i]) if i < len(neighbor_seq) else 0.0)
             row.append(float(neighbor_rssi[i]) if i < len(neighbor_rssi) else 0.0)

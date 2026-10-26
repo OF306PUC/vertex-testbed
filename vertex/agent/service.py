@@ -438,6 +438,10 @@ class AgentService:
                 manifest_name=a.manifest_name, seed=a.seed, run_index=a.run_index,
                 dt_s=a.dt_s, publish_period_s=a.publish_period_s,
                 neighbors=list(a.neighbors),
+                # From the controller, not from the node type: a relayed node
+                # has no controller object but its law still decides how many
+                # coordinates a neighbour value carries.
+                dim=_controller_dim(a.controller),
                 # The log schema comes from the controller, not from here: it
                 # declares its own channels and whether it wants the tick
                 # timed, and the metadata records the resolved list so a
@@ -704,6 +708,13 @@ RELAY_COLUMNS_MICROGRID = ("state_P", "state_Q", "vstate_P", "vstate_Q",
 #: say what the board did.
 RELAY_COLUMNS_MICROGRID_LC = ("state_P", "state_Q", "vstate_P", "vstate_Q",
                               "S1", "S2")
+
+
+def _controller_dim(name: str) -> int:
+    """Coordinates per neighbour value for the named controller."""
+    from ..controllers.base import REGISTRY
+    cls = REGISTRY.get(name)
+    return int(getattr(cls, "dim", 1)) if cls else 1
 
 
 def _controller_columns(name: str, *, relay: bool = False) -> list[str]:
