@@ -13,10 +13,8 @@ path, and two sets drawn in one session cannot overwrite each other.
 set directory already said `mixed` and `per`, and repeating them inside it
 made paths that are long to type into `\includegraphics` and hard to scan.
 
-This used to be four copies of one function, one per script, and the copy in
-`plot_dg5_profiles.py` was the odd one -- it hardcoded a destination, so the
-replication-profile panels were written into the persistent profile's
-directory. One definition cannot drift from itself.
+Every script that writes a five-DG figure resolves its destination here, so
+no script can hardcode one and no two can disagree.
 """
 from __future__ import annotations
 

@@ -35,13 +35,10 @@ UnitSystem = Literal["engineering", "scaled_int"]
 #: are seconds and freshness flags are booleans; converting either would be wrong.
 #:
 #: The `_P`/`_Q` names are the microgrid laws' two coordinates as a relayed
-#: node logs them. They were missing when the relay's columns were renamed
-#: from `state`/`vstate`, and because an unrecognised column used to fall
-#: through unconverted, a `ble` node's trajectory stayed in scaled integers
-#: while its metadata was stamped `engineering`. Nothing raised: the run
-#: loaded, the plots drew, and two nodes of five sat a factor of 1e6 above
-#: the rest. Hence `UnknownColumn` below -- the list being incomplete must
-#: be an error, not a pass-through.
+#: node logs them. A column missing from this list raises `UnknownColumn`
+#: rather than passing through unconverted: it would otherwise leave that
+#: node's trajectory in scaled integers while its metadata claims engineering
+#: units, which loads and plots without complaint.
 STATE_COLUMNS = ("state", "vstate", "vartheta",
                  "state_P", "state_Q", "vstate_P", "vstate_Q",
                  "S1", "S2")

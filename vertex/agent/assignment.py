@@ -24,19 +24,14 @@ _BLOCKS = ("plant", "virtual", "interface")
 def _microgrid_params(m: dict[str, Any]) -> dict[str, Any]:
     """Rebuild the controller's parameter blocks from the carried dicts.
 
-    Keys are selected by what `ControllerParams` accepts, not by excluding
-    the ones known not to be parameters. The `microgrid` block carries two
-    kinds of thing -- values the controller is built from, and values the run
-    must record about itself, like `T_c`, which only one interface takes as a
-    parameter but every arm is judged against. A deny-list means each new
-    entry of the second kind is a `TypeError` inside `configure` on any agent
-    older than the hub, which is exactly how one was found: the hub sent
-    `T_c`, five agents refused the whole run, and nothing had changed on
-    their side.
-
-    An allow-list makes an unrecognised key inert instead. It does not
-    rescue an agent already deployed with the old code -- nothing can -- but
-    it stops the next field from doing the same thing.
+    Keys are selected by what `ControllerParams` accepts rather than by
+    excluding the ones known not to be parameters. The `microgrid` block
+    carries two kinds of value: those the controller is built from, and those
+    the run must record about itself -- `T_c` is the latter, taken as a
+    parameter by one interface but judged against by every arm. Under a
+    deny-list each new value of the second kind raises `TypeError` inside
+    `configure` on any agent older than the hub; an allow-list makes it inert
+    instead. See docs/MICROGRID.md.
     """
     from ..controllers.base import ControllerParams
     from ..controllers.interface_adaptive import AdaptiveParams

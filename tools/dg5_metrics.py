@@ -593,10 +593,10 @@ TEX = {"T": (r"$T_{\delta_x}$ [s]", "{:.2f}"),
 
 
 def _cell(v, fmt, iqr=None):
-    # Infinity BEFORE the finiteness test, which used to swallow it. A
-    # settling time that never arrives has a value and it is not "missing":
-    # eq:settling_time returns inf when the band is left and not re-entered,
-    # and that is the result for LC0, not a gap in the record.
+    # Infinity is tested before finiteness, because the two mean different
+    # things here: a settling time that never arrives is a result, not a gap
+    # in the record. `entrance` returns inf when the band is left and not
+    # re-entered, and the table must show that rather than a dash.
     if v == float("inf"):
         return r"$\infty$"
     if not np.isfinite(v):
