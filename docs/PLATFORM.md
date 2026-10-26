@@ -44,7 +44,8 @@ Three decisions are premises, not open questions.
    not yet implemented)* `finite_time_adaptive` is what the platform measures
    and what 596 collected runs are about. The five-DG microgrid benchmark was
    added to answer one reviewer, and it is a **second system that borrows the
-   platform**, not a second thing the platform is for.
+   platform**, not a second thing the platform is for. Its own design
+   decisions are in MICROGRID.md.
 
    The distinction has a consequence that is already visible. The microgrid
    family reached into the agent, the serial protocol, the on-air codec, the

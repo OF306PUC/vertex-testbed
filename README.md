@@ -504,6 +504,8 @@ channel, and the holder has to exit first.
 | `tools/` | manifest generation, plotting, run comparison, simulation |
 | `scripts/` | agent supervision and bench diagnostics |
 | `deploy/` | systemd units, for when more than one host makes `agents.sh` insufficient |
+| `plotting-tools/` | the figure pipeline; `render_dg5.py` redraws the whole five-DG set |
+| `docs/` | `PLATFORM.md` (design and decisions), `METRICS.md`, `CLOCK_MODEL.md`, `RUNBOOK.md`, `MICROGRID.md` (the five-DG benchmark) |
 
 ## Diagnostics
 
