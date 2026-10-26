@@ -66,10 +66,13 @@ results/
 
 docs/papers/
 
+# Figure output. The scripts that produce it are tracked; 67 MB of rendered
+# PDF and PNG are not, because `render_dg5.py` regenerates all of it from the
+# runs in one command.
 plotting-tools/render/
 
+# The offline oracle and the reviewer-response material. Held out because it
+# carries a copyrighted publisher PDF and 16 MB of generated figures. The six
+# checks in test/ that compare against it skip with a message when it is
+# absent -- see test/oracle/_oracle.py -- so the suite still runs without it.
 reviewers-exp/
-
-plotting-tools/
-
-test/
