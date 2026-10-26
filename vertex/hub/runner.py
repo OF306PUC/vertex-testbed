@@ -402,9 +402,24 @@ class ExperimentRunner:
 
         await asyncio.gather(*(collect(i) for i in ids))
 
-        (run_dir / "run.json").write_text(
-            json.dumps(report.to_dict(), indent=2), encoding="utf-8")
+        self._write_run_json(report)
         return report
+
+    @staticmethod
+    def _write_run_json(report: "RunReport") -> None:
+        """(Re)write a run's own record.
+
+        Callable again after the fact, because `run_arms` learns which arm
+        and which position in the randomized order a run had only once it
+        returns -- and those notes were being appended to a report whose
+        file had already been written, so the one thing that documents the
+        randomization never reached the disk. A protocol claim the record
+        cannot support is not a protocol.
+        """
+        if report.out_dir is None:
+            return
+        (report.out_dir / "run.json").write_text(
+            json.dumps(report.to_dict(), indent=2), encoding="utf-8")
 
     # ── paired arms ──────────────────────────────────────────────────────────
     def set_arm(self, arm: str) -> None:
@@ -461,6 +476,7 @@ class ExperimentRunner:
                 report.notes.append(
                     f"arm {arm}, trial {trial}, position {k + 1} of {len(order)}")
                 await self._record_watchdog(report, only=only)
+                self._write_run_json(report)
                 out.append(report)
         return out
 
