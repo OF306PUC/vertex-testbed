@@ -59,12 +59,10 @@ void microgrid_reset(struct agent *a)
     v->wP = u(m->b) * u(m->rP);
     v->wQ = u(m->b) * u(m->rQ);
     v->vartheta = u(m->vartheta_0);
-    /* Never given the answer. `m->S1` is the emulator's true
-     * parameter and is read by the plant and by nothing else;
-     * the `_hat` is what the interface is trying to learn. The
-     * two are one word of context apart in this file, and a slip
-     * between them would make the law work perfectly and the
-     * benchmark meaningless, so they do not share a name. */
+    /* Never given the answer. `m->S1` is the emulator's true parameter,
+     * read by the plant and by nothing else; `_hat` is what the interface
+     * is trying to learn. They do not share a name because a slip between
+     * them would leave the law working and the benchmark meaningless. */
     v->S1_hat = 0.0f;
     v->S2_hat = 0.0f;
     v->updates = 0u;
@@ -77,10 +75,9 @@ void microgrid_reset(struct agent *a)
      * to this law and not to the frame that configures the other one. */
     a->vars.counter = 0u;
 
-    /* Publish the int32 mirrors now, not at the end of the first step.
-     * report.c sends whatever is in them, so leaving them stale made the
-     * first sample of every run carry the previous law's value -- the sample
-     * at t = 0, which is the initial condition every plot starts from. */
+    /* Publish the int32 mirrors now, not at the end of the first step:
+     * report.c sends whatever is in them, and the sample at t = 0 is the
+     * initial condition every plot starts from. */
     a->vars.state    = (int32_t)lrintf(v->xP * SCALE_FACTOR);
     a->vars.vstate   = (int32_t)lrintf(v->zP * SCALE_FACTOR);
     a->vars.vartheta = (int32_t)lrintf(v->vartheta * SCALE_FACTOR);
@@ -266,17 +263,10 @@ void microgrid_step(struct agent *a)
      * not need to cross the wire at 40 Hz. */
     a->vars.state_q = (int32_t)lrintf(v->xQ * SCALE_FACTOR);
     a->vars.vstate_q = (int32_t)lrintf(v->zQ * SCALE_FACTOR);
-    /* NO modulo. This counter is the microgrid law's own clock -- step 2
-     * reads `t = counter * h` from it -- while `disturbance.samples` is the
-     * period of the SCALAR law's disturbance, a quantity this family never
-     * uses. Wrapping the clock by it rewound every deadline: at the default
-     * 1000 samples and h = 25 ms the law's time reset every 25 s, so T_o
-     * (30 s) and T_c (40 s) were unreachable, the prescribed-time gain never
-     * approached its clamp, and the terminal branch could not fire. A board
-     * so configured tracked an order of magnitude worse than the host and
-     * agreed with it perfectly whenever the run was short enough, or the
-     * period long enough, not to wrap -- which is every offline check.
-     *
-     * uint32 at 40 Hz is 3.4 years, so there is nothing to wrap for. */
+    /* No modulo: this is the law's own clock, which step 2 reads as
+     * `t = counter * h`. It must not be wrapped by `disturbance.samples`,
+     * the SCALAR law's disturbance period, which this family never uses --
+     * wrapping rewinds T_o and T_c and puts them out of reach. uint32 at
+     * 40 Hz is 3.4 years, so there is nothing to wrap for. */
     a->vars.counter += 1u;
 }
