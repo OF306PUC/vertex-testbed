@@ -4,10 +4,7 @@ sec:metrics asks for control effort. Three of the five agents report it
 directly -- `muapp_P`, `muapp_Q` are in their STATE tail -- and the two whose
 law runs on an nRF behind a relay do not: their tail carries the states and
 the adaptive quantity, and the command is dropped before it reaches the host.
-Which made the heterogeneous campaign look unable to answer a question it
-holds all the inputs to.
-
-It is not missing, only unrecorded. The command is a deterministic function
+The command is not missing, only unrecorded: it is a deterministic function
 of quantities that ARE logged:
 
     sigma[k] = x[k-1] - z[k-1]              the interface runs on the old state
@@ -18,26 +15,14 @@ of quantities that ARE logged:
     mu[k]    = g[k] - omega[k]
     applied  = sat_{mu_max}(mu[k])
 
-`g` needs no neighbour at all, which is what makes this work on a node whose
-neighbour table is not fully logged. The virtual layer commits
+`g` needs no neighbour, which is what makes this work on a node whose
+neighbour table is not fully logged: it is a forward difference of the node's
+own virtual state. Why that identity holds, how the index conventions above
+were established rather than assumed, and the one difference from the agent's
+own arithmetic that cannot be undone, are in docs/MICROGRID.md.
 
-    z+ = (1 - theta) z + theta w / D,   theta = h a_o D / (1 + h a_o D)
-
-and with eta = D z - w that rearranges to z+ - z = -h a_o eta / (1 + h a_o D),
-which is exactly h g. So g is a forward difference of the node's own virtual
-state, and the whole reconstruction is local.
-
-The index conventions above were not assumed. They were read off the three
-nodes that log both the inputs and the answer, by trying every shift in
-[-2, 2] and keeping the one that reproduces the logged `sigma`, `g` and `mu`
-to 0.0 -- not to a tolerance. `verify()` re-runs that check on any run, and
-the reconstruction should be trusted exactly as far as it keeps passing.
-
-The arithmetic differs from the agent's in one way that cannot be undone: a
-relayed node runs its law in float32 on the nRF and this runs in float64.
-What it reconstructs is therefore the float64 evaluation of the same law on
-the same logged states, which is the quantity the other three nodes report
-anyway.
+`verify()` re-runs the establishing check on any run. The reconstruction
+should be trusted exactly as far as it keeps passing.
 """
 from __future__ import annotations
 
