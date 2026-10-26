@@ -77,7 +77,8 @@ of the declaration and of nothing else.
 ## 4. Where the seam does not reach
 
 Three things a family needed were not declared by the family. Two are now
-closed and recorded here with what the fix was; the third is open.
+closed and recorded here with what the fix was. The third is open, and §4.3
+records why closing it would cost more than it buys today.
 
 ### 4.1 Which columns cross a relay link — *closed*
 
@@ -117,7 +118,7 @@ units, so nothing has needed the conversion and the dg5 analysis reads through
 `load_run` without it. Closing it means classifying each as scaled or
 passthrough, which is a judgement per column rather than a derivation.
 
-### 4.3 How parameters are carried
+### 4.3 How parameters are carried — *open, and deliberately*
 
 `AgentAssignment` in `vertex/agent/assignment.py` carries a `microgrid: dict`
 field by name, and both `to_controller_params()` and
@@ -125,18 +126,34 @@ field by name, and both `to_controller_params()` and
 populated:
 
 ```
-if self.microgrid:   return ControllerParams(dt_s=..., **_microgrid_params(...))
+if self.microgrid:           return ControllerParams(dt_s=..., **_microgrid_params(...))
 if c.microgrid is not None:  return ControllerParams(dt_s=..., **microgrid_blocks(...))
 ```
 
-A third family would add a third field and a third branch in both places. This
-is the largest of the three gaps and the one with no obvious default: the scalar
-law's parameters are flat, the microgrid family's are three nested dataclasses,
-and `ControllerParams` currently holds the union.
+A third family would add a third field and a third branch in both places.
+`ControllerParams` currently holds the union: the scalar law's flat gains, the
+microgrid family's three nested dataclasses, and the per-agent scalars. Each
+family reads only its own fields, and the microgrid ones are read nowhere
+outside `vertex/controllers/microgrid.py`, so the union is separable in
+principle.
 
-**What the seam would need:** the family owning the manifest→assignment→params
-path for its own block, with `ControllerParams` carrying an opaque payload the
-family unpacks.
+**It is left as it is on purpose.** The obvious fix — a family-neutral field
+name, so a third family reuses it rather than adding one — founders on what
+the name already is. `"microgrid"` is not only a field: it is a key of the
+metadata format, written into `<run>/<node>.meta.json` for **147 collected
+runs**, and read back by name in eight analysis scripts
+(`tools/dg5_metrics.py`, `tools/dg5_params.py`, four `plotting-tools/plot_dg5*`
+scripts, `vertex/analysis/effort.py`). Renaming it either strands that data or
+buys a compatibility shim that has to accept both names indefinitely.
+
+The manifest side alone is regenerable — eight YAML files from
+`tools/make_manifests.py` — but renaming half leaves two names for one thing,
+which is worse than one consistent name.
+
+So the cost is a migration of recorded data, and what it buys is removing two
+`if` statements for a family that does not yet exist. The decision to revisit
+is when a third family arrives and its shape is known: at that point the
+migration has a reason, and the right field name is a fact rather than a guess.
 
 ## 5. The firmware side
 
