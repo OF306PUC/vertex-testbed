@@ -65,7 +65,8 @@ Three decisions are premises, not open questions.
    * the platform keeps a documented seam for adding a system — what a new
      controller family must declare, what the log and the wire owe it, and
      what it may not touch — so the next one is an addition rather than a
-     renovation;
+     renovation. **Written: CONTROLLERS.md.** It records three gaps the seam
+     does not yet reach, which is the inventory the split needs;
    * the scalar law stays the default and the reference.
 
    **What is not yet decided**: how far "apart" goes. A separate package
