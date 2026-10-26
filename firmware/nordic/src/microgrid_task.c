@@ -266,5 +266,17 @@ void microgrid_step(struct agent *a)
      * not need to cross the wire at 40 Hz. */
     a->vars.state_q = (int32_t)lrintf(v->xQ * SCALE_FACTOR);
     a->vars.vstate_q = (int32_t)lrintf(v->zQ * SCALE_FACTOR);
-    a->vars.counter = (a->vars.counter + 1) % a->params.disturbance.samples;
+    /* NO modulo. This counter is the microgrid law's own clock -- step 2
+     * reads `t = counter * h` from it -- while `disturbance.samples` is the
+     * period of the SCALAR law's disturbance, a quantity this family never
+     * uses. Wrapping the clock by it rewound every deadline: at the default
+     * 1000 samples and h = 25 ms the law's time reset every 25 s, so T_o
+     * (30 s) and T_c (40 s) were unreachable, the prescribed-time gain never
+     * approached its clamp, and the terminal branch could not fire. A board
+     * so configured tracked an order of magnitude worse than the host and
+     * agreed with it perfectly whenever the run was short enough, or the
+     * period long enough, not to wrap -- which is every offline check.
+     *
+     * uint32 at 40 Hz is 3.4 years, so there is nothing to wrap for. */
+    a->vars.counter += 1u;
 }
