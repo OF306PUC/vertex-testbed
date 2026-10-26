@@ -2006,6 +2006,30 @@ it or go.
 too, the effect is on-air contention rather than anything about the Pi.
 
 
+### 7.2b Fleet configuration with Ansible *(idea, JI 2026-10-26, not scoped)*
+
+Ten Pis are currently brought to a known state by `scripts/` and by hand. The
+proposal is to drive them from an Ansible inventory instead, as in
+<https://zbotic.in/raspberry-pi-ansible-automate-config-on-fleet-of-pi-boards/>.
+
+What it would buy is the part of reproducibility the repository cannot cover
+today: the manifests, the firmware and the agent code are versioned, but the
+host state they run on -- package versions, `BlueZ` stopped, power save
+disabled, the NTP source, the Wi-Fi channel -- is reproduced by following
+RUNBOOK.md correctly. A third party cloning the repo can read what the hosts
+must look like; they cannot apply it.
+
+Two things to settle before scoping it:
+
+* **What is declarative and what is not.** Stopping `bluetoothd` and disabling
+  power save are idempotent and belong in a playbook. Flashing the nRF is not
+  obviously so, and `west flash` already owns it.
+* **Whether the inventory is the manifest's source of truth.**
+  `tools/make_manifests.py` holds the host list (`DG5_MIXED_HOSTS`, the
+  10-host map). Two inventories that can disagree is worse than one that is
+  inconvenient, so either the playbook reads the generator's host list or the
+  generator reads the inventory.
+
 ### 7.3 Varying airtime when the rate is floored
 
 **The publish-rate sweep cannot vary BLE airtime past 10 Hz.** Airtime is set by
