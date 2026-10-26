@@ -10,11 +10,11 @@ Arms are coloured from `palette.CONTROLLER`, which shares no hue with the
 medium palette for exactly this reason: a per-agent panel colours by medium
 and this colours by arm, and both appear in the same document.
 
-The third figure is not decoration. `arms_Ex` reports the worst node, and
-one arm's worst nodes turned out to be the two whose law runs on an nRF
-while its three Pi-side nodes tracked normally -- a split a fleet-wide
-maximum hides completely. Splitting the same quantity by where the law ran
-is what makes that visible, and it is the platform's own question.
+The third figure is not decoration. `arms_Ex` reports the worst node, which
+a fleet-wide maximum cannot distinguish from a fleet that is uniformly worse.
+Splitting the same quantity by where the law ran is the platform's own
+question -- single precision on an nRF against double precision on a host --
+and it is the only figure here that can answer it.
 
     python3 plotting-tools/plot_dg5_arms.py
     python3 plotting-tools/plot_dg5_arms.py runs/dg5-mixed-0-AA runs/...
@@ -66,11 +66,10 @@ def load(run_dir: Path):
     r = load_run(run_dir)
     ids = sorted(r.nodes)
     # Shared with plot_dg5: the run's metadata where it has T_c, else the
-    # manifest it names. Falling back to T_o instead -- which an earlier
-    # version of this file did -- silently measures E_x from the wrong
-    # deadline, and reported 28.6 for an arm that settles at 0.005: at T_o
-    # the pinned node is still 28 away and converging, which is what T_c is
-    # there to allow.
+    # manifest it names. It must be T_c and not T_o. Measured at T_o the
+    # pinned node is still some 28 away and converging -- which is what the
+    # interval between the two deadlines is for -- so E_x read there reports
+    # 28.6 for an arm that settles at 0.005, and reports it silently.
     T_o, T_c = deadlines(run_dir)
     ref = None
     for i in ids:

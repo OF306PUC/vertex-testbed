@@ -10,13 +10,10 @@ Each run set under `runs/` gets:
                                           and _profiles for the two mixed sets)
     t<n>-<arm>/  the single-run figures  (plot_dg5)
 
-Four scripts, each with its own argument convention and its own idea of which
-runs it wants, were being invoked by hand once per set -- twenty-odd command
-lines to redraw one figure set, and the `rep` panels ended up in the `per`
-directory because one of those lines named a destination instead of deriving
-it. Here the set is enumerated from disk and every script is handed the runs
-it needs, so "redraw everything" is one command and cannot put a figure in
-the wrong place.
+Four scripts write this tree, each with its own argument convention and its
+own idea of which runs it wants. Here the set is enumerated from disk and each
+script is handed the runs it needs, so "redraw everything" is one command and
+no destination is ever named by hand -- `dg5_paths` derives every one.
 
 `plot_dg5_profiles` is run once rather than per set: it couples the y limits
 of the two mixed sets on purpose, so it reads both and writes into each.

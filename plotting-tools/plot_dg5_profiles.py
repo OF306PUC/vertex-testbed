@@ -16,15 +16,11 @@ the axes agree -- which is the one thing a grid gave that independent figures
 otherwise would not.
 
 Every LC variant a profile has is drawn, including the one whose premise the
-profile breaks. An earlier version paired each profile with the variant that
-was supposed to work there -- LC0 under replication, LC+ under persistence --
-and left out LC0 under persistence on the grounds that it compares a
-controller against a condition it does not claim. That is the comparison
-worth having: LC0 reaches the reference before T_c and then drifts away from
-it, because the terminal policy freezes the estimator while the uncertainty
-is still there, and the drift reads as a drift only against a DZ trace that
-stays put. The per-run figures show the same trajectories without DZ to
-measure them against.
+profile breaks -- LC0 under persistent uncertainty. Pairing each profile only
+with the variant that works there would omit the comparison worth having: LC0
+reaches the reference before T_c and then drifts away from it, and that drift
+reads as a drift only against a DZ trace that stays put. The per-run figures
+show the same trajectories with nothing to measure them against.
 
 Normalised, where `plot_dg5_compare.py` draws the same comparison in physical
 units: there every DG lands on its own level kappa_i * r and the figure reads

@@ -165,10 +165,10 @@ def one_run(D: Path) -> dict:
         out["g_max"] = float(np.max([g.max() for g in gains]))
         out["slope"] = float(np.mean([np.sum(tt * (g[post] - g[post].mean()))
                                       / np.sum(tt ** 2) for g in gains]))
-    # `vartheta` is the adaptive gain of the AA/DZ interfaces; `S1` is the LC
-    # interfaces' parameter estimate. Different quantities, different units,
-    # different targets -- and the single "max. adaptive" row this replaces
-    # put them side by side as if one could be read against the other.
+    # Restricted to `vartheta`, the adaptive gain of the AA/DZ interfaces.
+    # The LC interfaces' `S1` is a parameter estimate: a different quantity
+    # with different units and a different target, which one row holding both
+    # would invite the reader to compare.
     out["g_max_vth"] = out["g_max"] if out.get("gk") == "vartheta" else np.nan
     out["ups"] = (float(sum(col(i, "updates")[-1] for i in ids))
                   if have("updates") else np.nan)
