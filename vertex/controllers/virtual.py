@@ -14,11 +14,10 @@ the reference. Everyone else reaches it through the graph.
 
 ## Why there is no solver here
 
-An earlier version of the specification integrated this subsystem with RK4
-over 200 internal steps per tick. The revision replaced that with the single
-semi-implicit step above, applied to the local ``z_i`` term only while the
-neighbour snapshot and ``a_o,i`` are held. One reciprocal serves both
-coordinates and the gain update needs a sum of two squares, no square root.
+The step above is semi-implicit and runs once per tick, applied to the local
+``z_i`` term only while the neighbour snapshot and ``a_o,i`` are held. One
+reciprocal serves both coordinates and the gain update needs a sum of two
+squares, no square root.
 
 The form that matters is the convex one,
 
@@ -31,15 +30,10 @@ is therefore preserved for any nonnegative gain, which is what makes the
 update safe at a gain the adaptation is free to grow without bound. It is not
 a proof of prescribed-time convergence.
 
-## What it costs, and what it cannot buy
-
 As the gain grows ``theta`` tends to one and the update becomes
-``z_i <- w_i / D_i``: a Jacobi sweep toward the neighbour average. With the
-snapshot held between packets the layer performs one such sweep per exchange
-however large the gain, so the contraction per *packet* is bounded by the
-spectral radius of ``D^-1 A`` on the graph, 0.9336 on the benchmark's pinned
-ring. Convergence is bought with packets, not with gain. See
-``reviewers-exp/EXCHANGE-LIMIT.md``.
+``z_i <- w_i / D_i``: a Jacobi sweep toward the neighbour average. What that
+bounds, and why the prescribed time cannot be bought by raising the gain, is
+in docs/MICROGRID.md.
 """
 
 from __future__ import annotations

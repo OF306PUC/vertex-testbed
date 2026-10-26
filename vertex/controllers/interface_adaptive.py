@@ -15,18 +15,9 @@ That is deliberate: the comparison's whole claim is that the dead zone is the
 only difference, and a second implementation would be a second thing that
 could differ.
 
-## Two properties worth knowing before reading the results
-
-The correction is **clipped**: once ``vartheta_i >= ||sigma_i||_inf / h`` the
-term equals ``sigma_i / h`` however much further the gain grows. A drifting
-gain therefore need not produce any change in the applied input, and a claim
-that the dead zone reduces control effort has to come from the inputs rather
-than from the gain.
-
-``gamma`` is an increment **per update**, not a rate. An Euler realization of
-a continuous rate uses ``gamma = h gamma_ct``, and the two numbers must not be
-identified: the same continuous behaviour needs a different ``gamma`` at a
-different ``h``.
+Two properties govern how these results must be read -- the correction is
+clipped, so a drifting gain need not reach the plant at all, and ``gamma`` is
+an increment per update rather than a rate. Both are in docs/MICROGRID.md.
 """
 
 from __future__ import annotations

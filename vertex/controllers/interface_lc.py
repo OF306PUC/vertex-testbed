@@ -26,22 +26,16 @@ which is what keeps the estimate from being handed the answer.
 
 ## The adaptation gates
 
-``Phi_i`` at the source's value leaves the estimate inert: the post-deadline
-parameter rate is ``Phi a_zeta^2 (P~^s^2 + Q~^s^2) / lambda_ch``, and with
-``a_zeta ~ 1e-3`` that is a time constant far longer than a trial. Raising it
-alone does not fix that, because the transient then *deposits* an estimate
-rather than converging to one: while sigma is large, ``Gamma int(R^T sigma)``
-places S_hat wherever the transient leaves it and the post-deadline rate is
-too slow to correct it.
+``adapt_band`` holds the parameter update shut until ``||sigma_i||_1`` falls
+below it, so the transient contributes nothing and what follows is
+identification rather than deposition. Its inequality runs opposite to the
+dead zone of the adaptive interface, and for a different reason: a robustness
+gain must grow while the error is large, a parameter estimate must only read a
+residual that is informative about the parameter.
 
-``adapt_band`` holds the update shut until ``||sigma_i||_1`` falls below it,
-so the transient contributes nothing and what follows is identification
-rather than deposition. Note the inequality runs opposite to the dead zone of
-the adaptive interface, and for a different reason: a robustness gain must
-grow while the error is large, a parameter estimate must only read a residual
-that is informative about the parameter.
-
-Both default to off, which is the document's behaviour.
+``adapt_band`` and ``adapt_after`` default to off, which is the source's
+behaviour. The choice of ``Phi_i`` and why the source value leaves the
+estimate inert are in docs/MICROGRID.md.
 """
 
 from __future__ import annotations

@@ -99,7 +99,66 @@ Two things to know when reading those numbers:
   What it reconstructs is the float64 evaluation of the same law on the same
   logged states, which is the quantity the other three nodes report anyway.
 
-## 5. Declared departures from the source benchmark
+## 5. The virtual layer buys convergence with packets, not with gain
+
+The discrete virtual update is a convex combination,
+
+```
+z_i+ = (1 - theta) z_i + theta (w_i / D_i),
+theta = h a_o,i D_i / (1 + h a_o,i D_i) in [0, 1)
+```
+
+and `w_i / D_i` is itself a convex combination of the received values and, at
+the pinned node, the reference. A coordinate interval containing them is
+therefore preserved for any nonnegative gain. That is what makes the update
+safe at a gain the adaptation is free to grow without bound; it is not a proof
+of prescribed-time convergence.
+
+The limit is the point. As the gain grows `theta` tends to one and the update
+becomes `z_i <- w_i / D_i`, a Jacobi sweep toward the neighbour average. With
+the snapshot held between packets the layer performs **one such sweep per
+exchange however large the gain**, so the contraction per packet is bounded by
+the spectral radius of `D^-1 A` on the graph — `0.9336` on the benchmark's
+pinned ring.
+
+Raising the prescribed-time gain therefore cannot make the layer converge in
+fewer exchanges. The exchange count is what sets the deadline, which is why
+`h_v` is bounded rather than free. See `reviewers-exp/EXCHANGE-LIMIT.md` for
+the count.
+
+## 6. Reading the adaptive-interface results
+
+Two properties of `C_AA` and `C_DZ` govern how their numbers must be read.
+
+**The correction is clipped.** Once `vartheta_i >= ||sigma_i||_inf / h`, the
+term `omega_il = sgn(sigma_il) min(vartheta_i, |sigma_il| / h)` equals
+`sigma_i / h` however much further the gain grows. A drifting gain therefore
+need not produce any change in the applied input at all. Any claim that the
+dead zone reduces control effort has to come from the measured inputs, not
+from the gain trajectory — and on this benchmark it does not: `C_AA` and
+`C_DZ` differ by a factor of three in terminal gain and are indistinguishable
+in `J_mu`, peak command and total variation.
+
+**`gamma` is an increment per update, not a rate.** An Euler realization of a
+continuous rate uses `gamma = h gamma_ct`. The two numbers must not be
+identified: reproducing the same continuous behaviour at a different `h`
+requires a different `gamma`.
+
+## 7. Why raising `Phi_i` is not enough on its own
+
+The post-deadline parameter rate of the LC interface scales as
+`Phi a_zeta^2 (P~^s^2 + Q~^s^2) / lambda_ch`, which is why the source value is
+inert here (§8). Raising it alone does not by itself produce identification. While `sigma`
+is large, `Gamma int(R^T sigma)` *deposits* an estimate wherever the transient
+leaves it, and the post-deadline rate is too slow to correct it. The
+`adapt_band` gate exists for that: it holds the update shut until
+`||sigma_i||_1` falls below it, so the transient contributes nothing and what
+follows is identification rather than deposition.
+
+`adapt_band` and `adapt_after` default to off, which is the source's
+behaviour, and the reported runs use them off.
+
+## 8. Declared departures from the source benchmark
 
 The baseline is the prescribed-time controller of Liu and Che. Three values
 differ from the source and are declared rather than inherited:
@@ -107,7 +166,7 @@ differ from the source and are declared rather than inherited:
 | Value | Source | Here | Why |
 |---|---|---|---|
 | `beta_c` | 400 | 2 | At `h = 25` ms the Euler update of the error dynamics has multiplier `1 - h beta_c/(T_c - t)`, already `-1` at `k = 0`. Substepping an internal integrator does not fix it while the physical command is held for `h`. |
-| `Phi_i` | `3e-3` | `3.0` | The post-deadline parameter rate scales with `Phi a_zeta^2`; at `a_zeta ~ 1e-3` the source value gives a time constant far longer than a trial, leaving the estimate inert. |
+| `Phi_i` | `3e-3` | `3.0` | The source value leaves the estimate inert at this uncertainty scale; see §7. |
 | `alpha_0` | derived 0.1 | 1.0 | The derived value misses the calibration band. |
 
 The gain is additionally saturated below `T_c - t = 2h`, so that
