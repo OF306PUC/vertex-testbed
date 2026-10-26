@@ -138,11 +138,83 @@ and `ControllerParams` currently holds the union.
 path for its own block, with `ControllerParams` carrying an opaque payload the
 family unpacks.
 
-## 5. What this means for the split
+## 5. The firmware side
 
-PLATFORM.md §2 item 4 leaves open how far "apart" the microgrid work goes. The
-three gaps above are the answer to the prior question — which edits to shared
-code were *necessary* rather than convenient:
+The nRF runs the same two families, and the arrangement there is different
+from the Python side on purpose.
+
+**Both laws are compiled into every image, and the manifest chooses at run
+time.** `enum control_law` selects, `agent.h` carries the parameters and
+variables of both families in one `struct agent`, and `discrete_step` in
+`coordination_task.c` dispatches on `params.law`:
+
+```c
+if (a->params.law != LAW_FINITE_TIME_ADAPTIVE) { microgrid_step(a); return; }
+```
+
+Plant, agent and control-law state therefore share one struct rather than
+being separated per family. That is a deliberate choice and not an oversight:
+a board holds one agent, the selection is a single enum compared once per
+tick, and keeping the layout flat is what lets the host and the board agree on
+a byte offset without a negotiation. The microgrid members cost 168 B of the
+376 B struct — 45 % — which on a part with 256 KB of RAM is not a reason to do
+anything differently.
+
+### 5.1 What keeps C and Python consistent
+
+The firmware is not a second implementation that happens to agree. Seven
+checks in `test/check_all.sh` hold it to the host, and they are what makes a
+firmware edit safe to make:
+
+| Check | What it binds |
+|---|---|
+| `firmware symbols` | every `PROTO_T_*` and function a firmware uses is declared |
+| `serial layout: nordic` | the C decoder's field offsets against the Python encoder's byte layout |
+| `stats layout: nordic` | the firmware's STATS writer against the host's reader, field for field |
+| `on-air v1 codec` | the advertisement encoding, both directions |
+| `scalar law unchanged` | every scaled value of the scalar law, against a golden reference |
+| `control law C vs Python` | the scalar law numerically, 400 steps, to within float32 precision |
+| `microgrid law C vs Python` | the microgrid law numerically, 3000 steps, all four arms |
+
+`scalar law unchanged` is the one that matters most when touching anything
+shared: it asserts byte-for-byte equality against a stored reference, so a
+change that perturbs the scalar law is caught even if it leaves the microgrid
+family working.
+
+### 5.2 If the inclusion is ever made conditional
+
+Not planned. Recorded because the map is the expensive part.
+
+A `CONFIG_VERTEX_MICROGRID` symbol would need a `Kconfig` in
+`firmware/nordic/` — there is none today, and `prj.conf` carries only upstream
+Zephyr symbols — plus `target_sources_ifdef` in `CMakeLists.txt`. The guards
+would fall at eight points across six shared files:
+
+| File | What is guarded |
+|---|---|
+| `agent.h` | the two struct members, `microgrid` and `mg` |
+| `agent.c` | three frame-decode branches, two `microgrid_reset()` calls |
+| `coordination_task.c` | the `discrete_step` dispatch |
+| `proto.h`, `proto.c` | the three `MG_*` frame types, lengths and parser table |
+| `control.c` | the routing of those frames |
+| `report.c` | the second coordinate in the STATE tail |
+
+Eight `#ifdef` in six shared files is its own kind of disorder, and plausibly
+worse than one file compiled unconditionally. The arrangement that would
+avoid both is the one the Python side already has: a dispatch table of
+function pointers that each law registers, so including or excluding the file
+is the whole change and `agent.h` stops naming a family. That is a firmware
+refactor, not a build flag.
+
+What is not known: the flash cost. The microgrid path calls `tanhf`, `expf`
+and `sinf`, which may pull libm routines a scalar-only image would not carry.
+Measuring it needs a Zephyr build of both configurations.
+
+## 6. What this means for the split
+
+PLATFORM.md §2 item 4 leaves open how far "apart" the microgrid work goes.
+What this file establishes is the prior question — which edits to shared code
+were *necessary* rather than convenient:
 
 - §1–§3 of this file show that logging shape and tick behaviour were already
   extensible. The microgrid family declared `dim`, `coords`, `channels()`,
@@ -151,6 +223,11 @@ code were *necessary* rather than convenient:
 - §4 shows the three that were not. All three are *lists or branches keyed by
   family name*, and all three could be closed by moving the declaration onto the
   controller class — a change to the seam, not a directory move.
+- §5 shows that the firmware is outside this question. Both laws are compiled
+  in and selected at run time, the shared struct is intended, and seven checks
+  hold the C to the Python. A split of the Python side does not require the
+  firmware to move, and conditional compilation there is a separate decision
+  with its own map in §5.2.
 
 So the seam can be closed without choosing the split, and closing it first is
 what makes the split a relocation rather than a redesign.
