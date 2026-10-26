@@ -693,22 +693,6 @@ def _interpreter_provenance() -> dict[str, Any]:
 #: code finds fewer columns at a `ble` node rather than different ones.
 RELAY_COLUMNS = ("state", "vstate", "vartheta")
 
-#: Under a microgrid law the frame carries the second coordinate too, so a
-#: relayed node logs all four states. That is the whole state: everything
-#: else the law computes -- g, mu, sigma, theta, the estimator states -- is a
-#: function of (x, z, t) and the parameters, so it is recoverable offline and
-#: does not need to cross a 40 Hz link.
-RELAY_COLUMNS_MICROGRID = ("state_P", "state_Q", "vstate_P", "vstate_Q",
-                           "vartheta")
-
-#: The LC arms report their estimator instead of `vartheta`, which they do
-#: not have. Unlike g, mu and sigma -- functions of (x, z, t) that are
-#: reconstructed offline -- the estimate is the integral of its own error,
-#: so re-integrating it would only reproduce the host's answer rather than
-#: say what the board did.
-RELAY_COLUMNS_MICROGRID_LC = ("state_P", "state_Q", "vstate_P", "vstate_Q",
-                              "S1", "S2")
-
 
 def _controller_dim(name: str) -> int:
     """Coordinates per neighbour value for the named controller."""
@@ -720,21 +704,18 @@ def _controller_dim(name: str) -> int:
 def _controller_columns(name: str, *, relay: bool = False) -> list[str]:
     """The channel names this node will actually write.
 
-    A relay writes what the nRF reported, which is three values whatever law
-    the board is running. Taking the controller's list here is what made a
-    microgrid run on a `ble` node log nothing at all: the run declared 19
-    columns and 2 timing values, `_record_report` supplied 3 and 0, and the
-    ValueError died inside the event loop -- so every sample was dropped and
-    the hub still reported the node ok.
+    A relay writes what the nRF reported, which is a subset of what the
+    host-side agent computes; the controller declares which subset through
+    `relay_columns`. Declaring more columns than are written yields a log
+    with no samples at all -- the mismatch raises inside an event-loop
+    callback, so every sample is dropped and the hub still reports the node
+    ok.
     """
     from ..controllers.base import REGISTRY
-    if relay:
-        if name == "microgrid_lc":
-            return list(RELAY_COLUMNS_MICROGRID_LC)
-        return list(RELAY_COLUMNS_MICROGRID if name.startswith("microgrid")
-                    else RELAY_COLUMNS)
     cls = REGISTRY.get(name)
-    return cls.column_names() if cls else ["state", "vstate", "vartheta"]
+    if cls is None:
+        return list(RELAY_COLUMNS)
+    return cls.relay_columns() if relay else cls.column_names()
 
 
 def _timing_columns(name: str, *, relay: bool = False) -> list[str]:

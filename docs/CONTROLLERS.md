@@ -29,6 +29,7 @@ family declares only its departures.
 | `publishes_in_tick` | `False` | whether the packet leaves from inside the control step, after the commit |
 | `holds_stale_neighbours` | `False` | whether an overdue neighbour keeps contributing its last value |
 | `channels()` | `()` | the extra logged channels, in `ControllerOutput.extra` order, one name per scalar |
+| `relay_columns()` | `column_names()` | the subset that survives a relayed node, when the family reports less than it computes |
 
 `column_names()` composes the first four into the log schema and need not be
 overridden.
@@ -75,47 +76,46 @@ of the declaration and of nothing else.
 
 ## 4. Where the seam does not reach
 
-Three things a family needs are not declared by the family. They are maintained
-in shared modules, keyed by the family's name, and they are what a second system
-had to edit rather than extend.
+Three things a family needed were not declared by the family. Two are now
+closed and recorded here with what the fix was; the third is open.
 
-### 4.1 Which columns cross a relay link
+### 4.1 Which columns cross a relay link — *closed*
 
 A node whose law runs on an nRF reports through its host, and only part of the
-state crosses that link. The subset is a literal in
-`vertex/agent/service.py`, selected by name:
+state crosses that link. The family declares the subset:
 
-```
-RELAY_COLUMNS              = ("state", "vstate", "vartheta")
-RELAY_COLUMNS_MICROGRID    = (...)
-RELAY_COLUMNS_MICROGRID_LC = (...)
-
-if name == "microgrid_lc": ...
-return list(RELAY_COLUMNS_MICROGRID if name.startswith("microgrid") else ...)
+```python
+@classmethod
+def relay_columns(cls) -> list[str]:
+    return cls.column_names()        # the default: everything crosses
 ```
 
-A family cannot express "these of my columns cross the relay". Getting it wrong
-is not loud: a relayed node that declares more columns than it writes produces a
-log with zero samples, because the mismatch raises inside an event-loop callback.
+`vertex/agent/service.py::_controller_columns` asks the registry for it
+instead of selecting between literals by family name. Getting it wrong is not
+loud: a relayed node that declares more columns than it writes produces a log
+with zero samples, because the mismatch raises inside an event-loop callback.
 
-**What the seam would need:** a `relay_columns()` classmethod defaulting to
-`column_names()`.
+### 4.2 Which columns are stored scaled — *closed, and it was the same gap*
 
-### 4.2 Which columns are stored scaled
+`vertex/analysis/units.py` converts between engineering units and the integers
+on the wire, and `STATE_COLUMNS` lists what is subject to conversion. That list
+turned out to be **exactly** the union of the three relay column sets, and not
+by coincidence: a value arrives as a scaled integer precisely when it crossed
+the STATE frame from an nRF. It is now derived from `relay_columns()` across
+the registry rather than restated.
 
-`vertex/analysis/units.py` holds `STATE_COLUMNS`, the columns subject to
-conversion between engineering units and the integers on the wire. Every entry
-is derivable from the registry — but as a *subset*: 9 names out of the 23 that
-`column_names()` yields across the registered families. The rule that selects
-the subset is not written anywhere a family can state it.
+A column missing from the set raises `UnknownColumn` rather than passing
+through unconverted, because the alternative fails quietly: it would leave that
+node's trajectory in scaled integers while its metadata claims engineering
+units (MICROGRID.md §2).
 
-The failure mode is silent and is why `UnknownColumn` is raised rather than
-passing through: a column missing from the list leaves that node's trajectory in
-scaled integers while its metadata claims engineering units, and nothing
-downstream notices (MICROGRID.md §2).
-
-**What the seam would need:** a `scaled_columns()` classmethod, or a flag per
-channel, so the list is derived rather than maintained.
+**Still open here.** `normalize_run` raises on a node that logs the full column
+set — `g_P`, `mu_P`, `sigma_P`, `c`, `theta`, `saturated`, `trig`, `watchdog`,
+`updates` and the timing columns are in neither `STATE_COLUMNS` nor
+`PASSTHROUGH_COLUMNS`. Those columns only ever exist host-side, in engineering
+units, so nothing has needed the conversion and the dg5 analysis reads through
+`load_run` without it. Closing it means classifying each as scaled or
+passthrough, which is a judgement per column rather than a derivation.
 
 ### 4.3 How parameters are carried
 
@@ -220,9 +220,10 @@ were *necessary* rather than convenient:
   extensible. The microgrid family declared `dim`, `coords`, `channels()`,
   `publishes_in_tick` and `holds_stale_neighbours`, and no shared module names
   it for any of them.
-- §4 shows the three that were not. All three are *lists or branches keyed by
-  family name*, and all three could be closed by moving the declaration onto the
-  controller class — a change to the seam, not a directory move.
+- §4 shows the three that were not. Two are now closed by moving the
+  declaration onto the controller class, which is a change to the seam and not
+  a directory move; they turned out to be one gap with two consumers. The
+  third, parameter carriage, is the one with no obvious default.
 - §5 shows that the firmware is outside this question. Both laws are compiled
   in and selected at run time, the shared struct is intended, and seven checks
   hold the C to the Python. A split of the Python side does not require the

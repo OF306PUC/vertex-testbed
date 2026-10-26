@@ -39,9 +39,25 @@ UnitSystem = Literal["engineering", "scaled_int"]
 #: rather than passing through unconverted: it would otherwise leave that
 #: node's trajectory in scaled integers while its metadata claims engineering
 #: units, which loads and plots without complaint.
-STATE_COLUMNS = ("state", "vstate", "vartheta",
-                 "state_P", "state_Q", "vstate_P", "vstate_Q",
-                 "S1", "S2")
+def _scaled_columns() -> tuple[str, ...]:
+    """Every column that can arrive as a scaled integer, from the registry.
+
+    A value is scaled exactly when it crossed the STATE frame from an nRF,
+    and `Controller.relay_columns` is what each family declares to cross it.
+    Deriving the set rather than restating it is what keeps a family from
+    having to be added here as well as there -- the omission is silent in
+    one direction and `UnknownColumn` in the other.
+    """
+    from ..controllers.base import REGISTRY
+    out: list[str] = []
+    for cls in REGISTRY.values():
+        for c in cls.relay_columns():
+            if c not in out:
+                out.append(c)
+    return tuple(out)
+
+
+STATE_COLUMNS = _scaled_columns()
 
 #: Columns that are genuinely not scaled quantities, by exact name or prefix.
 #: Everything else is either in STATE_COLUMNS or unknown.

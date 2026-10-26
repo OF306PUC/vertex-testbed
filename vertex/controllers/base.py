@@ -182,6 +182,27 @@ class Controller(ABC):
         return ()
 
     @classmethod
+    def relay_columns(cls) -> list[str]:
+        """The subset of :meth:`column_names` that survives a relayed node.
+
+        A node whose law runs on the nRF reports through its host, and the
+        STATE frame carries less than the host-side agent computes. What it
+        omits is what is recoverable offline from the states it does carry, so
+        the omission costs nothing and a 40 Hz link is not spent on it.
+
+        The default is every column, which is right for a law whose whole
+        state crosses: nothing is dropped, so nothing has to be declared. A
+        family that reports a subset overrides this.
+
+        Two consumers read it. The agent sizes a relayed node's log from it --
+        declaring more columns than are written yields a log with no samples
+        at all. `vertex.analysis.units` derives from it the set of columns
+        subject to unit conversion, because a column arrives as a scaled
+        integer exactly when it crossed this frame.
+        """
+        return cls.column_names()
+
+    @classmethod
     def column_names(cls) -> list[str]:
         """``state`` and ``vstate`` columns plus the declared extras."""
         if cls.dim == 1:

@@ -248,6 +248,13 @@ class MicrogridController(Controller):
         raise NotImplementedError
 
 
+#: The four states always cross the relay frame. Everything else this family
+#: computes -- g, mu, muapp, sigma, theta, c -- is a function of (x, z, t) and
+#: the parameters, so it is reconstructed offline rather than spent on a 40 Hz
+#: link. See vertex/analysis/effort.py.
+RELAY_STATES = ("state_P", "state_Q", "vstate_P", "vstate_Q")
+
+
 @register
 class MicrogridAdaptive(MicrogridController):
     """``C_AA`` when ``eps = 0``, ``C_DZ`` when it is positive."""
@@ -257,6 +264,10 @@ class MicrogridAdaptive(MicrogridController):
     @classmethod
     def channels(cls) -> tuple[str, ...]:
         return (*COMMON_CHANNELS, "vartheta", "updates")
+
+    @classmethod
+    def relay_columns(cls) -> list[str]:
+        return [*RELAY_STATES, "vartheta"]
 
     def _make_interface(self) -> AdaptiveInterface:
         p = self.params.interface
@@ -282,6 +293,14 @@ class MicrogridLC(MicrogridController):
     @classmethod
     def channels(cls) -> tuple[str, ...]:
         return (*COMMON_CHANNELS, "S1", "S2", "updates")
+
+    @classmethod
+    def relay_columns(cls) -> list[str]:
+        #: The estimator stands in for `vartheta`, which this family does not
+        #: have. Unlike g, mu and sigma it is the integral of its own error,
+        #: so re-integrating it offline would reproduce the host's answer
+        #: rather than say what the board did.
+        return [*RELAY_STATES, "S1", "S2"]
 
     def _make_interface(self) -> LCInterface:
         p = self.params.interface
