@@ -40,6 +40,39 @@ Three decisions are premises, not open questions.
    inflates TX airtime, which blanks this node's own BLE receiver, which causes
    more loss — a positive feedback loop UDP breaks.
 
+4. **The scalar integrator is the system under exercise.** *(JI 2026-10-01,
+   not yet implemented)* `finite_time_adaptive` is what the platform measures
+   and what 596 collected runs are about. The five-DG microgrid benchmark was
+   added to answer one reviewer, and it is a **second system that borrows the
+   platform**, not a second thing the platform is for.
+
+   The distinction has a consequence that is already visible. The microgrid
+   family reached into the agent, the serial protocol, the on-air codec, the
+   run log and the firmware — three frame types, a longer STATE frame, a
+   `dim`-aware log schema, a second entry in the controller registry — and
+   every one of those edits had to be guarded so the scalar path came out
+   byte for byte unchanged. That guarding worked (`scalar law unchanged`
+   asserts exact equality, and the fleet path still runs `n30-ring4-40hz`
+   end to end), but it is the wrong shape: a reviewer-specific system should
+   not be able to move the primary one at all.
+
+   **What was decided**, to be done later and recorded here so it is not
+   rediscovered:
+
+   * the microgrid work gets its own directory inside this repository, with
+     its own manifests, controllers, analysis and figures;
+   * the platform keeps a documented seam for adding a system — what a new
+     controller family must declare, what the log and the wire owe it, and
+     what it may not touch — so the next one is an addition rather than a
+     renovation;
+   * the scalar law stays the default and the reference.
+
+   **What is not yet decided**: how far "apart" goes. A separate package
+   under `vertex/` shares the agent, the transports and the hub, which is
+   most of the value and most of the coupling. A separate top-level tree
+   duplicates the harness. The seam has to be written before the split is
+   chosen, because the seam is what says which edits were ever necessary.
+
 ---
 
 ## 3. Radio access and coexistence
